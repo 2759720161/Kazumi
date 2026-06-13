@@ -1,0 +1,46 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+**/.cxx
+/.clangd
+**/.test
+/.appanalyzer
+
+# DevEco / local caches
+/.arts/
+/.codeartsdoer/
+/.npm_cache/
+/libmpv-ohos-build/
+/Program
+/\ /
+
+# Local notes, logs, and one-off helper scripts
+/*.log
+/log.txt
+/powershell.txt
+/_write_doc.py
+/fix_quotes.ps1
+
+# Separate experiments or cloned reference projects in this workspace
+/Study/
+/Kazumi/
+
+# Native dependency source/build trees can be regenerated with native/scripts.
+/native/_build_tmp/
+/native/build_ffmpeg/
+/native/build_logs/
+/native/deps/
+/native/FFmpeg/
+/native/FFmpeg_ohos/
+/native/freetype2/
+/native/fribidi/
+/native/harfbuzz/
+/native/libass/
+/native/libplacebo_src/
+/native/mbedtls/
+/native/mpv/
+/native/mpv_ohos/
+/native/mpv_output/

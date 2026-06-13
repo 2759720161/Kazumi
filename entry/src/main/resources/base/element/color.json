@@ -1,0 +1,292 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "tab_bar_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "tab_icon_selected",
+      "value": "#007DFF"
+    },
+    {
+      "name": "tab_icon_unselected",
+      "value": "#999999"
+    },
+    {
+      "name": "text_primary",
+      "value": "#182431"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#999999"
+    },
+    {
+      "name": "card_background",
+      "value": "#F5F5F5"
+    },
+    {
+      "name": "loading_color",
+      "value": "#007DFF"
+    },
+    {
+      "name": "page_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "divider_color",
+      "value": "#E5E5E5"
+    },
+    {
+      "name": "category_menu_surface",
+      "value": "#B3FFFFFF"
+    },
+    {
+      "name": "category_menu_item_selected",
+      "value": "#14007DFF"
+    },
+    {
+      "name": "category_menu_divider",
+      "value": "#26182431"
+    },
+    {
+      "name": "rating_star",
+      "value": "#2F7D3B"
+    },
+    {
+      "name": "rating_star_empty",
+      "value": "#7E837F"
+    },
+    {
+      "name": "text_on_primary",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "hds_tab_gradient_mask",
+      "value": "#66FFFFFF"
+    },
+    {
+      "name": "card_specular_border",
+      "value": "#18FFFFFF"
+    },
+    {
+      "name": "home_bg_top",
+      "value": "#F0F4F8"
+    },
+    {
+      "name": "page_background_green",
+      "value": "#FAFCF4"
+    },
+    {
+      "name": "text_title_green",
+      "value": "#1D241F"
+    },
+    {
+      "name": "text_body_green",
+      "value": "#1F271F"
+    },
+    {
+      "name": "text_label_green",
+      "value": "#202820"
+    },
+    {
+      "name": "text_muted_green",
+      "value": "#6B7169"
+    },
+    {
+      "name": "text_subtitle_green",
+      "value": "#777D75"
+    },
+    {
+      "name": "text_hint_green",
+      "value": "#8A9088"
+    },
+    {
+      "name": "text_placeholder_green",
+      "value": "#8B918A"
+    },
+    {
+      "name": "text_episode_unselected",
+      "value": "#111811"
+    },
+    {
+      "name": "text_download_button",
+      "value": "#0A1A0A"
+    },
+    {
+      "name": "text_overlay_sub",
+      "value": "#CCCCCC"
+    },
+    {
+      "name": "text_retry_count",
+      "value": "#AAAAAA"
+    },
+    {
+      "name": "text_error",
+      "value": "#FF6B6B"
+    },
+    {
+      "name": "accent_green",
+      "value": "#36783A"
+    },
+    {
+      "name": "accent_green_light",
+      "value": "#B9F2B1"
+    },
+    {
+      "name": "source_badge_bg",
+      "value": "#D9E6F4DE"
+    },
+    {
+      "name": "status_success",
+      "value": "#4CAF50"
+    },
+    {
+      "name": "status_warning",
+      "value": "#FF9800"
+    },
+    {
+      "name": "status_info",
+      "value": "#2196F3"
+    },
+    {
+      "name": "status_error",
+      "value": "#F44336"
+    },
+    {
+      "name": "status_default",
+      "value": "#9E9E9E"
+    },
+    {
+      "name": "border_tag",
+      "value": "#CCD1C8"
+    },
+    {
+      "name": "border_panel",
+      "value": "#C9CEC5"
+    },
+    {
+      "name": "border_item",
+      "value": "#D0D6CC"
+    },
+    {
+      "name": "divider_green",
+      "value": "#D7DDD3"
+    },
+    {
+      "name": "skeleton_background",
+      "value": "#E8ECE4"
+    },
+    {
+      "name": "episode_card_background",
+      "value": "#F7FAF4"
+    },
+    {
+      "name": "episode_item_selected_bg",
+      "value": "#EEF5EB"
+    },
+    {
+      "name": "episode_item_unselected_bg",
+      "value": "#F1F5EE"
+    },
+    {
+      "name": "road_unselected_bg",
+      "value": "#E9EEE6"
+    },
+    {
+      "name": "button_primary_bg",
+      "value": "#D9007DFF"
+    },
+    {
+      "name": "button_accent_bg",
+      "value": "#D936783A"
+    },
+    {
+      "name": "button_info_bg",
+      "value": "#D92196F3"
+    },
+    {
+      "name": "button_neutral_bg",
+      "value": "#D9555555"
+    },
+    {
+      "name": "button_ghost_bg",
+      "value": "#DFFFFFFF"
+    },
+    {
+      "name": "button_floating_bg",
+      "value": "#D9B9F2B1"
+    },
+    {
+      "name": "panel_dark_bg",
+      "value": "#D91D241F"
+    },
+    {
+      "name": "overlay_control_bg",
+      "value": "#B0000000"
+    },
+    {
+      "name": "overlay_topbar_bg",
+      "value": "#66000000"
+    },
+    {
+      "name": "overlay_modal_bg",
+      "value": "#80000000"
+    },
+    {
+      "name": "surface_button_bg",
+      "value": "#66FFFFFF"
+    },
+    {
+      "name": "border_specular",
+      "value": "#4DFFFFFF"
+    },
+    {
+      "name": "border_subtle",
+      "value": "#70FFFFFF"
+    },
+    {
+      "name": "border_light",
+      "value": "#40FFFFFF"
+    },
+    {
+      "name": "border_faint",
+      "value": "#24FFFFFF"
+    },
+    {
+      "name": "track_slider",
+      "value": "#80FFFFFF"
+    },
+    {
+      "name": "text_overlay_dim",
+      "value": "#CCFFFFFF"
+    },
+    {
+      "name": "shadow_button_primary",
+      "value": "#22007DFF"
+    },
+    {
+      "name": "shadow_button_accent",
+      "value": "#2036783A"
+    },
+    {
+      "name": "shadow_button_info",
+      "value": "#202196F3"
+    },
+    {
+      "name": "shadow_surface",
+      "value": "#18000000"
+    },
+    {
+      "name": "shadow_light",
+      "value": "#10000000"
+    },
+    {
+      "name": "color_transparent",
+      "value": "#00000000"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+import { RdbConstants } from '../constants/RdbConstants';
+
+export class RdbSchema {
+  static getCreateRuleSourceTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_RULE_SOURCE} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_API} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_TYPE} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_NAME} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_VERSION} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_BASE_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_SEARCH_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_SEARCH_LIST} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_SEARCH_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_SEARCH_RESULT} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_CHAPTER_ROADS} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_CHAPTER_RESULT} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_REFERER} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_USER_AGENT} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_ANTI_CRAWLER_CONFIG} TEXT NOT NULL DEFAULT '{}', ` +
+      `${RdbConstants.COL_USE_WEBVIEW} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_USE_NATIVE_PLAYER} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_USE_POST} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_USE_LEGACY_PARSER} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_AD_BLOCKER} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_MULTI_SOURCES} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_ENABLED} INTEGER NOT NULL DEFAULT 1, ` +
+      `${RdbConstants.COL_RAW_JSON} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
+  static getCreateFavoriteTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_FAVORITE} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_ANIME_ID} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_ANIME_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_ANIME_COVER} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_ANIME_DESC} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_ANIME_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_SOURCE_ID} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
+  static getCreateWatchHistoryTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_WATCH_HISTORY} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_ANIME_ID} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_ANIME_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_ANIME_COVER} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_ANIME_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_SOURCE_ID} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_EPISODE_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_EPISODE_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
+  static getCreateSearchHistoryTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_SEARCH_HISTORY} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_KEYWORD} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_TIMESTAMP} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
+  static getCreateIndexes(): string[] {
+    return [
+      `CREATE INDEX IF NOT EXISTS idx_rule_source_name ON ${RdbConstants.TABLE_RULE_SOURCE}(${RdbConstants.COL_NAME})`,
+      `CREATE INDEX IF NOT EXISTS idx_rule_source_enabled ON ${RdbConstants.TABLE_RULE_SOURCE}(${RdbConstants.COL_ENABLED})`,
+      `CREATE INDEX IF NOT EXISTS idx_favorite_anime_id ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_ANIME_ID})`,
+      `CREATE INDEX IF NOT EXISTS idx_watch_history_anime_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_ANIME_ID})`,
+      `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`
+    ];
+  }
+
+  static getAllCreateSql(): string[] {
+    const sqls: string[] = [
+      RdbSchema.getCreateRuleSourceTable(),
+      RdbSchema.getCreateFavoriteTable(),
+      RdbSchema.getCreateWatchHistoryTable(),
+      RdbSchema.getCreateSearchHistoryTable()
+    ];
+    const indexes = RdbSchema.getCreateIndexes();
+    for (let i = 0; i < indexes.length; i++) {
+      sqls.push(indexes[i]);
+    }
+    return sqls;
+  }
+}

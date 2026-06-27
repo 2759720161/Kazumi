@@ -96,8 +96,7 @@ export struct HomePage {
   @Builder
   private HomeNavigationContent() {
     HdsNavigation() {
-      Scroll(this.scroller) {
-        Column({ space: 20 }) {
+      Scroll(this.scroller) {        Column({ space: 20 }) {
           Blank()
             .height(this.getHomeTopSpacerHeight())
             .width('100%')
@@ -185,6 +184,7 @@ export struct HomePage {
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
       .clip(false)
+      .id('homeScrollContainer')
       .onScrollFrameBegin((offset: number) => {
         this.scrollOffset = this.scroller.currentOffset().yOffset
         return { offsetRemain: offset }
@@ -249,7 +249,10 @@ export struct HomePage {
   private scrollToSection(id: string): void {
     try {
       const info = componentUtils.getRectangleById(id)
-      const targetY = info.screenOffset.y - this.topSafeHeight - 56
+      const scrollInfo = componentUtils.getRectangleById('homeScrollContainer')
+      const screenTopOffset = info.screenOffset.y - scrollInfo.screenOffset.y
+      const currentYOffset = this.scroller.currentOffset().yOffset
+      const targetY = currentYOffset + screenTopOffset - 8
       this.scroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, targetY) })
     } catch (err) {
       logger.warn('scrollToSection failed for %{public}s', id)

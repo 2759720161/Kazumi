@@ -122,7 +122,7 @@ export struct HeroBanner {
           }
 
           Row({ space: 10 }) {
-            Button('开始观看')
+            Button('查看详情')
               .height(32)
               .padding({ left: 18, right: 18 })
               .fontSize(13)

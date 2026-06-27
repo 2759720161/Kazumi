@@ -102,9 +102,10 @@ export struct ContinueWatchingSection {
         animeId: record.animeId,
         animeCover: record.animeCover,
         animeUrl: record.animeUrl,
+        ruleSourceId: record.sourceId,
         sourceId: record.sourceId,
-        sourceName: record.sourceName,
         episodeUrl: record.episodeUrl,
+        sourceName: record.sourceName,
         historyPositionMs: record.positionMs
       }
     })

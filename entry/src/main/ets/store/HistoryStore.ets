@@ -2,6 +2,7 @@ import { relationalStore } from '@kit.ArkData';
 import { RdbManager } from './RdbManager';
 import { RdbConstants } from '../constants/RdbConstants';
 import { HistoryRecord } from '../models/HistoryRecord';
+import { RuleSourceStore } from './RuleSourceStore';
 import { DanmakuPlaybackBindingStore } from '../core/danmaku/DanmakuPlaybackBindingStore';
 import { DanmakuCacheIndexStore } from '../core/danmaku/DanmakuCacheIndexStore';
 import { Logger } from '../utils/Logger';
@@ -10,16 +11,20 @@ const logger = new Logger('HistoryStore');
 
 export class HistoryStore {
   private rdbManager: RdbManager;
+  private ruleSourceStore: RuleSourceStore;
 
   constructor() {
     this.rdbManager = RdbManager.getInstance();
+    this.ruleSourceStore = new RuleSourceStore();
   }
 
   async getAll(): Promise<HistoryRecord[]> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
     predicates.orderByDesc(RdbConstants.COL_UPDATED_AT);
     const resultSet = await this.rdbManager.query(predicates);
-    return this.parseResultSet(resultSet);
+    const records = this.parseResultSet(resultSet);
+    await this.fillSourceNames(records);
+    return records;
   }
 
   async getByAnimeId(animeId: string): Promise<HistoryRecord | null> {
@@ -27,7 +32,11 @@ export class HistoryStore {
     predicates.equalTo(RdbConstants.COL_ANIME_ID, animeId);
     const resultSet = await this.rdbManager.query(predicates);
     const list = this.parseResultSet(resultSet);
-    return list.length > 0 ? list[0] : null;
+    if (list.length > 0) {
+      await this.fillSourceNames(list);
+      return list[0];
+    }
+    return null;
   }
 
   async upsert(record: HistoryRecord): Promise<number> {
@@ -125,5 +134,38 @@ export class HistoryStore {
       resultSet.close();
     }
     return list;
+  }
+
+  private async fillSourceNames(records: HistoryRecord[]): Promise<void> {
+    if (records.length === 0) {
+      return;
+    }
+    const sourceIdSet: Set<number> = new Set();
+    for (let i = 0; i < records.length; i++) {
+      if (records[i].sourceId >= 0) {
+        sourceIdSet.add(records[i].sourceId);
+      }
+    }
+    if (sourceIdSet.size === 0) {
+      return;
+    }
+    const nameMap: Map<number, string> = new Map();
+    const ids = Array.from(sourceIdSet);
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        const rule = await this.ruleSourceStore.getById(ids[i]);
+        if (rule !== null) {
+          nameMap.set(ids[i], rule.name);
+        }
+      } catch (_err) {
+        continue;
+      }
+    }
+    for (let i = 0; i < records.length; i++) {
+      const name = nameMap.get(records[i].sourceId);
+      if (name !== undefined) {
+        records[i].sourceName = name;
+      }
+    }
   }
 }

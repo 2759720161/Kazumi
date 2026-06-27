@@ -42,7 +42,7 @@ export class RecommendViewModel {
         this.loadContinueWatching()
       ])
 
-      this.buildHeroList()
+      await this.buildHeroList()
       this.isInitialLoaded = true
       logger.info('RecommendViewModel load complete: hero=%{public}d trending=%{public}d seasonal=%{public}d highScore=%{public}d history=%{public}d',
         this.heroList.length, this.trendingList.length, this.seasonalList.length,
@@ -152,7 +152,7 @@ export class RecommendViewModel {
     }
   }
 
-  private buildHeroList(): void {
+  private async buildHeroList(): Promise<void> {
     const candidates: RecommendCardModel[] = []
     const usedIds: Set<number> = new Set()
     const heroLimit = 5
@@ -172,6 +172,61 @@ export class RecommendViewModel {
     addFromList(this.trendingList, 3)
     addFromList(this.highScoreList, 2)
 
+    await this.enrichHeroList(candidates)
     this.heroList = candidates
+  }
+
+  private async enrichHeroList(items: RecommendCardModel[]): Promise<void> {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (!this.shouldFetchHeroDetail(item)) {
+        continue
+      }
+
+      try {
+        const detail = await BangumiApi.getSubject(item.bangumiId)
+        if (detail !== null) {
+          this.applyHeroDetail(item, RecommendCardModel.fromAnimeItem(detail))
+        }
+      } catch (err) {
+        logger.warn('enrichHeroList failed for %{public}d', item.bangumiId)
+      }
+    }
+  }
+
+  private shouldFetchHeroDetail(item: RecommendCardModel): boolean {
+    if (item.bangumiId <= 0) {
+      return false
+    }
+    return item.summary.length === 0 ||
+      item.score <= 0 ||
+      item.rank <= 0 ||
+      item.tags.length === 0 ||
+      item.eps <= 0 ||
+      item.date.length === 0
+  }
+
+  private applyHeroDetail(target: RecommendCardModel, detail: RecommendCardModel): void {
+    if (target.title.length === 0 && detail.title.length > 0) target.title = detail.title
+    if (target.originalTitle.length === 0 && detail.originalTitle.length > 0) target.originalTitle = detail.originalTitle
+    if (target.cover.length === 0 && detail.cover.length > 0) target.cover = detail.cover
+    if (target.coverLarge.length === 0 && detail.coverLarge.length > 0) target.coverLarge = detail.coverLarge
+    if (target.backdrop.length === 0 && detail.getHeroBackdrop().length > 0) target.backdrop = detail.getHeroBackdrop()
+    if (target.summary.length === 0 && detail.summary.length > 0) target.summary = detail.summary
+    if (target.score <= 0 && detail.score > 0) target.score = detail.score
+    if (target.rank <= 0 && detail.rank > 0) target.rank = detail.rank
+    if (target.votes <= 0 && detail.votes > 0) target.votes = detail.votes
+    if (target.date.length === 0 && detail.date.length > 0) target.date = detail.date
+    if (target.year.length === 0 && detail.year.length > 0) target.year = detail.year
+    if (target.platform.length === 0 && detail.platform.length > 0) target.platform = detail.platform
+    if (target.tags.length === 0 && detail.tags.length > 0) target.tags = [...detail.tags]
+    if (target.eps <= 0 && detail.eps > 0) target.eps = detail.eps
+    if (target.coverFallback.length === 0 && detail.coverFallback.length > 0) target.coverFallback = detail.coverFallback
+    if (target.coverCommon.length === 0 && detail.coverCommon.length > 0) target.coverCommon = detail.coverCommon
+    if (target.coverMedium.length === 0 && detail.coverMedium.length > 0) target.coverMedium = detail.coverMedium
+    if (target.bangumiCover.length === 0 && detail.bangumiCover.length > 0) target.bangumiCover = detail.bangumiCover
+    if (target.aliases.length === 0 && detail.aliases.length > 0) target.aliases = [...detail.aliases]
+    if (target.airWeekday <= 0 && detail.airWeekday > 0) target.airWeekday = detail.airWeekday
+    if (target.votesCount.length === 0 && detail.votesCount.length > 0) target.votesCount = [...detail.votesCount]
   }
 }

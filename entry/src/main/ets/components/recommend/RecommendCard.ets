@@ -42,26 +42,6 @@ export struct RecommendCard {
           .backgroundColor('#B3000000')
           .position({ x: '68%', y: 4 })
         }
-
-        Column() {
-          Row().width('100%').layoutWeight(1)
-
-          Text(this.item.getMetaText())
-            .fontSize(10)
-            .fontColor('#CCFFFFFF')
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-            .textShadow({ radius: 2, color: '#66000000', offsetX: 0, offsetY: 1 })
-            .padding({ left: 8, right: 8, bottom: 8 })
-        }
-        .width('100%')
-        .height('100%')
-        .linearGradient({
-          direction: GradientDirection.Bottom,
-          colors: [['#00000000', 0.6], ['#66000000', 1]]
-        })
-        .borderRadius({ topLeft: 12, topRight: 12 })
       }
       .width('100%')
       .aspectRatio(3 / 4)

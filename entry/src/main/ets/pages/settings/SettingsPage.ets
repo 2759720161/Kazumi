@@ -2,16 +2,12 @@ import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { RuleSource } from '../../models/RuleSource'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { SecurityPolicy } from '../../network/SecurityPolicy'
-import { DefaultRuleSourceInitializer } from '../../utils/DefaultRuleSourceInitializer'
-import { DataMigration, AppDataBundle } from '../../store/DataMigration'
-import { RuleSourceSeeder } from '../../store/RuleSourceSeeder'
+import { RuleCatalogService } from '../../services/RuleCatalogService'
 import { common, ConfigurationConstant } from '@kit.AbilityKit'
-import { picker } from '@kit.CoreFileKit'
-import { fileIo as fs } from '@kit.CoreFileKit'
 import { Logger } from '../../utils/Logger'
 import { router } from '@kit.ArkUI'
 import { DandanCredentialStore } from '../../core/danmaku/DandanCredentialStore'
-import { DandanApiClient } from '../../core/danmaku/DandanApiClient'
+import { RULE_SOURCE_VERSION_KEY } from '../../store/SettingsChangeSignal'
 import {
   HdsNavigation,
   HdsNavigationTitleMode
@@ -24,6 +20,12 @@ import {
 
 const logger = new Logger('SettingsPage')
 
+interface SettingOption {
+  label: string;
+  value: string | number | boolean;
+  action: () => void;
+}
+
 @Component
 export struct SettingsPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
@@ -31,32 +33,37 @@ export struct SettingsPage {
   @State ruleCount: number = 0
   @State enabledRuleCount: number = 0
   @State allowHttpRequests: boolean = false
-  @State defaultPlayerEngine: string = 'avplayer'
-  @State mpvHwdecMode: string = 'ohcodec'
+  @State defaultPlayerEngine: string = 'mpv'
+  @State mpvHwdecMode: string = 'auto'
   @State mpvHlsAdFilter: boolean = true
   @State mpvSegAllowImg: boolean = true
   @State snifferTimeout: number = 15
-  @State importUrl: string = ''
-  @State isImporting: boolean = false
-  @State importMessage: string = ''
   @State rules: RuleSource[] = []
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private scroller: Scroller = new Scroller()
 
-  @State isRestoring: boolean = false
   @State colorMode: number = -1
-  @State isExporting: boolean = false
-  @State isFileImporting: boolean = false
-  @State isDataExporting: boolean = false
-  @State isDataImporting: boolean = false
+  @State showPlayerEngineMenu: boolean = false
+  @State showMpvHwdecMenu: boolean = false
+  @State showColorModeMenu: boolean = false
+  @State showCompactModeMenu: boolean = false
+  @State showAdvancedPlayerOptions: boolean = false
+  @State versionTapCount: number = 0
 
-  @State dandanAppId: string = ''
-  @State dandanAppSecret: string = ''
   @State isDanmakuCredentialConfigured: boolean = false
-  @State isTestingConnection: boolean = false
-  @State testConnectionMessage: string = ''
+  @StorageLink('home_compact_mode') compactMode: boolean = false
+  @StorageLink(RULE_SOURCE_VERSION_KEY) @Watch('onRuleSourceVersionChange') ruleSourceVersion: number = 0
+  @State updatableCount: number = 0
 
   aboutToAppear(): void {
+    this.loadSettings()
+  }
+
+  onPageShow(): void {
+    this.loadSettings()
+  }
+
+  onRuleSourceVersionChange(): void {
     this.loadSettings()
   }
 
@@ -68,16 +75,10 @@ export struct SettingsPage {
             .height(getTopSpacerHeight(this.topSafeHeight))
             .width('100%')
 
-          this.RuleSourceSection()
-          this.DanmakuSourceSection()
-          this.ImportSection()
-          this.RuleListSection()
-          this.PlayerSection()
-          this.AppearanceSection()
-          this.SecuritySection()
-          this.SnifferSection()
-          this.DeveloperSection()
-          this.AboutSection()
+          this.LibrarySection()
+          this.PlayerAndDanmakuSection()
+          this.AppSection()
+          this.AdvancedSection()
 
           Blank()
             .height(getBottomSpacerHeight(this.bottomSafeHeight))
@@ -85,15 +86,17 @@ export struct SettingsPage {
             .hitTestBehavior(HitTestMode.None)
         }
         .width('100%')
+        .padding({ left: 12, right: 12 })
       }
       .width('100%')
       .height('100%')
       .edgeEffect(EdgeEffect.Spring)
+      .scrollBar(BarState.Off)
       .clip(false)
     }
     .width('100%')
     .height('100%')
-    .titleBar(buildTitleBarOptions('设置'))
+    .titleBar(buildTitleBarOptions('我的'))
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
     .hideBackButton(true)
@@ -102,420 +105,604 @@ export struct SettingsPage {
   }
 
   @Builder
-  RuleSourceSection(): void {
+  LibrarySection(): void {
     Column() {
-      Text('规则源管理')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Text(`已启用: ${this.enabledRuleCount} / ${this.ruleCount}`)
-          .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
-          .layoutWeight(1)
+      this.SectionHeader('播放历史与资源')
+      Column() {
+        this.NavigationItem($r('sys.symbol.clock'), '历史记录', '查看播放历史', '', () => {
+          router.pushUrl({ url: 'pages/history/HistoryPage' })
+        })
+        this.ItemDivider()
+        this.NavigationItem($r('sys.symbol.cart'), '规则仓库',
+          this.updatableCount > 0 ? this.updatableCount + ' 条规则可更新' : '浏览、安装和导入规则',
+          '', () => {
+          router.pushUrl({ url: 'pages/settings/RuleShopPage' })
+        })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 8 })
-
-      Button(this.isRestoring ? '恢复中...' : '恢复内置规则')
-        .fontSize(14)
-        .height(36)
-        .width('100%')
-        .backgroundColor($r('app.color.button_accent_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .fontColor($r('app.color.text_on_primary'))
-        .borderRadius(18)
-        .border({ width: 0.5, color: $r('app.color.border_specular') })
-        .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
-        .enabled(!this.isRestoring)
-        .margin({ left: 16, right: 16, bottom: 8 })
-        .onClick(() => {
-          this.restoreBundledRules()
-        })
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
     .width('100%')
+    .margin({ bottom: 8 })
   }
 
   @Builder
-  ImportSection(): void {
+  PlayerAndDanmakuSection(): void {
     Column() {
-      Text('导入规则源')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
+      this.SectionHeader('播放器')
+      Column() {
+        Row() {
+          this.SettingIcon($r('sys.symbol.play_round_rectangle'))
+          this.PlayerEngineTitle()
+          this.PlayerEnginePicker()
+        }
         .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
+        .height(56)
+        .padding({ left: 16, right: 16 })
 
-      Row() {
-        TextInput({ placeholder: '输入规则源JSON URL', text: this.importUrl })
-          .layoutWeight(1)
-          .height(40)
-          .onChange((value: string) => {
-            this.importUrl = value
+        if (this.defaultPlayerEngine === 'mpv') {
+          this.ItemDivider()
+
+          Row() {
+            this.SettingIcon($r('sys.symbol.gearshape'))
+            this.SettingTitle('硬件解码模式', '优先使用系统解码能力')
+            this.MpvHwdecPicker()
+          }
+          .width('100%')
+          .height(56)
+          .padding({ left: 16, right: 16 })
+
+          this.ItemDivider()
+        }
+
+        if (this.defaultPlayerEngine === 'mpv') {
+          this.ToggleItem($r('sys.symbol.play'), 'HLS 广告跳过', '跳过常见 HLS 广告分片', this.mpvHlsAdFilter, (isOn: boolean) => {
+            this.setMpvHlsAdFilter(isOn)
           })
 
-        Button(this.isImporting ? '导入中...' : '导入')
-          .height(40)
-          .padding({ left: 18, right: 18 })
-          .borderRadius(20)
-          .backgroundColor($r('app.color.button_primary_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .shadow({ radius: 12, color: $r('app.color.shadow_button_primary'), offsetY: 4 })
-          .margin({ left: 8 })
-          .enabled(!this.isImporting)
-          .onClick(() => {
-            this.importFromUrl()
+          this.ItemDivider()
+
+          this.ToggleItem($r('sys.symbol.doc_text'), '伪装分片处理', '允许图片扩展名的视频分片', this.mpvSegAllowImg, (isOn: boolean) => {
+            this.setMpvSegAllowImg(isOn)
           })
+
+          this.ItemDivider()
+        } else {
+          this.ItemDivider()
+        }
+
+        this.DanmakuSettingsItem()
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 4 })
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
 
-      Button(this.isImporting ? 'Importing...' : 'Import KazumiRules')
-        .height(40)
-        .borderRadius(20)
-        .backgroundColor($r('app.color.button_primary_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .border({ width: 0.5, color: $r('app.color.border_specular') })
-        .shadow({ radius: 12, color: $r('app.color.shadow_button_primary'), offsetY: 4 })
-        .enabled(!this.isImporting)
+  @Builder
+  AppSection(): void {
+    Column() {
+      this.SectionHeader('应用')
+      Column() {
+        Row() {
+          this.SettingIcon($r('sys.symbol.moon'))
+          this.SettingTitle('深色模式', '跟随系统或手动切换')
+          this.ColorModePicker()
+        }
         .width('100%')
-        .margin({ left: 16, right: 16, bottom: 4 })
-        .onClick(() => {
-          this.importKazumiRulesCatalog()
+        .height(56)
+        .padding({ left: 16, right: 16 })
+
+        this.ItemDivider()
+
+        Row() {
+          this.SettingIcon($r('sys.symbol.square_grid_2x2'))
+          this.SettingTitle('推荐页布局', '调整首页卡片密度')
+          this.CompactModePicker()
+        }
+        .width('100%')
+        .height(56)
+        .padding({ left: 16, right: 16 })
+
+        this.ItemDivider()
+
+        this.ToggleItem($r('sys.symbol.lock_open'), '允许非 HTTPS 请求', '兼容部分旧规则源', this.allowHttpRequests, (isOn: boolean) => {
+          this.allowHttpRequests = isOn
+          SecurityPolicy.getInstance().setAllowHttpRequests(isOn)
         })
-
-      Row() {
-        Button(this.isFileImporting ? '导入中...' : '从文件导入')
-          .height(40)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .enabled(!this.isFileImporting)
-          .layoutWeight(1)
-          .onClick(() => {
-            this.importFromFile()
-          })
-
-        Button(this.isExporting ? '导出中...' : '导出规则')
-          .height(40)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .enabled(!this.isExporting)
-          .layoutWeight(1)
-          .margin({ left: 8 })
-          .onClick(() => {
-            this.exportRules()
-          })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 4 })
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
 
-      if (this.importMessage.length > 0) {
-        Text(this.importMessage)
+  @Builder
+  AdvancedSection(): void {
+    Column() {
+      this.SectionHeader('高级')
+      Column() {
+        this.NavigationItem($r('sys.symbol.wrench_and_screwdriver'), '规则调试', '测试规则搜索、分集和播放解析', '', () => {
+          router.pushUrl({ url: 'pages/settings/RuleDebugPage' })
+        })
+        this.ItemDivider()
+        this.VersionInfoItem()
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  SectionHeader(title: string): void {
+    Text(title)
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor($r('app.color.text_secondary'))
+      .width('100%')
+      .padding({ left: 6, right: 6, top: 18, bottom: 6 })
+  }
+
+  @Builder
+  ItemDivider(): void {
+    Row() {
+      Blank()
+        .width(62)
+      Divider()
+        .layoutWeight(1)
+        .color($r('app.color.divider_color'))
+        .strokeWidth(0.5)
+    }
+    .width('100%')
+    .padding({ right: 16 })
+  }
+
+  @Builder
+  SettingIcon(icon: Resource): void {
+    SymbolGlyph(icon)
+      .fontSize(24)
+      .fontColor([$r('app.color.accent_blue')])
+      .width(34)
+      .margin({ right: 12 })
+  }
+
+  @Builder
+  PlayerEngineTitle(): void {
+    Column() {
+      Text('默认播放引擎')
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+      Text(this.defaultPlayerEngine === 'mpv' ? '当前使用 mpv' : '当前使用 AVPlayer')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        .margin({ top: 2 })
+    }
+    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  SettingTitle(title: string, desc: string): void {
+    Column() {
+      Text(title)
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+      Text(desc)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        .margin({ top: 2 })
+    }
+    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  NavigationItem(icon: Resource, title: string, desc: string, value: string, action: () => void): void {
+    Row() {
+      this.SettingIcon(icon)
+      this.SettingTitle(title, desc)
+
+      if (value.length > 0) {
+        Text(value)
+          .fontSize(14)
+          .fontColor($r('app.color.text_secondary'))
+          .margin({ left: 10, right: 6 })
+      }
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
+    }
+    .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
+    .borderRadius(12)
+    .onClick(action)
+    .stateStyles({
+      pressed: {
+        .backgroundColor($r('app.color.category_menu_item_selected'))
+      },
+      normal: {
+        .backgroundColor(Color.Transparent)
+      }
+    })
+  }
+
+  @Builder
+  ToggleItem(icon: Resource, title: string, desc: string, isOn: boolean, onChange: (isOn: boolean) => void): void {
+    Row() {
+      this.SettingIcon(icon)
+      this.SettingTitle(title, desc)
+
+      Toggle({ type: ToggleType.Switch, isOn: isOn })
+        .onChange(onChange)
+    }
+    .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
+  }
+
+  @Builder
+  DanmakuSettingsItem(): void {
+    Row() {
+      this.SettingIcon($r('sys.symbol.gearshape'))
+      Column() {
+        Text('弹幕设置')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        Text(this.isDanmakuCredentialConfigured ? '来源、样式、屏蔽与缓存' : '配置弹幕来源和显示效果')
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))
-          .padding({ left: 16, right: 16, bottom: 8 })
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
+          .margin({ top: 2 })
       }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      Text(this.isDanmakuCredentialConfigured ? '已配置' : '未配置')
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
+        .margin({ left: 10, right: 6 })
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
     }
     .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
+    .borderRadius(12)
+    .onClick(() => {
+      router.pushUrl({ url: 'pages/settings/DanmakuSettingsPage' })
+    })
+    .stateStyles({
+      pressed: {
+        .backgroundColor($r('app.color.category_menu_item_selected'))
+      },
+      normal: {
+        .backgroundColor(Color.Transparent)
+      }
+    })
   }
 
   @Builder
-  RuleListSection(): void {
-    Column() {
-      if (this.rules.length > 0) {
-        ForEach(this.rules, (rule: RuleSource) => {
-          Row() {
-            Text(rule.name)
-              .fontSize(14)
-              .layoutWeight(1)
-
-            Toggle({ type: ToggleType.Switch, isOn: rule.enabled })
-              .onChange((isOn: boolean) => {
-                this.toggleRule(rule, isOn)
-              })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-        }, (rule: RuleSource) => String(rule.id))
-      }
+  StaticItem(icon: Resource, title: string, value: string): void {
+    Row() {
+      this.SettingIcon(icon)
+      Text(title)
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+      Text(value)
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
     }
     .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
   }
 
   @Builder
-  PlayerSection(): void {
-    Column() {
-      Text('播放设置')
+  VersionInfoItem(): void {
+    Row() {
+      this.SettingIcon($r('sys.symbol.info_circle'))
+      Text('版本信息')
         .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Text('默认播放引擎')
-          .fontSize(14)
-          .layoutWeight(1)
-
-        Row() {
-          ForEach([
-            { label: 'AVPlayer', value: 'avplayer' },
-            { label: 'mpv', value: 'mpv' }
-          ], (item: Record<string, Object>) => {
-            Text(item.label as string)
-              .fontSize(12)
-              .fontColor(this.defaultPlayerEngine === (item.value as string) ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
-              .backgroundColor(this.defaultPlayerEngine === (item.value as string) ? $r('app.color.button_primary_bg') : $r('app.color.card_background'))
-              .borderRadius(12)
-              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-              .margin({ left: 4 })
-              .onClick(() => {
-                this.setPlayerEngine(item.value as string)
-              })
-          }, (item: Record<string, Object>) => String(item.value))
-        }
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-
-      if (this.defaultPlayerEngine === 'mpv') {
-        Column() {
-          Row() {
-            Text('硬件解码模式')
-              .fontSize(14)
-              .layoutWeight(1)
-
-            Row() {
-              ForEach([
-                { label: 'OHCodec', value: 'ohcodec' },
-                { label: '自动', value: 'auto' },
-                { label: '关闭', value: 'no' }
-              ], (item: Record<string, Object>) => {
-                Text(item.label as string)
-                  .fontSize(12)
-                  .fontColor(this.mpvHwdecMode === (item.value as string) ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
-                  .backgroundColor(this.mpvHwdecMode === (item.value as string) ? $r('app.color.button_primary_bg') : $r('app.color.card_background'))
-                  .borderRadius(12)
-                  .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-                  .margin({ left: 4 })
-                  .onClick(() => {
-                    this.setMpvHwdecMode(item.value as string)
-                  })
-              }, (item: Record<string, Object>) => String(item.value))
-            }
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-
-          Row() {
-            Text('HLS广告跳过')
-              .fontSize(14)
-              .layoutWeight(1)
-            Toggle({ type: ToggleType.Switch, isOn: this.mpvHlsAdFilter })
-              .onChange((isOn: boolean) => {
-                this.setMpvHlsAdFilter(isOn)
-              })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-
-          Row() {
-            Text('伪装分片处理')
-              .fontSize(14)
-              .layoutWeight(1)
-            Toggle({ type: ToggleType.Switch, isOn: this.mpvSegAllowImg })
-              .onChange((isOn: boolean) => {
-                this.setMpvSegAllowImg(isOn)
-              })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-        }
-        .width('100%')
-      }
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+      Text('1.0.0')
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
     }
     .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.handleVersionTap()
+    })
   }
 
   @Builder
-  AppearanceSection(): void {
-    Column() {
-      Text('外观设置')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
+  PlayerEnginePicker(): void {
+    Row() {
+      Text(this.defaultPlayerEngine === 'mpv' ? 'mpv' : 'AVPlayer')
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+        .layoutWeight(1)
 
-      Row() {
-        Text('深色模式')
-          .fontSize(14)
-          .layoutWeight(1)
-
-        Row() {
-          ForEach([
-            { label: '跟随系统', value: -1 },
-            { label: '始终浅色', value: 1 },
-            { label: '始终深色', value: 0 }
-          ], (item: Record<string, Object>) => {
-            Text(item.label as string)
-              .fontSize(12)
-              .fontColor(this.colorMode === (item.value as number) ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
-              .backgroundColor(this.colorMode === (item.value as number) ? $r('app.color.button_primary_bg') : $r('app.color.card_background'))
-              .borderRadius(12)
-              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-              .margin({ left: 4 })
-              .onClick(() => {
-                this.setColorMode(item.value as number)
-              })
-          }, (item: Record<string, Object>) => String(item.value))
-        }
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-    }
-    .width('100%')
-  }
-
-  @Builder
-  SecuritySection(): void {
-    Column() {
-      Text('安全设置')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Text('允许非HTTPS请求')
-          .fontSize(14)
-          .layoutWeight(1)
-
-        Toggle({ type: ToggleType.Switch, isOn: this.allowHttpRequests })
-          .onChange((isOn: boolean) => {
-            this.allowHttpRequests = isOn
-            SecurityPolicy.getInstance().setAllowHttpRequests(isOn)
-          })
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-    }
-    .width('100%')
-  }
-
-  @Builder
-  SnifferSection(): void {
-    Column() {
-      Text('嗅探设置')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Text('嗅探超时(秒)')
-          .fontSize(14)
-          .layoutWeight(1)
-
-        Text(`${this.snifferTimeout}s`)
-          .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-    }
-    .width('100%')
-  }
-
-  @Builder
-  DeveloperSection(): void {
-    Column() {
-      Text('开发者')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Text('规则调试')
-          .fontSize(14)
-          .layoutWeight(1)
-
-        SymbolGlyph($r('sys.symbol.chevron_right'))
-          .fontSize(16)
-          .fontColor([$r('app.color.text_secondary')])
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-      .onClick(() => {
-        router.pushUrl({ url: 'pages/settings/RuleDebugPage' })
-      })
-    }
-    .width('100%')
-  }
-
-  @Builder
-  AboutSection(): void {
-    Column() {
-      Text('关于')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Text('版本')
-          .fontSize(14)
-          .layoutWeight(1)
-
-        Text('1.0.0')
-          .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-
-      Text('数据迁移')
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .width('100%')
-        .padding({ left: 16, top: 12, bottom: 4 })
-
-      Row() {
-        Button(this.isDataExporting ? '导出中...' : '导出全部数据')
-          .height(40)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .enabled(!this.isDataExporting)
-          .layoutWeight(1)
-          .onClick(() => {
-            this.exportAllData()
-          })
-
-        Button(this.isDataImporting ? '导入中...' : '导入全部数据')
-          .height(40)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .enabled(!this.isDataImporting)
-          .layoutWeight(1)
+      if (this.showAdvancedPlayerOptions) {
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
           .margin({ left: 8 })
-          .onClick(() => {
-            this.importAllData()
-          })
       }
-      .width('100%')
-      .padding({ left: 16, right: 16, bottom: 8 })
     }
-    .width('100%')
+    .width(112)
+    .height(38)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(12)
+    .onClick(() => {
+      if (!this.showAdvancedPlayerOptions) {
+        return
+      }
+      this.closeOptionMenus()
+      this.showPlayerEngineMenu = true
+    })
+    .bindPopup(this.showAdvancedPlayerOptions && this.showPlayerEngineMenu, {
+      builder: this.PlayerEngineMenuContent,
+      placement: Placement.Bottom,
+      showInSubWindow: false,
+      onStateChange: (e: PopupStateChangeParam) => {
+        if (!e.isVisible) {
+          this.showPlayerEngineMenu = false
+        }
+      }
+    })
+  }
+
+  @Builder
+  MpvHwdecPicker(): void {
+    Row() {
+      Text(this.mpvHwdecMode === 'auto' ? '自动' : (this.mpvHwdecMode === 'no' ? '关闭' : '打开'))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+        .layoutWeight(1)
+
+      if (this.showAdvancedPlayerOptions) {
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 8 })
+      }
+    }
+    .width(112)
+    .height(38)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(12)
+    .onClick(() => {
+      if (!this.showAdvancedPlayerOptions) {
+        return
+      }
+      this.closeOptionMenus()
+      this.showMpvHwdecMenu = true
+    })
+    .bindPopup(this.showAdvancedPlayerOptions && this.showMpvHwdecMenu, {
+      builder: this.MpvHwdecMenuContent,
+      placement: Placement.Bottom,
+      showInSubWindow: false,
+      onStateChange: (e: PopupStateChangeParam) => {
+        if (!e.isVisible) {
+          this.showMpvHwdecMenu = false
+        }
+      }
+    })
+  }
+
+  @Builder
+  ColorModePicker(): void {
+    Row() {
+      Text(this.colorMode === 0 ? '深色' : (this.colorMode === 1 ? '浅色' : '跟随'))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+        .layoutWeight(1)
+
+      Text('▼')
+        .fontSize(12)
+        .fontColor($r('app.color.text_primary'))
+        .margin({ left: 8 })
+    }
+    .width(112)
+    .height(38)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.closeOptionMenus()
+      this.showColorModeMenu = true
+    })
+    .bindPopup(this.showColorModeMenu, {
+      builder: this.ColorModeMenuContent,
+      placement: Placement.Bottom,
+      showInSubWindow: false,
+      onStateChange: (e: PopupStateChangeParam) => {
+        if (!e.isVisible) {
+          this.showColorModeMenu = false
+        }
+      }
+    })
+  }
+
+  @Builder
+  CompactModePicker(): void {
+    Row() {
+      Text(this.compactMode ? '紧凑' : '默认')
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+        .layoutWeight(1)
+
+      Text('▼')
+        .fontSize(12)
+        .fontColor($r('app.color.text_primary'))
+        .margin({ left: 8 })
+    }
+    .width(112)
+    .height(38)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.closeOptionMenus()
+      this.showCompactModeMenu = true
+    })
+    .bindPopup(this.showCompactModeMenu, {
+      builder: this.CompactModeMenuContent,
+      placement: Placement.Bottom,
+      showInSubWindow: false,
+      onStateChange: (e: PopupStateChangeParam) => {
+        if (!e.isVisible) {
+          this.showCompactModeMenu = false
+        }
+      }
+    })
+  }
+
+  @Builder
+  PlayerEngineMenuContent(): void {
+    this.OptionMenuContent([
+      { label: 'AVPlayer', value: 'avplayer', action: () => { this.setPlayerEngine('avplayer') } },
+      { label: 'mpv', value: 'mpv', action: () => { this.setPlayerEngine('mpv') } }
+    ], this.defaultPlayerEngine, () => {
+      this.showPlayerEngineMenu = false
+    })
+  }
+
+  @Builder
+  MpvHwdecMenuContent(): void {
+    this.OptionMenuContent([
+      { label: '打开', value: 'ohcodec', action: () => { this.setMpvHwdecMode('ohcodec') } },
+      { label: '自动', value: 'auto', action: () => { this.setMpvHwdecMode('auto') } },
+      { label: '关闭', value: 'no', action: () => { this.setMpvHwdecMode('no') } }
+    ], this.mpvHwdecMode, () => {
+      this.showMpvHwdecMenu = false
+    })
+  }
+
+  @Builder
+  ColorModeMenuContent(): void {
+    this.OptionMenuContent([
+      { label: '跟随', value: -1, action: () => { this.setColorMode(-1) } },
+      { label: '浅色', value: 1, action: () => { this.setColorMode(1) } },
+      { label: '深色', value: 0, action: () => { this.setColorMode(0) } }
+    ], this.colorMode, () => {
+      this.showColorModeMenu = false
+    })
+  }
+
+  @Builder
+  CompactModeMenuContent(): void {
+    this.OptionMenuContent([
+      { label: '默认', value: false, action: () => { this.compactMode = false } },
+      { label: '紧凑', value: true, action: () => { this.compactMode = true } }
+    ], this.compactMode, () => {
+      this.showCompactModeMenu = false
+    })
+  }
+
+  @Builder
+  OptionMenuContent(options: SettingOption[], selectedValue: string | number | boolean, closeAction: () => void): void {
+    Column() {
+      ForEach(options, (item: SettingOption, index?: number) => {
+        Text(item.label)
+          .fontSize(16)
+          .fontWeight(this.isOptionSelected(item.value, selectedValue) ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.isOptionSelected(item.value, selectedValue) ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
+          .width('100%')
+          .height(56)
+          .padding({ left: 22, right: 22 })
+          .textAlign(TextAlign.Start)
+          .borderRadius(14)
+          .backgroundColor(this.isOptionSelected(item.value, selectedValue) ? $r('app.color.episode_item_selected_bg') : Color.Transparent)
+          .onClick(() => {
+            item.action()
+            closeAction()
+          })
+      }, (item: SettingOption, index?: number) => 'setting_option_' + index)
+    }
+    .width(188)
+    .padding(8)
+    .borderRadius(20)
+    .backgroundColor($r('app.color.card_background'))
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+  }
+
+  private isOptionSelected(itemValue: string | number | boolean, selectedValue: string | number | boolean): boolean {
+    return itemValue === selectedValue
+  }
+
+  private closeOptionMenus(): void {
+    this.showPlayerEngineMenu = false
+    this.showMpvHwdecMenu = false
+    this.showColorModeMenu = false
+    this.showCompactModeMenu = false
   }
 
   private async loadSettings(): Promise<void> {
@@ -526,21 +713,48 @@ export struct SettingsPage {
 
       const prefs = PreferencesStore.getInstance()
       this.allowHttpRequests = await prefs.getBoolean('allow_http_requests', false)
-      this.defaultPlayerEngine = await prefs.getString('defaultPlayerEngine', 'avplayer')
-      this.mpvHwdecMode = await prefs.getString('mpvHwdecMode', 'ohcodec')
+      let savedPlayerEngine = await prefs.getString('defaultPlayerEngine', 'mpv')
+      let savedHwdecMode = await prefs.getString('mpvHwdecMode', 'auto')
+      if (!this.showAdvancedPlayerOptions) {
+        if (savedPlayerEngine !== 'mpv') {
+          savedPlayerEngine = 'mpv'
+          await prefs.setString('defaultPlayerEngine', savedPlayerEngine)
+        }
+        if (savedHwdecMode !== 'auto') {
+          savedHwdecMode = 'auto'
+          await prefs.setString('mpvHwdecMode', savedHwdecMode)
+        }
+      }
+      this.defaultPlayerEngine = savedPlayerEngine
+      this.mpvHwdecMode = savedHwdecMode
       this.mpvHlsAdFilter = await prefs.getBoolean('mpvHlsAdFilter', true)
       this.mpvSegAllowImg = await prefs.getBoolean('mpvSegAllowImg', true)
       this.snifferTimeout = await prefs.getNumber('snifferTimeoutMs', 15000) / 1000
-      this.colorMode = await prefs.getNumber('colorMode', ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET)
+      const savedColorMode = await prefs.getNumber('colorMode', ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET)
+      this.colorMode = this.normalizeColorMode(savedColorMode)
 
       const credStore = DandanCredentialStore.getInstance()
+      await credStore.init()
       this.isDanmakuCredentialConfigured = credStore.hasCredentials()
-      if (this.isDanmakuCredentialConfigured) {
-        this.dandanAppId = credStore.getAppId()
-        this.dandanAppSecret = credStore.getAppSecret()
-      }
+
+      RuleCatalogService.countUpdatableRules().then((count: number) => {
+        this.updatableCount = count
+      }).catch(() => {})
     } catch (err) {
       logger.error('Load settings failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private handleVersionTap(): void {
+    if (this.showAdvancedPlayerOptions) {
+      return
+    }
+    this.versionTapCount += 1
+    logger.info('Version info tap count: %{public}d', this.versionTapCount)
+    if (this.versionTapCount >= 10) {
+      this.showAdvancedPlayerOptions = true
+      this.versionTapCount = 0
+      logger.info('Advanced player settings unlocked from version info')
     }
   }
 
@@ -584,70 +798,6 @@ export struct SettingsPage {
     }
   }
 
-  private async importFromUrl(): Promise<void> {
-    if (this.importUrl.trim().length === 0) {
-      this.importMessage = '请输入URL'
-      return
-    }
-    this.isImporting = true
-    this.importMessage = '正在导入...'
-    try {
-      const count = await DefaultRuleSourceInitializer.importFromUrl(this.importUrl.trim())
-      this.importMessage = `成功导入 ${count} 个规则源`
-      await this.loadSettings()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `导入失败: ${msg}`
-      logger.error('Import failed: %{public}s', msg)
-    } finally {
-      this.isImporting = false
-    }
-  }
-
-  private async importKazumiRulesCatalog(): Promise<void> {
-    if (this.isImporting) {
-      return
-    }
-    this.isImporting = true
-    this.importMessage = 'Importing Predidit/KazumiRules...'
-    try {
-      const count = await DefaultRuleSourceInitializer.importFromKazumiRulesCatalog()
-      this.importMessage = `Imported ${count} rules from KazumiRules`
-      await this.loadSettings()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `Import failed: ${msg}`
-      logger.error('KazumiRules import failed: %{public}s', msg)
-    } finally {
-      this.isImporting = false
-    }
-  }
-
-  private async toggleRule(rule: RuleSource, enabled: boolean): Promise<void> {
-    try {
-      await this.ruleSourceStore.setEnabled(rule.id, enabled)
-      await this.loadSettings()
-    } catch (err) {
-      logger.error('Toggle rule failed: %{public}s', JSON.stringify(err))
-    }
-  }
-
-  private async restoreBundledRules(): Promise<void> {
-    this.isRestoring = true
-    try {
-      const context = getContext(this) as common.UIAbilityContext
-      const count = await RuleSourceSeeder.restoreBundledRules(context)
-      this.importMessage = `已恢复/更新 ${count} 条内置规则`
-      await this.loadSettings()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `恢复失败: ${msg}`
-      logger.error('Restore bundled rules failed: %{public}s', msg)
-    } finally {
-      this.isRestoring = false
-    }
-  }
-
   private async setColorMode(mode: number): Promise<void> {
     this.colorMode = mode
     try {
@@ -657,7 +807,7 @@ export struct SettingsPage {
       } else if (mode === 0) {
         context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
       } else {
-        context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET)
+        context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT)
       }
       const prefs = PreferencesStore.getInstance()
       await prefs.setNumber('colorMode', mode)
@@ -667,291 +817,11 @@ export struct SettingsPage {
     }
   }
 
-  private async exportRules(): Promise<void> {
-    this.isExporting = true
-    this.importMessage = '正在导出...'
-    try {
-      const rules = await this.ruleSourceStore.getAll()
-      if (rules.length === 0) {
-        this.importMessage = '没有可导出的规则'
-        return
-      }
-      const jsonArr: Object[] = []
-      for (let i = 0; i < rules.length; i++) {
-        jsonArr.push(rules[i].toJSON())
-      }
-      const jsonStr = JSON.stringify(jsonArr)
-      const context = getContext(this) as common.UIAbilityContext
-      const documentSaveOptions = new picker.DocumentSaveOptions()
-      documentSaveOptions.newFileNames = ['kazumi_rules.json']
-      const docViewPicker = new picker.DocumentViewPicker(context)
-      const uris: Array<string> = await docViewPicker.save(documentSaveOptions)
-      if (uris.length > 0) {
-        const file = fs.openSync(uris[0], fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY)
-        fs.writeSync(file.fd, jsonStr)
-        fs.closeSync(file)
-        this.importMessage = `已导出 ${rules.length} 条规则`
-      } else {
-        this.importMessage = '导出已取消'
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `导出失败: ${msg}`
-      logger.error('Export rules failed: %{public}s', msg)
-    } finally {
-      this.isExporting = false
+  private normalizeColorMode(mode: number): number {
+    if (mode === 0 || mode === 1 || mode === -1) {
+      return mode
     }
+    return -1
   }
 
-  private async importFromFile(): Promise<void> {
-    this.isFileImporting = true
-    this.importMessage = '请选择JSON文件...'
-    try {
-      const context = getContext(this) as common.UIAbilityContext
-      const docViewPicker = new picker.DocumentViewPicker(context)
-      const documentSelectOptions = new picker.DocumentSelectOptions()
-      documentSelectOptions.maxSelectNumber = 1
-      const uris: Array<string> = await docViewPicker.select(documentSelectOptions)
-      if (uris.length === 0) {
-        this.importMessage = '未选择文件'
-        return
-      }
-      const file = fs.openSync(uris[0], fs.OpenMode.READ_ONLY)
-      const stat = fs.statSync(uris[0])
-      const buf = new ArrayBuffer(stat.size)
-      fs.readSync(file.fd, buf)
-      fs.closeSync(file)
-      const arr = new Uint8Array(buf)
-      let jsonStr = ''
-      for (let i = 0; i < arr.length; i++) {
-        jsonStr += String.fromCharCode(arr[i])
-      }
-      const count = await DefaultRuleSourceInitializer.importFromJson(jsonStr)
-      this.importMessage = `从文件导入 ${count} 条规则`
-      await this.loadSettings()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `文件导入失败: ${msg}`
-      logger.error('File import failed: %{public}s', msg)
-    } finally {
-      this.isFileImporting = false
-    }
-  }
-
-  private async exportAllData(): Promise<void> {
-    this.isDataExporting = true
-    this.importMessage = '正在导出全部数据...'
-    try {
-      const bundle = await DataMigration.exportAll()
-      const jsonStr = JSON.stringify(bundle.toJSON())
-      const context = getContext(this) as common.UIAbilityContext
-      const documentSaveOptions = new picker.DocumentSaveOptions()
-      documentSaveOptions.newFileNames = ['kazumi_backup.json']
-      const docViewPicker = new picker.DocumentViewPicker(context)
-      const uris: Array<string> = await docViewPicker.save(documentSaveOptions)
-      if (uris.length > 0) {
-        const file = fs.openSync(uris[0], fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY)
-        fs.writeSync(file.fd, jsonStr)
-        fs.closeSync(file)
-        this.importMessage = `已导出全部数据 (${bundle.rules.length}规则, ${bundle.favorites.length}收藏, ${bundle.watchHistory.length}历史)`
-      } else {
-        this.importMessage = '导出已取消'
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `导出全部数据失败: ${msg}`
-      logger.error('Export all data failed: %{public}s', msg)
-    } finally {
-      this.isDataExporting = false
-    }
-  }
-
-  private async importAllData(): Promise<void> {
-    this.isDataImporting = true
-    this.importMessage = '请选择备份文件...'
-    try {
-      const context = getContext(this) as common.UIAbilityContext
-      const docViewPicker = new picker.DocumentViewPicker(context)
-      const documentSelectOptions = new picker.DocumentSelectOptions()
-      documentSelectOptions.maxSelectNumber = 1
-      const uris: Array<string> = await docViewPicker.select(documentSelectOptions)
-      if (uris.length === 0) {
-        this.importMessage = '未选择文件'
-        return
-      }
-      const file = fs.openSync(uris[0], fs.OpenMode.READ_ONLY)
-      const stat = fs.statSync(uris[0])
-      const buf = new ArrayBuffer(stat.size)
-      fs.readSync(file.fd, buf)
-      fs.closeSync(file)
-      const arr = new Uint8Array(buf)
-      let jsonStr = ''
-      for (let i = 0; i < arr.length; i++) {
-        jsonStr += String.fromCharCode(arr[i])
-      }
-      const parsed: Object = JSON.parse(jsonStr)
-      const bundle = AppDataBundle.fromJSON(parsed as Record<string, Object>)
-      await DataMigration.importAll(bundle)
-      this.importMessage = `已导入全部数据 (${bundle.rules.length}规则, ${bundle.favorites.length}收藏, ${bundle.watchHistory.length}历史)`
-      await this.loadSettings()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.importMessage = `导入全部数据失败: ${msg}`
-      logger.error('Import all data failed: %{public}s', msg)
-    } finally {
-      this.isDataImporting = false
-    }
-  }
-
-  @Builder
-  DanmakuSourceSection(): void {
-    Column() {
-      Row() {
-        Text('弹幕源设置')
-          .fontSize(16)
-          .fontWeight(FontWeight.Bold)
-          .layoutWeight(1)
-
-        Text(this.isDanmakuCredentialConfigured ? '已配置' : '未配置')
-          .fontSize(12)
-          .fontColor(this.isDanmakuCredentialConfigured ? '#4CAF50' : '#FF9800')
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 12, bottom: 4 })
-
-      Text('AppId')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .padding({ left: 16, top: 4, bottom: 2 })
-
-      TextInput({ placeholder: '输入Dandanplay AppId', text: this.dandanAppId })
-        .width('100%')
-        .height(40)
-        .padding({ left: 16, right: 16 })
-        .onChange((value: string) => {
-          this.dandanAppId = value
-        })
-        .onBlur(() => {
-          this.saveDanmakuCredentials()
-        })
-
-      Text('AppSecret')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .padding({ left: 16, top: 8, bottom: 2 })
-
-      TextInput({ placeholder: '输入Dandanplay AppSecret', text: this.dandanAppSecret })
-        .width('100%')
-        .height(40)
-        .type(InputType.Password)
-        .padding({ left: 16, right: 16 })
-        .onChange((value: string) => {
-          this.dandanAppSecret = value
-        })
-        .onBlur(() => {
-          this.saveDanmakuCredentials()
-        })
-
-      Row() {
-        Button(this.isTestingConnection ? '测试中...' : '测试连接')
-          .fontSize(14)
-          .height(36)
-          .backgroundColor($r('app.color.button_primary_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_on_primary'))
-          .borderRadius(18)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .shadow({ radius: 12, color: $r('app.color.shadow_button_primary'), offsetY: 4 })
-          .enabled(!this.isTestingConnection && this.dandanAppId.length > 0 && this.dandanAppSecret.length > 0)
-          .layoutWeight(1)
-          .margin({ right: 8 })
-          .onClick(() => {
-            this.testDanmakuConnection()
-          })
-
-        Button('清除凭据')
-          .fontSize(14)
-          .height(36)
-          .backgroundColor($r('app.color.button_accent_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_on_primary'))
-          .borderRadius(18)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
-          .layoutWeight(1)
-          .margin({ left: 8 })
-          .onClick(() => {
-            this.clearDanmakuCredentials()
-          })
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 8, bottom: 4 })
-
-      if (this.testConnectionMessage.length > 0) {
-        Text(this.testConnectionMessage)
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .padding({ left: 16, top: 4, bottom: 8 })
-      }
-    }
-    .width('100%')
-  }
-
-  private async saveDanmakuCredentials(): Promise<void> {
-
-    try {
-      const store = DandanCredentialStore.getInstance()
-      await store.setCredentials(this.dandanAppId, this.dandanAppSecret)
-      this.isDanmakuCredentialConfigured = store.hasCredentials()
-    } catch (_err) {
-      logger.error('保存弹幕凭据失败')
-    }
-  }
-
-  private async testDanmakuConnection(): Promise<void> {
-    this.isTestingConnection = true
-    this.testConnectionMessage = '正在测试连接...'
-    try {
-      await this.saveDanmakuCredentials()
-      const client = DandanApiClient.getInstance()
-      const queryParameters: Record<string, string> = {}
-      queryParameters['keyword'] = 'test'
-      const result = await client.get('/api/v2/search/anime', queryParameters)
-      if (result.isSuccessful) {
-        this.testConnectionMessage = '连接成功'
-      } else if (result.statusCode === 403) {
-        this.testConnectionMessage = '连接失败: HTTP 403 (鉴权失败)'
-      } else {
-        this.testConnectionMessage = `连接失败: HTTP ${result.statusCode}`
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.toLowerCase().indexOf('timeout') >= 0) {
-        this.testConnectionMessage = '连接失败: 请求超时'
-      } else {
-        this.testConnectionMessage = '连接失败: 网络错误'
-      }
-    } finally {
-      this.isTestingConnection = false
-    }
-  }
-
-  private async clearDanmakuCredentials(): Promise<void> {
-    try {
-      const store = DandanCredentialStore.getInstance()
-      await store.clearCredentials()
-      this.dandanAppId = ''
-      this.dandanAppSecret = ''
-      this.isDanmakuCredentialConfigured = false
-      this.testConnectionMessage = '凭据已清除'
-    } catch (_err) {
-      this.dandanAppId = ''
-      this.dandanAppSecret = ''
-      this.isDanmakuCredentialConfigured = false
-      this.testConnectionMessage = '清除可能不完整'
-    }
-  }
 }

@@ -1,5 +1,6 @@
 import { http } from '@kit.NetworkKit';
 import { AnimeItem } from '../../models/AnimeItem';
+import { SeasonRange } from '../../models/SeasonRange';
 import { BangumiConfig } from './BangumiConfig';
 import { Logger, extractErrorMsg } from '../../utils/Logger';
 
@@ -744,8 +745,15 @@ export class BangumiApi {
 
         const json = JSON.parse(bodyStr) as Record<string, Object>;
         const item = BangumiApi.parseAnimeItemFromApi(json);
-        logger.info('Subject %{public}d loaded from %{public}s: %{public}s', bangumiId, domain, item.name);
+        logger.info('Subject %{public}d loaded from %{public}s: %{public}s eps=%{public}d airDate=%{public}s',
+          bangumiId, domain, item.name, item.eps, item.airDate);
         request.destroy();
+        if (item.eps <= 0 || item.airDate.length === 0) {
+          const v0Item = await BangumiApi.fetchSubjectV0(bangumiId);
+          if (v0Item !== null) {
+            BangumiApi.mergeSubjectDetail(item, v0Item);
+          }
+        }
         return item;
       } catch (err) {
         const msg = extractErrorMsg(err as Object);
@@ -754,6 +762,16 @@ export class BangumiApi {
       }
     }
 
+    const fallback = await BangumiApi.fetchSubjectV0(bangumiId);
+    if (fallback !== null) {
+      return fallback;
+    }
+
+    logger.warn('All domains failed for subject %{public}d', bangumiId);
+    return null;
+  }
+
+  private static async fetchSubjectV0(bangumiId: number): Promise<AnimeItem | null> {
     const v0Path = `/v0/subjects/${bangumiId}`;
     for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
       const domain = BANGUMI_API_DOMAINS[d];
@@ -786,7 +804,8 @@ export class BangumiApi {
 
         const json = JSON.parse(bodyStr) as Record<string, Object>;
         const item = BangumiApi.parseAnimeItemFromApi(json);
-        logger.info('Subject %{public}d loaded from %{public}s: %{public}s', bangumiId, domain, item.name);
+        logger.info('Subject %{public}d loaded from %{public}s: %{public}s eps=%{public}d airDate=%{public}s',
+          bangumiId, domain, item.name, item.eps, item.airDate);
         request.destroy();
         return item;
       } catch (err) {
@@ -795,9 +814,160 @@ export class BangumiApi {
         request.destroy();
       }
     }
-
-    logger.warn('All domains failed for subject %{public}d', bangumiId);
     return null;
+  }
+
+  private static mergeSubjectDetail(target: AnimeItem, fallback: AnimeItem): void {
+    if (target.name.length === 0) target.name = fallback.name;
+    if (target.originalName.length === 0) target.originalName = fallback.originalName;
+    if (target.desc.length === 0) target.desc = fallback.desc;
+    if (target.airDate.length === 0) target.airDate = fallback.airDate;
+    if (target.airWeekday <= 0) target.airWeekday = fallback.airWeekday;
+    if (target.eps <= 0) target.eps = fallback.eps;
+    if (target.ratingScore <= 0) target.ratingScore = fallback.ratingScore;
+    if (target.rank <= 0) target.rank = fallback.rank;
+    if (target.votes <= 0) target.votes = fallback.votes;
+    if (target.votesCount.length === 0) target.votesCount = fallback.votesCount;
+    if (target.tags.length === 0) target.tags = fallback.tags;
+    if (target.aliases.length === 0) target.aliases = fallback.aliases;
+    if (target.cover.length === 0) target.cover = fallback.cover;
+    if (target.bangumiCover.length === 0) target.bangumiCover = fallback.bangumiCover;
+    if (target.coverLarge.length === 0) target.coverLarge = fallback.coverLarge;
+    if (target.coverCommon.length === 0) target.coverCommon = fallback.coverCommon;
+    if (target.coverMedium.length === 0) target.coverMedium = fallback.coverMedium;
+  }
+
+  static async fetchCalendarBySeason(start: string, end: string): Promise<AnimeItem[][]> {
+    const result: AnimeItem[][] = []
+    for (let i = 0; i < 7; i++) {
+      result.push([])
+    }
+
+    const url = `${BangumiConfig.KAZUMI_CALENDAR_URL}?start=${start}&end=${end}`
+    const request = http.createHttp()
+    try {
+      logger.info('Mirror calendar season: %{public}s to %{public}s', start, end)
+      const response = await request.request(url, {
+        method: http.RequestMethod.GET,
+        header: {
+          'Accept': 'application/json',
+          'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
+        },
+        readTimeout: MIRROR_CACHE_READ_TIMEOUT_MS,
+        connectTimeout: MIRROR_CACHE_CONNECT_TIMEOUT_MS,
+        expectDataType: http.HttpDataType.STRING
+      })
+
+      const statusCode = response.responseCode as number
+      if (statusCode < 200 || statusCode >= 300) {
+        logger.warn('fetchCalendarBySeason HTTP %{public}d', statusCode)
+        request.destroy()
+        return result
+      }
+
+      const bodyStr = response.result as string
+      if (bodyStr.length === 0) {
+        request.destroy()
+        return result
+      }
+
+      const json = JSON.parse(bodyStr) as Record<string, Object>
+      BangumiApi.fillCalendarFromJson(json, result)
+      const totalDays = result.filter((arr: AnimeItem[]) => arr.length > 0).length
+      if (totalDays === 0) {
+        request.destroy()
+        return result
+      }
+      const totalItems = result.reduce((sum: number, arr: AnimeItem[]) => sum + arr.length, 0)
+      logger.info('fetchCalendarBySeason loaded: %{public}d items across %{public}d days', totalItems, totalDays)
+      request.destroy()
+      return result
+    } catch (err) {
+      const msg = extractErrorMsg(err as Object)
+      logger.warn('fetchCalendarBySeason failed: %{public}s', msg)
+      request.destroy()
+      return result
+    }
+  }
+
+  static async searchByAirDateRange(start: string, end: string): Promise<AnimeItem[][]> {
+    const result: AnimeItem[][] = []
+    for (let i = 0; i < 7; i++) {
+      result.push([])
+    }
+
+    const bodyObj: Record<string, Object> = {}
+    bodyObj['keyword'] = ''
+    bodyObj['sort'] = 'rank'
+    const filterObj: Record<string, Object> = {}
+    filterObj['type'] = [2] as Object
+    filterObj['tag'] = ['日本'] as Object
+    filterObj['air_date'] = [`>=${start}`, `<${end}`] as Object
+    filterObj['rank'] = ['>0', '<=99999'] as Object
+    filterObj['nsfw'] = true as Object
+    bodyObj['filter'] = filterObj as Object
+    const body = JSON.stringify(bodyObj)
+    const path = '/v0/search/subjects?limit=50&offset=0'
+
+    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
+      const domain = BANGUMI_API_DOMAINS[d]
+      const searchUrl = domain + path
+      const request = http.createHttp()
+      try {
+        logger.info('searchByAirDateRange: %{public}s to %{public}s via %{public}s', start, end, domain)
+        const options: http.HttpRequestOptions = {
+          method: http.RequestMethod.POST,
+          header: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
+          },
+          readTimeout: API_SEARCH_READ_TIMEOUT_MS,
+          connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
+          expectDataType: http.HttpDataType.STRING,
+          extraData: body
+        }
+
+        const response = await request.request(searchUrl, options)
+        const statusCode = response.responseCode as number
+        if (statusCode < 200 || statusCode >= 300) {
+          request.destroy()
+          continue
+        }
+
+        const bodyStr = response.result as string
+        if (bodyStr.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        const json = JSON.parse(bodyStr) as Record<string, Object>
+        const dataList = json['data'] as Object[]
+        if (dataList === null || dataList === undefined || dataList.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        for (let i = 0; i < dataList.length; i++) {
+          const subject = dataList[i] as Record<string, Object>
+          const item = BangumiApi.parseAnimeItemFromApi(subject)
+          if (item.name.length > 0 && item.airWeekday >= 1 && item.airWeekday <= 7) {
+            result[item.airWeekday - 1].push(item)
+          }
+        }
+
+        const totalItems = result.reduce((sum: number, arr: AnimeItem[]) => sum + arr.length, 0)
+        logger.info('searchByAirDateRange returned %{public}d items from %{public}s', totalItems, domain)
+        request.destroy()
+        return result
+      } catch (err) {
+        const msg = extractErrorMsg(err as Object)
+        logger.warn('searchByAirDateRange from %{public}s error: %{public}s', domain, msg)
+        request.destroy()
+      }
+    }
+
+    return result
   }
 
   static async getCalendar(): Promise<AnimeItem[][]> {
@@ -976,7 +1146,10 @@ export class BangumiApi {
       }
     }
 
-    anime.eps = (item['eps'] as number) ?? 0;
+    anime.eps = BangumiApi.readNumber(item['eps']);
+    if (anime.eps <= 0) {
+      anime.eps = BangumiApi.readNumber(item['total_episodes']);
+    }
 
     const imagesObj = item['images'] as Record<string, Object>;
     if (imagesObj !== null && imagesObj !== undefined) {
@@ -1043,6 +1216,12 @@ export class BangumiApi {
       for (let i = 0; i < infoboxList.length; i++) {
         const info = infoboxList[i] as Record<string, Object>;
         const key = (info['key'] as string) ?? '';
+        const valueText = BangumiApi.readInfoboxValueText(info['value']);
+        if (anime.eps <= 0 && (key === '话数' || key === '集数')) {
+          anime.eps = BangumiApi.extractFirstNumber(valueText);
+        } else if (anime.airDate.length === 0 && (key === '放送开始' || key === '开始')) {
+          anime.airDate = BangumiApi.normalizeDateText(valueText);
+        }
         if (key === '别名' || key === '别名2') {
           const values = info['value'] as Object[];
           if (values !== null && values !== undefined) {
@@ -1064,12 +1243,371 @@ export class BangumiApi {
       anime.aliases = aliases;
     }
 
+    const rawInfo = (item['info'] as string) ?? '';
+    if (rawInfo.length > 0) {
+      BangumiApi.enrichAnimeItemFromRawInfo(anime, rawInfo);
+    }
+
     const id = (item['id'] as number) ?? -1;
     anime.bangumiId = id;
     anime.url = id >= 0 ? `bangumi:subject:${id}` : '';
     anime.sourceId = -1;
     anime.sourceName = 'Bangumi';
     return anime;
+  }
+
+  private static enrichAnimeItemFromRawInfo(anime: AnimeItem, rawInfo: string): void {
+    const lines = rawInfo.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      if (line.startsWith('|')) {
+        line = line.substring(1).trim();
+      }
+      const splitIndex = line.indexOf('=');
+      if (splitIndex <= 0) {
+        continue;
+      }
+
+      const key = line.substring(0, splitIndex).trim();
+      const value = line.substring(splitIndex + 1).trim();
+      if (value.length === 0 || value === '{') {
+        continue;
+      }
+
+      if (anime.eps <= 0 && (key === '话数' || key === '集数')) {
+        anime.eps = BangumiApi.extractFirstNumber(value);
+      } else if (anime.airDate.length === 0 && (key === '放送开始' || key === '开始')) {
+        anime.airDate = BangumiApi.normalizeDateText(value);
+      }
+
+      if (anime.eps > 0 && anime.airDate.length > 0) {
+        return;
+      }
+    }
+  }
+
+  private static readNumber(value: Object | undefined): number {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+    if (typeof value === 'number') {
+      return value as number;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value as string);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+  }
+
+  private static readInfoboxValueText(value: Object | undefined): string {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    if (typeof value === 'string') {
+      return value as string;
+    }
+    if (Array.isArray(value)) {
+      const arr = value as Object[];
+      const parts: string[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        const obj = arr[i] as Record<string, Object>;
+        const v = (obj['v'] as string) ?? '';
+        if (v.length > 0) {
+          parts.push(v);
+        }
+      }
+      return parts.join(' / ');
+    }
+    return '';
+  }
+
+  private static extractFirstNumber(text: string): number {
+    let digits = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charAt(i);
+      if (ch >= '0' && ch <= '9') {
+        digits += ch;
+      } else if (digits.length > 0) {
+        break;
+      }
+    }
+    if (digits.length === 0) {
+      return 0;
+    }
+    const parsed = Number(digits);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private static normalizeDateText(text: string): string {
+    if (text.length === 0) {
+      return '';
+    }
+    const normalized = text.replace('年', '-').replace('月', '-').replace('日', '');
+    const parts = normalized.split('-');
+    if (parts.length >= 3) {
+      const year = parts[0].trim();
+      const month = parts[1].trim().padStart(2, '0');
+      const day = parts[2].trim().padStart(2, '0');
+      if (year.length === 4 && month.length === 2 && day.length === 2) {
+        return `${year}-${month}-${day}`;
+      }
+    }
+    return text;
+  }
+
+  static async searchHighScoreSubjects(limit: number, offset: number): Promise<AnimeItem[]> {
+    const items: AnimeItem[] = []
+    const bodyObj: Record<string, Object> = {}
+    bodyObj['keyword'] = ''
+    bodyObj['sort'] = 'score'
+    const filterObj: Record<string, Object> = {}
+    filterObj['type'] = [2] as Object
+    filterObj['rating'] = ['>=7.5'] as Object
+    filterObj['rating_count'] = ['>=500'] as Object
+    filterObj['nsfw'] = false as Object
+    bodyObj['filter'] = filterObj as Object
+    const body = JSON.stringify(bodyObj)
+    const path = '/v0/search/subjects?limit=' + String(limit) + '&offset=' + String(offset)
+
+    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
+      const domain = BANGUMI_API_DOMAINS[d]
+      const searchUrl = domain + path
+      const request = http.createHttp()
+      try {
+        logger.info('searchHighScore: limit=%{public}d offset=%{public}d via %{public}s', limit, offset, domain)
+        const options: http.HttpRequestOptions = {
+          method: http.RequestMethod.POST,
+          header: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
+          },
+          readTimeout: API_SEARCH_READ_TIMEOUT_MS,
+          connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
+          expectDataType: http.HttpDataType.STRING,
+          extraData: body
+        }
+
+        const response = await request.request(searchUrl, options)
+        const statusCode = response.responseCode as number
+        if (statusCode < 200 || statusCode >= 300) {
+          request.destroy()
+          continue
+        }
+
+        const bodyStr = response.result as string
+        if (bodyStr.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        const json = JSON.parse(bodyStr) as Record<string, Object>
+        const dataList = json['data'] as Object[]
+        if (dataList === null || dataList === undefined || dataList.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        for (let i = 0; i < dataList.length; i++) {
+          const subject = dataList[i] as Record<string, Object>
+          const item = BangumiApi.parseAnimeItemFromApi(subject)
+          if (item.name.length > 0) {
+            items.push(item)
+          }
+        }
+
+        logger.info('searchHighScore returned %{public}d items from %{public}s', items.length, domain)
+        request.destroy()
+        return items
+      } catch (err) {
+        const msg = extractErrorMsg(err as Object)
+        logger.warn('searchHighScore from %{public}s error: %{public}s', domain, msg)
+        request.destroy()
+      }
+    }
+
+    return items
+  }
+
+  static async searchSeasonalSubjects(startDate: string, endDate: string, limit: number, offset: number): Promise<AnimeItem[]> {
+    const items: AnimeItem[] = []
+    const bodyObj: Record<string, Object> = {}
+    bodyObj['keyword'] = ''
+    bodyObj['sort'] = 'rank'
+    const filterObj: Record<string, Object> = {}
+    filterObj['type'] = [2] as Object
+    filterObj['tag'] = ['日本'] as Object
+    filterObj['air_date'] = ['>=' + startDate, '<' + endDate] as Object
+    filterObj['nsfw'] = false as Object
+    bodyObj['filter'] = filterObj as Object
+    const body = JSON.stringify(bodyObj)
+    const path = '/v0/search/subjects?limit=' + String(limit) + '&offset=' + String(offset)
+
+    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
+      const domain = BANGUMI_API_DOMAINS[d]
+      const searchUrl = domain + path
+      const request = http.createHttp()
+      try {
+        logger.info('searchSeasonal: %{public}s to %{public}s via %{public}s', startDate, endDate, domain)
+        const options: http.HttpRequestOptions = {
+          method: http.RequestMethod.POST,
+          header: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
+          },
+          readTimeout: API_SEARCH_READ_TIMEOUT_MS,
+          connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
+          expectDataType: http.HttpDataType.STRING,
+          extraData: body
+        }
+
+        const response = await request.request(searchUrl, options)
+        const statusCode = response.responseCode as number
+        if (statusCode < 200 || statusCode >= 300) {
+          request.destroy()
+          continue
+        }
+
+        const bodyStr = response.result as string
+        if (bodyStr.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        const json = JSON.parse(bodyStr) as Record<string, Object>
+        const dataList = json['data'] as Object[]
+        if (dataList === null || dataList === undefined || dataList.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        for (let i = 0; i < dataList.length; i++) {
+          const subject = dataList[i] as Record<string, Object>
+          const item = BangumiApi.parseAnimeItemFromApi(subject)
+          if (item.name.length > 0) {
+            items.push(item)
+          }
+        }
+
+        logger.info('searchSeasonal returned %{public}d items from %{public}s', items.length, domain)
+        request.destroy()
+        return items
+      } catch (err) {
+        const msg = extractErrorMsg(err as Object)
+        logger.warn('searchSeasonal from %{public}s error: %{public}s', domain, msg)
+        request.destroy()
+      }
+    }
+
+    return items
+  }
+
+  static async searchByTagWithSort(tag: string, sort: string, limit: number, offset: number): Promise<AnimeItem[]> {
+    if (sort === 'rank') {
+      const mirrorItems = await BangumiApi.fetchMirrorPopular(tag, offset)
+      if (mirrorItems.length > 0) {
+        return mirrorItems
+      }
+    }
+
+    const items: AnimeItem[] = []
+    const bodyObj: Record<string, Object> = {}
+    bodyObj['keyword'] = ''
+    bodyObj['sort'] = sort
+    const filterObj: Record<string, Object> = {}
+    filterObj['type'] = [2] as Object
+    if (tag.length > 0) {
+      filterObj['tag'] = [tag] as Object
+    }
+    filterObj['rank'] = ['>0', '<=99999'] as Object
+    filterObj['nsfw'] = false as Object
+    bodyObj['filter'] = filterObj as Object
+    const body = JSON.stringify(bodyObj)
+    const path = '/v0/search/subjects?limit=' + String(limit) + '&offset=' + String(offset)
+
+    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
+      const domain = BANGUMI_API_DOMAINS[d]
+      const searchUrl = domain + path
+      const request = http.createHttp()
+      try {
+        logger.info('searchByTagWithSort: tag=%{public}s sort=%{public}s via %{public}s', tag, sort, domain)
+        const options: http.HttpRequestOptions = {
+          method: http.RequestMethod.POST,
+          header: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
+          },
+          readTimeout: API_SEARCH_READ_TIMEOUT_MS,
+          connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
+          expectDataType: http.HttpDataType.STRING,
+          extraData: body
+        }
+
+        const response = await request.request(searchUrl, options)
+        const statusCode = response.responseCode as number
+        if (statusCode < 200 || statusCode >= 300) {
+          request.destroy()
+          continue
+        }
+
+        const bodyStr = response.result as string
+        if (bodyStr.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        const json = JSON.parse(bodyStr) as Record<string, Object>
+        const dataList = json['data'] as Object[]
+        if (dataList === null || dataList === undefined || dataList.length === 0) {
+          request.destroy()
+          continue
+        }
+
+        for (let i = 0; i < dataList.length; i++) {
+          const subject = dataList[i] as Record<string, Object>
+          const item = BangumiApi.parseAnimeItemFromApi(subject)
+          if (item.name.length > 0) {
+            items.push(item)
+          }
+        }
+
+        logger.info('searchByTagWithSort returned %{public}d items from %{public}s', items.length, domain)
+        request.destroy()
+        return items
+      } catch (err) {
+        const msg = extractErrorMsg(err as Object)
+        logger.warn('searchByTagWithSort from %{public}s error: %{public}s', domain, msg)
+        request.destroy()
+      }
+    }
+
+    return items
+  }
+
+  static getCurrentSeasonRange(): SeasonRange {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = now.getMonth()
+    const quarter = Math.floor(month / 3)
+    const startMonth = quarter * 3
+    const startDate = new Date(year, startMonth, 1)
+    const endDate = new Date(year, startMonth + 3, 1)
+    const range = new SeasonRange()
+    range.start = BangumiApi.formatDate(startDate)
+    range.end = BangumiApi.formatDate(endDate)
+    return range
+  }
+
+  static getCurrentSeasonLabel(): string {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = now.getMonth()
+    const quarter = Math.floor(month / 3)
+    const seasonNames: string[] = ['冬季', '春季', '夏季', '秋季']
+    return year.toString() + seasonNames[quarter] + '新番'
   }
 
   private static sleep(ms: number): Promise<void> {

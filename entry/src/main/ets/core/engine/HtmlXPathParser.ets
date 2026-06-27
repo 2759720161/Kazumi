@@ -25,4 +25,8 @@ export class HtmlXPathParser {
   selectNodes(xpath: string, context: HtmlDocument | HtmlNode): HtmlNode[] {
     return this.evaluator.select(xpath, context)
   }
+
+  queryXPath(xpath: string, context: HtmlDocument | HtmlNode): XPathResult {
+    return this.evaluator.evaluate(xpath, context)
+  }
 }

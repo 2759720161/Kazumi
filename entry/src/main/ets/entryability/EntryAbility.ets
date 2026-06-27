@@ -6,6 +6,7 @@ import { RdbManager } from '../store/RdbManager';
 import { PreferencesStore } from '../store/PreferencesStore';
 import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
+import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
 
 const logger = new Logger('EntryAbility');
 
@@ -15,8 +16,10 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate('topSafeHeight', 0);
     AppStorage.setOrCreate('bottomSafeHeight', 0);
+    AppStorage.setOrCreate('keyboardAvoidHeight', 0);
     AppStorage.setOrCreate('screenWidthVp', 0);
     AppStorage.setOrCreate('screenHeightVp', 0);
+    SettingsChangeSignal.initDanmakuVersion();
 
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
@@ -61,6 +64,8 @@ export default class EntryAbility extends UIAbility {
       if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
         AppStorage.setOrCreate('topSafeHeight', data.area.topRect.height / this.displayDensity);
         AppStorage.setOrCreate('bottomSafeHeight', data.area.bottomRect.height / this.displayDensity);
+      } else if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
+        AppStorage.setOrCreate('keyboardAvoidHeight', data.area.bottomRect.height / this.displayDensity);
       }
     });
 

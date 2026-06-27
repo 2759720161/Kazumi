@@ -30,7 +30,7 @@ export struct EpisodePanel {
                 Text(ep.name)
                   .fontSize(14)
                   .fontWeight(index === this.currentIndex ? FontWeight.Bold : FontWeight.Medium)
-                  .fontColor(index === this.currentIndex ? $r('app.color.text_title_green') : $r('app.color.text_on_primary'))
+                  .fontColor(index === this.currentIndex ? $r('app.color.text_title') : $r('app.color.text_on_primary'))
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   .textAlign(TextAlign.Center)
@@ -40,7 +40,7 @@ export struct EpisodePanel {
               .width('30.5%')
               .padding({ left: 8, right: 8 })
               .margin({ right: '2.8%', bottom: 10 })
-              .backgroundColor(index === this.currentIndex ? $r('app.color.accent_green_light') : $r('app.color.border_light'))
+              .backgroundColor(index === this.currentIndex ? $r('app.color.accent_blue_light') : $r('app.color.border_light'))
               .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
               .border({ width: 0.5, color: index === this.currentIndex ? $r('app.color.border_subtle') : $r('app.color.border_light') })
               .borderRadius(8)
@@ -57,6 +57,7 @@ export struct EpisodePanel {
           .padding({ left: 18, right: 18, bottom: 24 })
         }
         .layoutWeight(1)
+        .scrollBar(BarState.Off)
       }
       .width('100%')
       .height('52%')

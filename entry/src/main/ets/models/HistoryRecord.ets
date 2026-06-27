@@ -9,7 +9,10 @@ export class HistoryRecord {
   episodeUrl: string = '';
   positionMs: number = 0;
   durationMs: number = 0;
+  roadIndex: number = -1;
+  episodeIndex: number = -1;
   updatedAt: number = 0;
+  sourceName: string = '';
 
   static fromJSON(json: Record<string, Object>): HistoryRecord {
     const record = new HistoryRecord();
@@ -23,6 +26,8 @@ export class HistoryRecord {
     if (json['episodeUrl'] !== undefined) record.episodeUrl = json['episodeUrl'] as string;
     if (json['positionMs'] !== undefined) record.positionMs = json['positionMs'] as number;
     if (json['durationMs'] !== undefined) record.durationMs = json['durationMs'] as number;
+    if (json['roadIndex'] !== undefined) record.roadIndex = json['roadIndex'] as number;
+    if (json['episodeIndex'] !== undefined) record.episodeIndex = json['episodeIndex'] as number;
     if (json['updatedAt'] !== undefined) record.updatedAt = json['updatedAt'] as number;
     return record;
   }
@@ -39,14 +44,10 @@ export class HistoryRecord {
     result['episodeUrl'] = this.episodeUrl;
     result['positionMs'] = this.positionMs;
     result['durationMs'] = this.durationMs;
+    result['roadIndex'] = this.roadIndex;
+    result['episodeIndex'] = this.episodeIndex;
     result['updatedAt'] = this.updatedAt;
     return result;
   }
 
-  getProgressPercent(): number {
-    if (this.durationMs <= 0) {
-      return 0;
-    }
-    return Math.min(100, Math.floor(this.positionMs * 100 / this.durationMs));
-  }
 }

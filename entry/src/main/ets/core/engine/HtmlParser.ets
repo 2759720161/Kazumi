@@ -14,6 +14,57 @@ export class HtmlNode {
   childNodes: HtmlNode[] = []
   textContent: string = ''
   parentNode: HtmlNode | null = null
+
+  get isElement(): boolean {
+    return this.nodeType === NodeType.ELEMENT
+  }
+
+  get elementChildren(): HtmlNode[] {
+    const result: HtmlNode[] = []
+    for (let i = 0; i < this.childNodes.length; i++) {
+      if (this.childNodes[i].nodeType === NodeType.ELEMENT) {
+        result.push(this.childNodes[i])
+      }
+    }
+    return result
+  }
+
+  get text(): string {
+    if (this.nodeType === NodeType.TEXT) {
+      return this.textContent
+    }
+    let result = ''
+    for (let i = 0; i < this.childNodes.length; i++) {
+      result += this.childNodes[i].text
+    }
+    return result
+  }
+
+  get nextElementSibling(): HtmlNode | null {
+    if (!this.parentNode) {
+      return null
+    }
+    const siblings = this.parentNode.elementChildren
+    for (let i = 0; i < siblings.length; i++) {
+      if (siblings[i] === this && i + 1 < siblings.length) {
+        return siblings[i + 1]
+      }
+    }
+    return null
+  }
+
+  get previousElementSibling(): HtmlNode | null {
+    if (!this.parentNode) {
+      return null
+    }
+    const siblings = this.parentNode.elementChildren
+    for (let i = 0; i < siblings.length; i++) {
+      if (siblings[i] === this && i > 0) {
+        return siblings[i - 1]
+      }
+    }
+    return null
+  }
 }
 
 export class HtmlDocument {

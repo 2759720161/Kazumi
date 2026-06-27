@@ -34,7 +34,6 @@ export class PluginSearchService {
 
   async searchAll(keyword: string): Promise<void> {
     this.isCancelled = false
-    await this.ruleStore.deleteLegacyGugu3Sources()
     const enabledRules = await this.ruleStore.getEnabled()
     if (this.isCancelled) {
       return
@@ -57,6 +56,10 @@ export class PluginSearchService {
       promises.push(this.searchByPlugin(i, enabledRules[i], keyword))
     }
     await Promise.all(promises)
+    if (!this.isCancelled) {
+      this.sortCompletedStates()
+      this.notifyStateChange()
+    }
   }
 
   async searchByPlugin(stateIndex: number, rule: RuleSource, keyword: string): Promise<void> {
@@ -70,7 +73,7 @@ export class PluginSearchService {
         return
       }
 
-      if (this.antiCrawlHandler.isCaptchaResponse(html)) {
+      if (runtime.hasAntiCrawler && this.antiCrawlHandler.isCaptchaResponse(html)) {
         logger.warn('Captcha detected for rule %{public}s', rule.name)
         this.updateState(stateIndex, PluginSearchState.captcha(rule.id, rule.name, '需要验证码验证'))
         return
@@ -103,6 +106,22 @@ export class PluginSearchService {
       logger.error('Search failed for rule %{public}s: %{public}s', rule.name, msg)
       this.updateState(stateIndex, PluginSearchState.error(rule.id, rule.name, msg))
     }
+  }
+
+  async querySource(pluginId: number, keyword: string): Promise<void> {
+    this.isCancelled = false
+    const stateIndex = this.pluginStates.findIndex((s: PluginSearchState) => s.pluginId === pluginId)
+    if (stateIndex === -1) {
+      return
+    }
+    const state = this.pluginStates[stateIndex]
+    const rule = await this.ruleStore.getById(pluginId)
+    if (rule === null) {
+      this.updateState(stateIndex, PluginSearchState.error(pluginId, state.pluginName, '规则源不存在'))
+      return
+    }
+    this.updateState(stateIndex, PluginSearchState.pending(pluginId, state.pluginName))
+    await this.searchByPlugin(stateIndex, rule, keyword)
   }
 
   async retryPlugin(stateIndex: number, keyword: string): Promise<void> {
@@ -199,5 +218,26 @@ export class PluginSearchService {
     if (this.onStateChange) {
       this.onStateChange(this.pluginStates.slice())
     }
+  }
+
+  private sortCompletedStates(): void {
+    const originalStates = this.pluginStates.slice()
+    this.pluginStates.sort((a: PluginSearchState, b: PluginSearchState): number => {
+      const priorityDiff = this.getCompletedStatePriority(a) - this.getCompletedStatePriority(b)
+      if (priorityDiff !== 0) {
+        return priorityDiff
+      }
+      return originalStates.indexOf(a) - originalStates.indexOf(b)
+    })
+  }
+
+  private getCompletedStatePriority(state: PluginSearchState): number {
+    if (state.searchResults.length > 0) {
+      return 0
+    }
+    if (state.status === 'captcha') {
+      return 1
+    }
+    return 2
   }
 }

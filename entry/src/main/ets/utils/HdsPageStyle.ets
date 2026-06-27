@@ -10,6 +10,7 @@ import { LengthMetrics } from '@kit.ArkUI'
 export const DEFAULT_TOP_SAFE_HEIGHT: number = 36
 export const MINI_TITLE_BAR_CONTENT_HEIGHT: number = 72
 export const HDS_FLOATING_TAB_CONTENT_SPACER: number = 96
+export const TIMELINE_WEEKDAY_BAR_HEIGHT: number = 56
 
 export function getEffectiveTopSafeHeight(topSafeHeight: number): number {
   return topSafeHeight > 0 ? topSafeHeight : DEFAULT_TOP_SAFE_HEIGHT
@@ -110,4 +111,15 @@ export function buildTitleBarOptions(title: string): HdsNavigationTitleBarOption
     enableComponentSafeArea: false,
     avoidLayoutSafeArea: true
   }
+}
+
+export function buildTimelineTitleBarStyle(): TitleBarStyleOptions {
+  const base: TitleBarStyleOptions = buildImmersiveTitleBarStyle()
+  if (base.originalStyle?.backgroundStyle) {
+    base.originalStyle.backgroundStyle.maskExtraHeight = TIMELINE_WEEKDAY_BAR_HEIGHT
+  }
+  if (base.scrollEffectStyle?.backgroundStyle) {
+    base.scrollEffectStyle.backgroundStyle.maskExtraHeight = TIMELINE_WEEKDAY_BAR_HEIGHT
+  }
+  return base
 }

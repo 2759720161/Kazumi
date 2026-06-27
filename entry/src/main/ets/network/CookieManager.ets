@@ -1,9 +1,11 @@
+import { webview } from '@kit.ArkWeb';
 import { Logger } from '../utils/Logger';
 
 const logger = new Logger('CookieManager');
 
 export class CookieManager {
   private cookies: Map<string, Map<string, string>> = new Map();
+  private scopedCookies: Map<string, Map<string, Map<string, string>>> = new Map();
   private static instance: CookieManager | null = null;
 
   private constructor() {}
@@ -15,8 +17,22 @@ export class CookieManager {
     return CookieManager.instance;
   }
 
-  getCookiesForUrl(url: string): Map<string, string> {
+  private scopeKey(ruleSourceId: number): string {
+    return ruleSourceId >= 0 ? 'r' + String(ruleSourceId) : ''
+  }
+
+  getCookiesForUrl(url: string, ruleSourceId: number = -1): Map<string, string> {
     const domain = this.extractDomain(url);
+    const sk = this.scopeKey(ruleSourceId)
+    if (sk.length > 0) {
+      const scopeMap = this.scopedCookies.get(sk)
+      if (scopeMap !== undefined) {
+        const stored = scopeMap.get(domain)
+        if (stored !== undefined) {
+          return stored
+        }
+      }
+    }
     const stored = this.cookies.get(domain);
     if (stored !== undefined) {
       return stored;
@@ -24,8 +40,9 @@ export class CookieManager {
     return new Map<string, string>();
   }
 
-  getCookieHeaderForUrl(url: string): string {
-    const cookieMap = this.getCookiesForUrl(url);
+  getCookieHeaderForUrl(url: string, ruleSourceId: number = -1): string {
+    this.syncFromWebView(url);
+    const cookieMap = this.getCookiesForUrl(url, ruleSourceId);
     if (cookieMap.size === 0) {
       return '';
     }
@@ -36,16 +53,30 @@ export class CookieManager {
     return parts.join('; ');
   }
 
-  extractCookiesFromSetCookieHeader(url: string, setCookieValue: string): void {
+  extractCookiesFromSetCookieHeader(url: string, setCookieValue: string, ruleSourceId: number = -1): void {
     if (setCookieValue.length === 0) {
       return;
     }
 
     const domain = this.extractDomain(url);
-    let domainCookies = this.cookies.get(domain);
+    const sk = this.scopeKey(ruleSourceId)
+
+    let targetMap: Map<string, Map<string, string>>
+    if (sk.length > 0) {
+      let scopeMap = this.scopedCookies.get(sk)
+      if (scopeMap === undefined) {
+        scopeMap = new Map<string, Map<string, string>>()
+        this.scopedCookies.set(sk, scopeMap)
+      }
+      targetMap = scopeMap
+    } else {
+      targetMap = this.cookies
+    }
+
+    let domainCookies = targetMap.get(domain);
     if (domainCookies === undefined) {
       domainCookies = new Map<string, string>();
-      this.cookies.set(domain, domainCookies);
+      targetMap.set(domain, domainCookies);
     }
 
     const parts = setCookieValue.split(';');
@@ -56,12 +87,12 @@ export class CookieManager {
         const name = nameValue.substring(0, eqIdx).trim();
         const value = nameValue.substring(eqIdx + 1).trim();
         domainCookies.set(name, value);
-        logger.debug('Cookie stored for %{public}s: %{public}s', domain, name);
+        logger.debug('Cookie stored for %{public}s (scope=%{public}s): %{public}s', domain, sk.length > 0 ? sk : 'global', name);
       }
     }
   }
 
-  extractCookiesFromCookieHeader(url: string, cookieValue: string): void {
+  extractCookiesFromCookieHeader(url: string, cookieValue: string, ruleSourceId: number = -1): void {
     if (cookieValue.length === 0) {
       return;
     }
@@ -75,18 +106,41 @@ export class CookieManager {
     for (let i = 0; i < parts.length; i++) {
       const item = parts[i].trim();
       if (item.length > 0) {
-        this.extractCookiesFromSetCookieHeader(url, item);
+        this.extractCookiesFromSetCookieHeader(url, item, ruleSourceId);
       }
     }
   }
 
-  clearCookies(url: string): void {
+  clearCookies(url: string, ruleSourceId: number = -1): void {
     const domain = this.extractDomain(url);
-    this.cookies.delete(domain);
+    const sk = this.scopeKey(ruleSourceId)
+    if (sk.length > 0) {
+      const scopeMap = this.scopedCookies.get(sk)
+      if (scopeMap !== undefined) {
+        scopeMap.delete(domain)
+      }
+    } else {
+      this.cookies.delete(domain);
+    }
   }
 
   clearAll(): void {
     this.cookies.clear();
+    this.scopedCookies.clear();
+  }
+
+  syncFromWebView(url: string): void {
+    try {
+      const cookieValue = webview.WebCookieManager.fetchCookieSync(url, false);
+      if (cookieValue.length > 0) {
+        this.extractCookiesFromCookieHeader(url, cookieValue);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.indexOf('17100002') === -1) {
+        logger.debug('WebView cookie sync skipped for %{public}s: %{public}s', this.extractDomain(url), message);
+      }
+    }
   }
 
   private extractDomain(url: string): string {

@@ -12,6 +12,7 @@ export class AppConstants {
   static readonly MAX_CONCURRENT_REQUESTS: number = 10
   static readonly MAX_RETRY_COUNT: number = 3
   static readonly RETRY_BASE_DELAY_MS: number = 1000
+  static readonly SUPPORTED_API_LEVEL: number = 7
 
   static readonly SEARCH_KEYWORD_PLACEHOLDER: string = '@keyword'
   static readonly M3U8_HEADER: string = '#EXTM3U'

@@ -1,12 +1,13 @@
 export class RdbConstants {
   static readonly DB_NAME: string = 'kazumi_main.db'
-  static readonly DB_VERSION: number = 2
+  static readonly DB_VERSION: number = 6
   static readonly DB_SECURITY_LEVEL: number = 1
 
   static readonly TABLE_RULE_SOURCE: string = 'rule_source'
   static readonly TABLE_FAVORITE: string = 'favorite'
   static readonly TABLE_WATCH_HISTORY: string = 'watch_history'
   static readonly TABLE_SEARCH_HISTORY: string = 'search_history'
+  static readonly TABLE_COLLECT_CHANGE: string = 'collect_change'
 
   static readonly COL_ID: string = 'id'
   static readonly COL_NAME: string = 'name'
@@ -33,6 +34,7 @@ export class RdbConstants {
   static readonly COL_RAW_JSON: string = 'raw_json'
   static readonly COL_CREATED_AT: string = 'created_at'
   static readonly COL_UPDATED_AT: string = 'updated_at'
+  static readonly COL_SORT_ORDER: string = 'sort_order'
 
   static readonly COL_ANIME_ID: string = 'anime_id'
   static readonly COL_ANIME_NAME: string = 'anime_name'
@@ -46,4 +48,11 @@ export class RdbConstants {
   static readonly COL_DURATION_MS: string = 'duration_ms'
   static readonly COL_KEYWORD: string = 'keyword'
   static readonly COL_TIMESTAMP: string = 'timestamp'
+  static readonly COL_COLLECT_TYPE: string = 'collect_type'
+  static readonly COL_BANGUMI_ID: string = 'bangumi_id'
+  static readonly COL_BANGUMI_COVER: string = 'bangumi_cover'
+  static readonly COL_COVER_FALLBACK: string = 'cover_fallback'
+  static readonly COL_ROAD_INDEX: string = 'road_index'
+  static readonly COL_EPISODE_INDEX: string = 'episode_index'
+  static readonly COL_ACTION: string = 'action'
 }

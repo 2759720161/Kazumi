@@ -74,6 +74,7 @@ export class RuleSource {
   referer: string = '';
   antiCrawlerConfig: AntiCrawlerConfig = new AntiCrawlerConfig();
   enabled: boolean = true;
+  sortOrder: number = 0;
   createdAt: number = 0;
   updatedAt: number = 0;
 

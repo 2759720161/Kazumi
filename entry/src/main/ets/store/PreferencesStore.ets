@@ -1,5 +1,6 @@
 import { preferences } from '@kit.ArkData';
 import { Logger } from '../utils/Logger';
+import { SettingsChangeSignal } from './SettingsChangeSignal';
 
 const logger = new Logger('PreferencesStore');
 
@@ -43,6 +44,7 @@ export class PreferencesStore {
     try {
       await this.getPrefs().put(key, value);
       await this.getPrefs().flush();
+      this.notifySettingChanged(key);
     } catch (err) {
       logger.error('setString failed for %{public}s: %{public}s', key, JSON.stringify(err));
     }
@@ -61,6 +63,7 @@ export class PreferencesStore {
     try {
       await this.getPrefs().put(key, value);
       await this.getPrefs().flush();
+      this.notifySettingChanged(key);
     } catch (err) {
       logger.error('setNumber failed for %{public}s: %{public}s', key, JSON.stringify(err));
     }
@@ -79,6 +82,7 @@ export class PreferencesStore {
     try {
       await this.getPrefs().put(key, value);
       await this.getPrefs().flush();
+      this.notifySettingChanged(key);
     } catch (err) {
       logger.error('setBoolean failed for %{public}s: %{public}s', key, JSON.stringify(err));
     }
@@ -97,6 +101,7 @@ export class PreferencesStore {
     try {
       await this.getPrefs().delete(key);
       await this.getPrefs().flush();
+      this.notifySettingChanged(key);
     } catch (err) {
       logger.error('delete failed for %{public}s: %{public}s', key, JSON.stringify(err));
     }
@@ -106,8 +111,15 @@ export class PreferencesStore {
     try {
       await this.getPrefs().clear();
       await this.getPrefs().flush();
+      SettingsChangeSignal.notifyDanmakuChanged();
     } catch (err) {
       logger.error('clear failed: %{public}s', JSON.stringify(err));
+    }
+  }
+
+  private notifySettingChanged(key: string): void {
+    if (SettingsChangeSignal.isDanmakuPreferenceKey(key)) {
+      SettingsChangeSignal.notifyDanmakuChanged();
     }
   }
 }

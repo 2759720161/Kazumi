@@ -1,5 +1,5 @@
 export class UserSettings {
-  defaultPlayerEngine: string = 'avplayer';
+  defaultPlayerEngine: string = 'mpv';
   allowHttpRequests: boolean = false;
   snifferTimeoutMs: number = 15000;
   defaultSpeed: number = 1.0;

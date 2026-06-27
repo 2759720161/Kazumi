@@ -193,13 +193,13 @@ export class DanmakuEpisodeResolver {
       }
 
       if (bestId > 0 && bestSimilarity >= SIMILARITY_THRESHOLD) {
-        logger.info('最佳匹配: title=%{public}s, animeId=%{public}d, similarity=%{public}f',
-          bestTitle, bestId, bestSimilarity)
+        logger.info('最佳匹配: title=%{public}s, animeId=%{public}d, similarity=%{public}s',
+          bestTitle, bestId, bestSimilarity.toFixed(3))
         return bestId
       }
       if (bestId > 0) {
-        logger.warn('相似度过低: title=%{public}s, animeId=%{public}d, similarity=%{public}f < %{public}f',
-          bestTitle, bestId, bestSimilarity, SIMILARITY_THRESHOLD)
+        logger.warn('相似度过低: title=%{public}s, animeId=%{public}d, similarity=%{public}s < %{public}s',
+          bestTitle, bestId, bestSimilarity.toFixed(3), SIMILARITY_THRESHOLD.toFixed(3))
       }
       return 0
     } catch (parseErr) {

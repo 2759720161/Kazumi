@@ -7,61 +7,74 @@ export struct SniffErrorOverlay {
   onBack?: () => void
 
   build() {
-    Column() {
-      Text(this.getDisplayTitle())
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_on_primary'))
-        .margin({ bottom: 8 })
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          direction: GradientDirection.Bottom,
+          colors: [['#FF050505', 0.0], ['#FF11151B', 0.58], ['#FF050505', 1.0]]
+        })
 
-      Text(this.getDisplayMessage())
-        .fontSize(14)
-        .fontColor($r('app.color.text_overlay_sub'))
-        .textAlign(TextAlign.Center)
-        .maxLines(3)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('80%')
-        .margin({ bottom: 32 })
-
-      Row() {
-        Button('重试嗅探')
-          .onClick(() => {
-            if (this.onRetry) {
-              this.onRetry()
-            }
-          })
-          .width(120)
-          .height(44)
-          .backgroundColor($r('app.color.button_accent_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      Column() {
+        Text(this.getDisplayTitle())
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_on_primary'))
-          .borderRadius(22)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .shadow({ radius: 14, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
-          .margin({ right: 16 })
+          .margin({ bottom: 8 })
 
-        Button('返回详情')
-          .onClick(() => {
-            if (this.onBack) {
-              this.onBack()
-            }
-          })
-          .width(120)
-          .height(44)
-          .backgroundColor($r('app.color.surface_button_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_on_primary'))
-          .borderRadius(22)
-          .border({ width: 0.5, color: $r('app.color.border_light') })
-          .shadow({ radius: 14, color: $r('app.color.shadow_surface'), offsetY: 4 })
+        Text(this.getDisplayMessage())
+          .fontSize(13)
+          .fontColor('#BFFFFFFF')
+          .textAlign(TextAlign.Center)
+          .maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .margin({ bottom: 22 })
+
+        Row() {
+          Button('重试')
+            .onClick(() => {
+              if (this.onRetry) {
+                this.onRetry()
+              }
+            })
+            .width(112)
+            .height(42)
+            .backgroundColor($r('app.color.button_accent_bg'))
+            .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+            .fontColor($r('app.color.text_on_primary'))
+            .borderRadius(21)
+            .border({ width: 0.5, color: $r('app.color.border_specular') })
+            .shadow({ radius: 14, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
+            .margin({ right: 12 })
+
+          Button('返回')
+            .onClick(() => {
+              if (this.onBack) {
+                this.onBack()
+              }
+            })
+            .width(112)
+            .height(42)
+            .backgroundColor('#22FFFFFF')
+            .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+            .fontColor($r('app.color.text_on_primary'))
+            .borderRadius(21)
+            .border({ width: 0.5, color: '#33FFFFFF' })
+        }
+        .justifyContent(FlexAlign.Center)
       }
-      .justifyContent(FlexAlign.Center)
+      .width('78%')
+      .padding({ left: 26, right: 26, top: 26, bottom: 24 })
+      .borderRadius(24)
+      .backgroundColor('#66000000')
+      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .border({ width: 0.5, color: '#33FFFFFF' })
+      .shadow({ radius: 28, color: '#99000000', offsetY: 10 })
     }
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.tab_bar_background'))
   }
 
   private getDisplayTitle(): string {

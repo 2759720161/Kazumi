@@ -5,11 +5,14 @@ import { RequestConfig, RetryPolicy } from '../network/RequestConfig'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('DefaultRuleSourceInitializer')
-const KAZUMI_RULES_RAW_BASE = 'https://raw.githubusercontent.com/Predidit/KazumiRules/main/'
-const KAZUMI_RULES_INDEX_URL = KAZUMI_RULES_RAW_BASE + 'index.json'
-const GITHUB_MIRROR_PREFIX = 'https://ghfast.top/'
+const GITHUB_MIRROR_PREFIXES: string[] = [
+  'https://ghfast.top/'
+]
 
 export class DefaultRuleSourceInitializer {
+  /**
+   * @deprecated Legacy method — not used in current startup path. Use RuleCatalogService instead.
+   */
   static async initializeIfNeeded(): Promise<boolean> {
     const store = new RuleSourceStore()
     const count = await store.count()
@@ -34,6 +37,9 @@ export class DefaultRuleSourceInitializer {
     return true
   }
 
+  /**
+   * @deprecated Legacy method — hardcoded rules are dead code. Use RuleCatalogService or BundledRuleSourceLoader instead.
+   */
   static getDefaultRules(): RuleSource[] {
     const rules: RuleSource[] = []
 
@@ -118,10 +124,6 @@ export class DefaultRuleSourceInitializer {
     return await DefaultRuleSourceInitializer.importFromJson(body)
   }
 
-  static async importFromKazumiRulesCatalog(): Promise<number> {
-    return await DefaultRuleSourceInitializer.importFromCatalogUrl(KAZUMI_RULES_INDEX_URL)
-  }
-
   static async importFromCatalogUrl(indexUrl: string): Promise<number> {
     const indexBody = await DefaultRuleSourceInitializer.fetchTextWithGithubMirror(indexUrl)
     const parsed: Object = JSON.parse(indexBody)
@@ -150,7 +152,7 @@ export class DefaultRuleSourceInitializer {
       }
     }
 
-    logger.info('KazumiRules catalog import finished: imported=%{public}d failed=%{public}d',
+    logger.info('Rule catalog import finished: imported=%{public}d failed=%{public}d',
       imported, failed)
     if (imported === 0 && failed > 0) {
       throw new Error(`Rule catalog import failed: ${failed} rules failed`)
@@ -158,16 +160,16 @@ export class DefaultRuleSourceInitializer {
     return imported
   }
 
-  private static buildCatalogRuleUrl(indexUrl: string, name: string): string {
+  static buildCatalogRuleUrl(indexUrl: string, name: string): string {
     const normalized = DefaultRuleSourceInitializer.normalizeGithubRawUrl(indexUrl)
     const marker = '/index.json'
     if (normalized.endsWith(marker)) {
       return normalized.substring(0, normalized.length - marker.length + 1) + encodeURIComponent(name) + '.json'
     }
-    return KAZUMI_RULES_RAW_BASE + encodeURIComponent(name) + '.json'
+    throw new Error('Rule catalog URL must point to index.json')
   }
 
-  private static async fetchTextWithGithubMirror(url: string): Promise<string> {
+  static async fetchTextWithGithubMirror(url: string): Promise<string> {
     const urls = DefaultRuleSourceInitializer.buildGithubMirrorCandidates(url)
     let lastError = ''
     for (let i = 0; i < urls.length; i++) {
@@ -181,8 +183,10 @@ export class DefaultRuleSourceInitializer {
       config.retryPolicy = new RetryPolicy(1, 800)
       const response = await client.request(config)
       if (response.isSuccessful && response.body.length > 0) {
-        if (i > 0) {
+        if (DefaultRuleSourceInitializer.isGithubMirrorUrl(candidate)) {
           logger.info('Fetched via GitHub mirror: %{public}s', candidate.substring(0, 80))
+        } else if (i > 0) {
+          logger.info('Fetched via direct GitHub: %{public}s', candidate.substring(0, 80))
         }
         return response.body
       }
@@ -195,10 +199,16 @@ export class DefaultRuleSourceInitializer {
 
   private static buildGithubMirrorCandidates(url: string): string[] {
     const normalized = DefaultRuleSourceInitializer.normalizeGithubRawUrl(url)
-    const urls: string[] = [normalized]
-    if (DefaultRuleSourceInitializer.isGithubUrl(normalized) && !normalized.startsWith(GITHUB_MIRROR_PREFIX)) {
-      urls.push(GITHUB_MIRROR_PREFIX + normalized)
+    if (!DefaultRuleSourceInitializer.isGithubUrl(normalized)) {
+      return [normalized]
     }
+
+    const urls: string[] = []
+    for (let i = 0; i < GITHUB_MIRROR_PREFIXES.length; i++) {
+      const prefix = GITHUB_MIRROR_PREFIXES[i]
+      urls.push(prefix + normalized)
+    }
+    urls.push(normalized)
     return urls
   }
 
@@ -222,5 +232,14 @@ export class DefaultRuleSourceInitializer {
   private static isGithubUrl(url: string): boolean {
     return url.startsWith('https://raw.githubusercontent.com/') ||
       url.startsWith('https://github.com/')
+  }
+
+  private static isGithubMirrorUrl(url: string): boolean {
+    for (let i = 0; i < GITHUB_MIRROR_PREFIXES.length; i++) {
+      if (url.startsWith(GITHUB_MIRROR_PREFIXES[i])) {
+        return true
+      }
+    }
+    return false
   }
 }

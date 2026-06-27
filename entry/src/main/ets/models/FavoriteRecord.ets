@@ -1,3 +1,9 @@
+/**
+ * @deprecated 已被 CollectedBangumi + CollectController 体系替代。
+ * 新代码禁止使用 FavoriteRecord，应使用 CollectedBangumi 和 CollectController.addCollect()。
+ * 保留此类仅为兼容旧数据读取，不得在新功能中引用。
+ */
+
 export class FavoriteRecord {
   id: number = -1;
   animeId: string = '';

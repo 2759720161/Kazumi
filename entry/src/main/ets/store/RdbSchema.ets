@@ -27,7 +27,8 @@ export class RdbSchema {
       `${RdbConstants.COL_ENABLED} INTEGER NOT NULL DEFAULT 1, ` +
       `${RdbConstants.COL_RAW_JSON} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0, ` +
-      `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_SORT_ORDER} INTEGER NOT NULL DEFAULT 0` +
       `)`;
   }
 
@@ -41,6 +42,10 @@ export class RdbSchema {
       `${RdbConstants.COL_ANIME_URL} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_NAME} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_SOURCE_ID} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_COLLECT_TYPE} INTEGER NOT NULL DEFAULT 1, ` +
+      `${RdbConstants.COL_BANGUMI_ID} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_BANGUMI_COVER} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_COVER_FALLBACK} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0` +
       `)`;
   }
@@ -57,6 +62,8 @@ export class RdbSchema {
       `${RdbConstants.COL_EPISODE_URL} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_ROAD_INDEX} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_EPISODE_INDEX} INTEGER NOT NULL DEFAULT -1, ` +
       `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0` +
       `)`;
   }
@@ -69,13 +76,26 @@ export class RdbSchema {
       `)`;
   }
 
+  static getCreateCollectChangeTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_COLLECT_CHANGE} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY, ` +
+      `${RdbConstants.COL_BANGUMI_ID} INTEGER NOT NULL, ` +
+      `${RdbConstants.COL_ACTION} INTEGER NOT NULL, ` +
+      `${RdbConstants.COL_TYPE} INTEGER NOT NULL, ` +
+      `${RdbConstants.COL_TIMESTAMP} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
   static getCreateIndexes(): string[] {
     return [
       `CREATE INDEX IF NOT EXISTS idx_rule_source_name ON ${RdbConstants.TABLE_RULE_SOURCE}(${RdbConstants.COL_NAME})`,
       `CREATE INDEX IF NOT EXISTS idx_rule_source_enabled ON ${RdbConstants.TABLE_RULE_SOURCE}(${RdbConstants.COL_ENABLED})`,
       `CREATE INDEX IF NOT EXISTS idx_favorite_anime_id ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_ANIME_ID})`,
+      `CREATE INDEX IF NOT EXISTS idx_favorite_collect_type ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_COLLECT_TYPE})`,
+      `CREATE INDEX IF NOT EXISTS idx_favorite_bangumi_id ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_BANGUMI_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_watch_history_anime_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_ANIME_ID})`,
-      `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`
+      `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`,
+      `CREATE INDEX IF NOT EXISTS idx_collect_change_bangumi_id ON ${RdbConstants.TABLE_COLLECT_CHANGE}(${RdbConstants.COL_BANGUMI_ID})`
     ];
   }
 
@@ -84,7 +104,8 @@ export class RdbSchema {
       RdbSchema.getCreateRuleSourceTable(),
       RdbSchema.getCreateFavoriteTable(),
       RdbSchema.getCreateWatchHistoryTable(),
-      RdbSchema.getCreateSearchHistoryTable()
+      RdbSchema.getCreateSearchHistoryTable(),
+      RdbSchema.getCreateCollectChangeTable()
     ];
     const indexes = RdbSchema.getCreateIndexes();
     for (let i = 0; i < indexes.length; i++) {

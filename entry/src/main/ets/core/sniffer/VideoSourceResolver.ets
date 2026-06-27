@@ -4,8 +4,9 @@ import { SnifferResult } from './SnifferResult'
 import { VideoSourceRequest } from './VideoSourceRequest'
 import { VideoSourceResult } from './VideoSourceResult'
 import { PlaybackOptions } from '../player/IPlayerEngine'
-import { RuleSource, AntiCrawlerConfig } from '../../models/RuleSource'
+import { RuleSource } from '../../models/RuleSource'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
+import { HttpClient } from '../../network/HttpClient'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('VideoSourceResolver')
@@ -47,7 +48,13 @@ export class VideoSourceResolver {
     this.sniffer.setSniffStrategy(useLegacy)
     this.sniffer.setTimeout(request.sniffTimeoutMs, request.maxRetryCount)
 
-    let result = await this.doSniff(request.episodeUrl, request.maxRetryCount)
+    const sniffUrl = await this.normalizeSniffUrlForRule(request.episodeUrl, ruleSource)
+    const direct7sefunResult = this.tryBuild7sefunDirectResult(sniffUrl, ruleSource)
+    if (direct7sefunResult !== null) {
+      this.isResolving = false
+      return direct7sefunResult
+    }
+    let result = await this.doSniff(sniffUrl, request.maxRetryCount)
 
     if (result.isPlayable() && ruleSource !== null) {
       result = this.applyRuleSourceToResult(result, ruleSource)
@@ -55,6 +62,100 @@ export class VideoSourceResolver {
 
     this.isResolving = false
     return result
+  }
+
+  private async normalizeSniffUrlForRule(url: string, ruleSource: RuleSource | null): Promise<string> {
+    if (ruleSource === null || ruleSource.name.toLowerCase() !== '7sefun') {
+      return url
+    }
+
+    const playerUrl = await this.extract7sefunPlayerUrl(url)
+    if (playerUrl.length === 0) {
+      return url
+    }
+
+    logger.info('7sefun decoded player url: %{public}s', playerUrl.substring(0, 100))
+    return playerUrl
+  }
+
+  private tryBuild7sefunDirectResult(url: string, ruleSource: RuleSource | null): VideoSourceResult | null {
+    if (ruleSource === null || ruleSource.name.toLowerCase() !== '7sefun') {
+      return null
+    }
+    const type = SnifferResult.detectType(url)
+    if (type !== 'm3u8' && type !== 'mp4' && type !== 'flv' && type !== 'ts') {
+      return null
+    }
+    const elapsed = Date.now() - this.resolveStartTime
+    logger.info('7sefun direct media url resolved without WebView sniffing: %{public}s',
+      url.substring(0, 100))
+    const candidate = new SnifferResult(url, type, 'unknown', '7sefun_player_config')
+    return VideoSourceResult.success(url, type, [candidate], elapsed)
+  }
+
+  private async extract7sefunPlayerUrl(url: string): Promise<string> {
+    try {
+      const client = new HttpClient()
+      const response = await client.get(url, {
+        'User-Agent': DEFAULT_PLAYER_USER_AGENT,
+        'Referer': 'https://www.7sefun.top/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      })
+      if (!response.isSuccessful || response.body.length === 0) {
+        logger.warn('7sefun player page fetch failed: status=%{public}d', response.statusCode)
+        return ''
+      }
+
+      const match = response.body.match(/var\s+player_aaaa\s*=\s*\{[\s\S]*?"url"\s*:\s*"([^"]+)"/)
+      if (match === null || match.length < 2) {
+        logger.warn('7sefun player config not found')
+        return ''
+      }
+
+      const decoded = this.decode7sefunPlayerUrl(match[1])
+      if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+        return decoded.replace(/\\\//g, '/')
+      }
+    } catch (err) {
+      logger.warn('7sefun player url extraction failed: %{public}s',
+        err instanceof Error ? err.message : String(err))
+    }
+    return ''
+  }
+
+  private decode7sefunPlayerUrl(encoded: string): string {
+    const percentEncoded = this.decodeBase64Ascii(encoded)
+    try {
+      return decodeURIComponent(percentEncoded)
+    } catch (_) {
+      return percentEncoded
+    }
+  }
+
+  private decodeBase64Ascii(encoded: string): string {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    let buffer = 0
+    let bitCount = 0
+    let output = ''
+
+    for (let i = 0; i < encoded.length; i++) {
+      const ch = encoded.charAt(i)
+      if (ch === '=') {
+        break
+      }
+      const value = alphabet.indexOf(ch)
+      if (value < 0) {
+        continue
+      }
+      buffer = (buffer << 6) | value
+      bitCount += 6
+      if (bitCount >= 8) {
+        bitCount -= 8
+        output += String.fromCharCode((buffer >> bitCount) & 0xff)
+      }
+    }
+
+    return output
   }
 
   private doSniff(url: string, maxRetry: number): Promise<VideoSourceResult> {
@@ -137,6 +238,7 @@ export class VideoSourceResolver {
     const lowerUrl = result.url.toLowerCase()
     return lowerUrl.indexOf('/m3u8/?url=') !== -1 ||
       lowerUrl.indexOf('/m3u8?url=') !== -1 ||
+      lowerUrl.indexOf('player.moedot.net/player/') !== -1 ||
       lowerUrl.indexOf('://jx.') !== -1 ||
       lowerUrl.indexOf('//jx.') !== -1
   }
@@ -150,19 +252,29 @@ export class VideoSourceResolver {
 
   handleInterceptedRequest(url: string): void {
     if (this.isResolving && this.sniffer.getIsSniffing()) {
+      logger.debug('handleInterceptedRequest: %{public}s', url.substring(0, 100))
       let type = SnifferResult.detectType(url)
       this.sniffer.handleInterceptedUrl(url, type, 'request_intercept')
     }
   }
 
+  onWebViewPageBegin(): void {
+    if (this.isResolving) {
+      logger.debug('onWebViewPageBegin')
+      this.sniffer.onPageBegin()
+    }
+  }
+
   onWebViewPageEnd(): void {
     if (this.isResolving) {
+      logger.debug('onWebViewPageEnd')
       this.sniffer.onPageEnd()
     }
   }
 
   handleJsBridgeMessage(message: string): void {
     if (this.isResolving) {
+      logger.debug('handleJsBridgeMessage: %{public}s', message.substring(0, 120))
       this.sniffer.handleJsBridgeMessage(message)
     }
   }
@@ -200,6 +312,20 @@ export class VideoSourceResolver {
         if (options.userAgent.length === 0 && rule.userAgent.length > 0) {
           options.userAgent = rule.userAgent
         }
+        if (rule.name.toLowerCase() === '7sefun') {
+          options.referer = this.build7sefunPlaybackReferer(result.videoUrl, request.episodeUrl)
+          if (options.userAgent.length === 0) {
+            options.userAgent = DEFAULT_PLAYER_USER_AGENT
+          }
+          if (options.referer.length > 0) {
+            options.headers['Referer'] = options.referer
+          }
+          options.headers['Accept'] = '*/*'
+          options.headers['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8'
+          logger.info('7sefun playback headers: referer=%{public}s, url=%{public}s',
+            options.referer.length > 0 ? options.referer : '<empty>',
+            result.videoUrl.substring(0, 80))
+        }
       }
     }
     if (options.userAgent.length === 0) {
@@ -207,6 +333,20 @@ export class VideoSourceResolver {
     }
 
     return options
+  }
+
+  private build7sefunPlaybackReferer(videoUrl: string, episodeUrl: string): string {
+    const lowerUrl = videoUrl.toLowerCase()
+    if (lowerUrl.indexOf('groupvideo.photo.qq.com') !== -1) {
+      return ''
+    }
+    if (lowerUrl.indexOf('lmm85.com') !== -1) {
+      return 'https://www.lmm85.com/'
+    }
+    if (episodeUrl.length > 0) {
+      return episodeUrl
+    }
+    return 'https://www.7sefun.top/'
   }
 
   cancel(): void {

@@ -5,6 +5,7 @@ export struct GestureLayer {
   @Prop volume: number = 1.0
   @Prop screenBrightness: number = 0.5
   @Prop isPlaying: boolean = false
+  @Prop isControlVisible: boolean = false
   @State gestureType: number = 0
   @State gestureValue: number = 0
   @State seekDeltaMs: number = 0
@@ -13,171 +14,198 @@ export struct GestureLayer {
   onBrightnessChange?: (brightness: number) => void
   onTogglePlayPause?: () => void
   onShowControls?: () => void
+  onToggleControls?: () => void
+  onTemporarySpeedStart?: () => void
+  onTemporarySpeedEnd?: () => void
 
   private readonly GESTURE_NONE: number = 0
   private readonly GESTURE_SEEK: number = 1
   private readonly GESTURE_VOLUME: number = 2
   private readonly GESTURE_BRIGHTNESS: number = 3
-  private startX: number = 0
-  private startY: number = 0
-  private lastTapTimeMs: number = 0
-  private readonly DOUBLE_TAP_INTERVAL: number = 300
+  @State private layerWidth: number = 360
+  @State private layerHeight: number = 640
+  private panStartX: number = 0
+  private panStartY: number = 0
+  private isLongPressActive: boolean = false
 
   build() {
     Column() {
       if (this.gestureType === this.GESTURE_SEEK) {
-        this.SeekIndicator()
+        Column() {
+          Text(this.seekDeltaMs >= 0 ? `快进 ${this.formatDelta(this.seekDeltaMs)}` : `快退 ${this.formatDelta(-this.seekDeltaMs)}`)
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_on_primary'))
+
+          Text(this.formatTime(this.positionMs + this.seekDeltaMs) + ' / ' + this.formatTime(this.durationMs))
+            .fontSize(12)
+            .fontColor($r('app.color.text_on_primary'))
+            .margin({ top: 4 })
+        }
+        .padding({ left: 20, right: 20, top: 10, bottom: 10 })
+        .borderRadius(12)
+        .backgroundColor($r('app.color.overlay_topbar_bg'))
+        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       } else if (this.gestureType === this.GESTURE_VOLUME) {
-        this.VolumeIndicator()
+        Column() {
+          Text('音量')
+            .fontSize(12)
+            .fontColor($r('app.color.text_on_primary'))
+
+          Progress({ value: this.gestureValue * 100, type: ProgressType.Linear })
+            .width(120)
+            .color($r('app.color.accent_blue_light'))
+            .margin({ top: 6 })
+
+          Text(`${Math.round(this.gestureValue * 100)}%`)
+            .fontSize(12)
+            .fontColor($r('app.color.text_on_primary'))
+            .margin({ top: 4 })
+        }
+        .padding({ left: 20, right: 20, top: 10, bottom: 10 })
+        .borderRadius(12)
+        .backgroundColor($r('app.color.overlay_topbar_bg'))
+        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       } else if (this.gestureType === this.GESTURE_BRIGHTNESS) {
-        this.BrightnessIndicator()
+        Column() {
+          Text('亮度')
+            .fontSize(12)
+            .fontColor($r('app.color.text_on_primary'))
+
+          Progress({ value: this.gestureValue * 100, type: ProgressType.Linear })
+            .width(120)
+            .color($r('app.color.accent_blue_light'))
+            .margin({ top: 6 })
+
+          Text(`${Math.round(this.gestureValue * 100)}%`)
+            .fontSize(12)
+            .fontColor($r('app.color.text_on_primary'))
+            .margin({ top: 4 })
+        }
+        .padding({ left: 20, right: 20, top: 10, bottom: 10 })
+        .borderRadius(12)
+        .backgroundColor($r('app.color.overlay_topbar_bg'))
+        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       }
     }
     .width('100%')
     .height('100%')
-    .hitTestBehavior(HitTestMode.Transparent)
-    .onTouch((event: TouchEvent) => {
-      this.handleTouch(event)
+    .backgroundColor($r('app.color.color_transparent'))
+    .hitTestBehavior(HitTestMode.Default)
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const width = Number(newArea.width)
+      const height = Number(newArea.height)
+      if (width > 0) {
+        this.layerWidth = width
+      }
+      if (height > 0) {
+        this.layerHeight = height
+      }
     })
-  }
-
-  @Builder
-  private SeekIndicator() {
-    Column() {
-      Text(this.seekDeltaMs >= 0 ? `快进 ${this.formatDelta(this.seekDeltaMs)}` : `快退 ${this.formatDelta(-this.seekDeltaMs)}`)
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_on_primary'))
-
-      Text(this.formatTime(this.positionMs + this.seekDeltaMs) + ' / ' + this.formatTime(this.durationMs))
-        .fontSize(12)
-        .fontColor($r('app.color.text_on_primary'))
-        .margin({ top: 4 })
-    }
-    .padding({ left: 20, right: 20, top: 10, bottom: 10 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.overlay_topbar_bg'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-  }
-
-  @Builder
-  private VolumeIndicator() {
-    Column() {
-      Text('音量')
-        .fontSize(12)
-        .fontColor($r('app.color.text_on_primary'))
-
-      Progress({ value: this.gestureValue * 100, type: ProgressType.Linear })
-        .width(120)
-        .color($r('app.color.accent_green_light'))
-        .margin({ top: 6 })
-
-      Text(`${Math.round(this.gestureValue * 100)}%`)
-        .fontSize(12)
-        .fontColor($r('app.color.text_on_primary'))
-        .margin({ top: 4 })
-    }
-    .padding({ left: 20, right: 20, top: 10, bottom: 10 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.overlay_topbar_bg'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-  }
-
-  @Builder
-  private BrightnessIndicator() {
-    Column() {
-      Text('亮度')
-        .fontSize(12)
-        .fontColor($r('app.color.text_on_primary'))
-
-      Progress({ value: this.gestureValue * 100, type: ProgressType.Linear })
-        .width(120)
-        .color($r('app.color.accent_green_light'))
-        .margin({ top: 6 })
-
-      Text(`${Math.round(this.gestureValue * 100)}%`)
-        .fontSize(12)
-        .fontColor($r('app.color.text_on_primary'))
-        .margin({ top: 4 })
-    }
-    .padding({ left: 20, right: 20, top: 10, bottom: 10 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.overlay_topbar_bg'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-  }
-
-  private handleTouch(event: TouchEvent): void {
-    if (event.touches.length === 0) {
-      return
-    }
-    const touch = event.touches[0]
-    if (event.type === TouchType.Down) {
-      this.startX = touch.x
-      this.startY = touch.y
-      this.gestureType = this.GESTURE_NONE
-      this.checkDoubleTap()
-    } else if (event.type === TouchType.Move) {
-      const dx = touch.x - this.startX
-      const dy = touch.y - this.startY
-      if (this.gestureType === this.GESTURE_NONE) {
-        if (Math.abs(dx) > 20 || Math.abs(dy) > 20) {
-          if (Math.abs(dx) > Math.abs(dy)) {
+    .priorityGesture(
+      GestureGroup(GestureMode.Exclusive,
+        PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 20 })
+          .onActionStart((event: GestureEvent) => {
             this.gestureType = this.GESTURE_SEEK
-          } else {
-            const windowWidth = 360
-            if (this.startX < windowWidth / 2) {
+            this.seekDeltaMs = 0
+            if (event && event.fingerList.length > 0) {
+              this.panStartX = event.fingerList[0].globalX
+              this.panStartY = event.fingerList[0].globalY
+            }
+          })
+          .onActionUpdate((event: GestureEvent) => {
+            if (this.gestureType !== this.GESTURE_SEEK || !event || event.fingerList.length === 0) {
+              return
+            }
+            const dx = event.fingerList[0].globalX - this.panStartX
+            this.updateSeekDelta(dx)
+          })
+          .onActionEnd((event: GestureEvent) => {
+            if (this.gestureType === this.GESTURE_SEEK && this.seekDeltaMs !== 0 && this.onSeek) {
+              const targetMs = Math.max(0, Math.min(this.durationMs, this.positionMs + this.seekDeltaMs))
+              this.onSeek(targetMs)
+            }
+            this.resetGestureState()
+          }),
+
+        PanGesture({ fingers: 1, direction: PanDirection.Vertical, distance: 20 })
+          .onActionStart((event: GestureEvent) => {
+            if (!event || event.fingerList.length === 0) {
+              return
+            }
+            this.panStartX = event.fingerList[0].globalX
+            this.panStartY = event.fingerList[0].globalY
+            if (this.panStartX < this.layerWidth / 2) {
               this.gestureType = this.GESTURE_BRIGHTNESS
               this.gestureValue = this.screenBrightness
             } else {
               this.gestureType = this.GESTURE_VOLUME
               this.gestureValue = this.volume
             }
-          }
-        }
-      }
-      if (this.gestureType === this.GESTURE_SEEK) {
-        this.updateSeekDelta(dx)
-      } else if (this.gestureType === this.GESTURE_VOLUME) {
-        this.updateVolumeDelta(dy)
-      } else if (this.gestureType === this.GESTURE_BRIGHTNESS) {
-        this.updateBrightnessDelta(dy)
-      }
-    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      if (this.gestureType === this.GESTURE_SEEK && this.seekDeltaMs !== 0) {
-        if (this.onSeek) {
-          const targetMs = Math.max(0, Math.min(this.durationMs, this.positionMs + this.seekDeltaMs))
-          this.onSeek(targetMs)
-        }
-      }
-      this.gestureType = this.GESTURE_NONE
-      this.seekDeltaMs = 0
-    }
+          })
+          .onActionUpdate((event: GestureEvent) => {
+            if (!event || event.fingerList.length === 0) {
+              return
+            }
+            const dy = event.fingerList[0].globalY - this.panStartY
+            if (this.gestureType === this.GESTURE_VOLUME) {
+              this.updateVolumeDelta(dy)
+            } else if (this.gestureType === this.GESTURE_BRIGHTNESS) {
+              this.updateBrightnessDelta(dy)
+            }
+          })
+          .onActionEnd(() => {
+            this.resetGestureState()
+          }),
+
+        LongPressGesture({ fingers: 1, repeat: false, duration: 450 })
+          .onAction(() => {
+            this.isLongPressActive = true
+            if (this.onTemporarySpeedStart) {
+              this.onTemporarySpeedStart()
+            }
+          })
+          .onActionEnd(() => {
+            this.isLongPressActive = false
+            if (this.onTemporarySpeedEnd) {
+              this.onTemporarySpeedEnd()
+            }
+          }),
+
+        TapGesture({ count: 2 })
+          .onAction(() => {
+            if (this.onTogglePlayPause) {
+              this.onTogglePlayPause()
+            }
+          }),
+
+        TapGesture({ count: 1 })
+          .onAction(() => {
+            if (this.onToggleControls) {
+              this.onToggleControls()
+            } else if (this.onShowControls) {
+              this.onShowControls()
+            }
+          })
+      )
+    )
   }
 
-  private checkDoubleTap(): void {
-    const now = Date.now()
-    if (now - this.lastTapTimeMs < this.DOUBLE_TAP_INTERVAL) {
-      if (this.onTogglePlayPause) {
-        this.onTogglePlayPause()
-      }
-      this.lastTapTimeMs = 0
-    } else {
-      this.lastTapTimeMs = now
-    }
+  private resetGestureState(): void {
+    this.gestureType = this.GESTURE_NONE
+    this.seekDeltaMs = 0
   }
 
   private updateSeekDelta(dx: number): void {
     if (this.durationMs <= 0) {
       return
     }
-    const windowWidth = 360
-    const seekPerPx = this.durationMs / windowWidth
+    const seekPerPx = this.durationMs / Math.max(this.layerWidth, 1)
     this.seekDeltaMs = Math.round(dx * seekPerPx)
   }
 
   private updateVolumeDelta(dy: number): void {
-    const windowHeight = 640
-    const delta = -dy / windowHeight
+    const delta = -dy / Math.max(this.layerHeight, 1)
     let newVolume = this.volume + delta
     if (newVolume < 0) {
       newVolume = 0
@@ -192,8 +220,7 @@ export struct GestureLayer {
   }
 
   private updateBrightnessDelta(dy: number): void {
-    const windowHeight = 640
-    const delta = -dy / windowHeight
+    const delta = -dy / Math.max(this.layerHeight, 1)
     let newBrightness = this.screenBrightness + delta
     if (newBrightness < 0.01) {
       newBrightness = 0.01

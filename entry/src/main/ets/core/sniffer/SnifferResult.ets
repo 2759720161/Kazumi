@@ -24,6 +24,9 @@ export class SnifferResult {
     if (lowerUrl.indexOf('.flv') !== -1 || lowerUrl.indexOf('flv') !== -1) {
       return 'flv'
     }
+    if (lowerUrl.indexOf('.mknvideo') !== -1) {
+      return 'mp4'
+    }
     if (lowerUrl.indexOf('.ts') !== -1) {
       return 'ts'
     }
@@ -36,8 +39,16 @@ export class SnifferResult {
   private static isLikelyExtensionlessMp4Url(lowerUrl: string): boolean {
     const mediaHints: string[] = [
       '://v16', '://v26', '://v3', '://v6', '://v9',
+      '://lf', '://lf2', '://lf3', '://lf6', '://lf9', '://lf20',
+      '://vkc', '://vkce', '://fev', '://febo',
       '/video/tos/',
-      'videocdn', 'video-cdn', 'mcdn', 'bytecdntp'
+      'videocdn', 'video-cdn', 'mcdn', 'bytecdntp',
+      'bytetos.com', 'csp-sign', 'tos-cn-v-',
+      'play.mknacg.top:9009/d/', 'tjdownload.pan.wo.cn', 'pan.wo.cn/openapi/download',
+      '/openapi/download?fid=',
+      '/videos/', '/videoplayback', '/videoplay',
+      'cdnvideo', 'cdn-video', 'hlsvideo',
+      'streaming', 'liveld'
     ]
     const nonMediaDomains: string[] = [
       'byteimg.com',

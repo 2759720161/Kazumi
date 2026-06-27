@@ -13,7 +13,7 @@ export class PlayerEngineFactory {
 
   static async create(): Promise<IPlayerEngine> {
     const prefs = PreferencesStore.getInstance()
-    const engineType = await prefs.getString('defaultPlayerEngine', 'avplayer')
+    const engineType = await prefs.getString('defaultPlayerEngine', 'mpv')
     return PlayerEngineFactory.createWithFallback(engineType)
   }
 

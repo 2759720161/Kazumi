@@ -2,6 +2,8 @@ import { relationalStore } from '@kit.ArkData';
 import { RdbManager } from './RdbManager';
 import { RdbConstants } from '../constants/RdbConstants';
 import { HistoryRecord } from '../models/HistoryRecord';
+import { DanmakuPlaybackBindingStore } from '../core/danmaku/DanmakuPlaybackBindingStore';
+import { DanmakuCacheIndexStore } from '../core/danmaku/DanmakuCacheIndexStore';
 import { Logger } from '../utils/Logger';
 
 const logger = new Logger('HistoryStore');
@@ -42,6 +44,8 @@ export class HistoryStore {
         episode_url: record.episodeUrl,
         position_ms: record.positionMs,
         duration_ms: record.durationMs,
+        road_index: record.roadIndex,
+        episode_index: record.episodeIndex,
         updated_at: Date.now()
       };
       return await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
@@ -56,6 +60,8 @@ export class HistoryStore {
         episode_url: record.episodeUrl,
         position_ms: record.positionMs,
         duration_ms: record.durationMs,
+        road_index: record.roadIndex,
+        episode_index: record.episodeIndex,
         updated_at: Date.now()
       };
       return await this.rdbManager.insert(RdbConstants.TABLE_WATCH_HISTORY, values);
@@ -63,9 +69,23 @@ export class HistoryStore {
   }
 
   async deleteByAnimeId(animeId: string): Promise<number> {
+    const record: HistoryRecord | null = await this.getByAnimeId(animeId)
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
     predicates.equalTo(RdbConstants.COL_ANIME_ID, animeId);
-    return await this.rdbManager.delete(predicates);
+    const result = await this.rdbManager.delete(predicates);
+    if (record !== null) {
+      try {
+        await DanmakuPlaybackBindingStore.getInstance().clearBindingByPlaybackRecord(record.sourceId, record.episodeUrl)
+      } catch (_err) {
+        logger.warn('清理弹幕绑定失败: animeId=%{public}s', animeId)
+      }
+      try {
+        await DanmakuCacheIndexStore.getInstance().clearCacheIndexByPlaybackRecord(record.sourceId, record.episodeUrl)
+      } catch (_err) {
+        logger.warn('清理弹幕缓存索引失败: animeId=%{public}s', animeId)
+      }
+    }
+    return result
   }
 
   async clearAll(): Promise<number> {
@@ -93,6 +113,8 @@ export class HistoryStore {
           record.episodeUrl = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_EPISODE_URL));
           record.positionMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_POSITION_MS));
           record.durationMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_DURATION_MS));
+          record.roadIndex = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_ROAD_INDEX));
+          record.episodeIndex = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_EPISODE_INDEX));
           record.updatedAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_UPDATED_AT));
           list.push(record);
         } while (resultSet.goToNextRow());

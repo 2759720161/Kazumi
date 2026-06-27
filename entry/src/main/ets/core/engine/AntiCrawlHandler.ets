@@ -58,6 +58,10 @@ export class AntiCrawlHandler {
       'verify',
       'challenge',
       'cf-browser-verification',
+      '系统提示',
+      '安全验证',
+      '访问验证',
+      '人机验证',
       '\u9A8C\u8BC1\u7801'
     ];
     for (let i = 0; i < captchaIndicators.length; i++) {

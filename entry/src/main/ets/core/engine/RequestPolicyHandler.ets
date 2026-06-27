@@ -29,8 +29,15 @@ export class RequestPolicyHandler {
 
     let config: RequestConfig;
     if (runtime.isPost) {
-      const body = UrlBuilder_extractPostBody(runtime.rule.searchURL, keyword);
-      config = RequestConfig.createPost(url, body, headers);
+      const body = UrlBuilder_extractPostBody(url);
+      const postUrl = this.shouldUseUpstreamPostForm(runtime) ? UrlBuilder_stripQuery(url) : url;
+      if (this.shouldUseUpstreamPostForm(runtime)) {
+        this.cookieManager.clearCookies(postUrl);
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        logger.info('Using upstream-style POST form for rule %{public}s: %{public}s',
+          runtime.rule.name, postUrl);
+      }
+      config = RequestConfig.createPost(postUrl, body, headers);
     } else {
       config = RequestConfig.createGet(url, headers);
     }
@@ -98,6 +105,12 @@ export class RequestPolicyHandler {
     return this.httpClient;
   }
 
+  private shouldUseUpstreamPostForm(runtime: RuleRuntimeModel): boolean {
+    // gpjda rejects the current POST shape where the query remains on the URL.
+    // Upstream Kazumi posts form fields to the bare path instead.
+    return runtime.rule.name.toLowerCase() === 'gpjda';
+  }
+
   private isTimeoutResponse(statusCode: number, body: string): boolean {
     if (statusCode !== 0) {
       return false;
@@ -110,11 +123,18 @@ export class RequestPolicyHandler {
   }
 }
 
-function UrlBuilder_extractPostBody(searchUrlTemplate: string, keyword: string): string {
-  const replaced = searchUrlTemplate.replace('@keyword', keyword);
-  const questionIdx = replaced.indexOf('?');
-  if (questionIdx !== -1 && questionIdx < replaced.length - 1) {
-    return replaced.substring(questionIdx + 1);
+function UrlBuilder_extractPostBody(url: string): string {
+  const questionIdx = url.indexOf('?');
+  if (questionIdx !== -1 && questionIdx < url.length - 1) {
+    return url.substring(questionIdx + 1);
   }
   return '';
+}
+
+function UrlBuilder_stripQuery(url: string): string {
+  const questionIdx = url.indexOf('?');
+  if (questionIdx !== -1) {
+    return url.substring(0, questionIdx);
+  }
+  return url;
 }

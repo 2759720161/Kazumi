@@ -4,7 +4,7 @@ import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('DanmakuApiService')
 
-const DANMAKU_MAX_ITEMS = 5000
+const DANMAKU_LARGE_ITEMS_WARNING_THRESHOLD = 5000
 
 export class DanmakuApiResponse {
   items: DanmakuItem[] = []
@@ -65,12 +65,11 @@ export class DanmakuApiService {
 
       logger.info('comment返回%{public}d条', comments.length)
 
-      const limit = Math.min(comments.length, DANMAKU_MAX_ITEMS)
-      if (comments.length > DANMAKU_MAX_ITEMS) {
-        logger.warn('弹幕数据量过大：截断至%{public}d条', DANMAKU_MAX_ITEMS)
+      if (comments.length > DANMAKU_LARGE_ITEMS_WARNING_THRESHOLD) {
+        logger.warn('弹幕数据量较大：完整解析%{public}d条', comments.length)
       }
 
-      for (let i = 0; i < limit; i++) {
+      for (let i = 0; i < comments.length; i++) {
         const comment = comments[i] as Record<string, Object>
         try {
           const parsed = this.parseComment(comment)
@@ -123,6 +122,7 @@ export class DanmakuApiService {
 
     const colorValue = parseInt(parts[2], 10)
     const color = this.normalizeColorFromInt(colorValue)
+    const source = parts.length >= 4 ? parts[3].trim() : 'DanDan'
 
     const danmakuType = typeValue === 4 || typeValue === 5 ? typeValue : 0
 
@@ -131,7 +131,8 @@ export class DanmakuApiService {
       Math.round(timeSec * 1000),
       color,
       25,
-      danmakuType
+      danmakuType,
+      source
     )
   }
 

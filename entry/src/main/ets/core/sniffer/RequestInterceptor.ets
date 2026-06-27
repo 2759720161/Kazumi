@@ -1,6 +1,9 @@
+import { CandidateUrlFilter } from './CandidateUrlFilter'
+
 export class RequestInterceptor {
   private interceptedUrls: string[] = []
   private onIntercept: ((url: string, type: string) => void) | null = null
+  private urlFilter: CandidateUrlFilter = new CandidateUrlFilter()
 
   setOnIntercept(callback: (url: string, type: string) => void): void {
     this.onIntercept = callback
@@ -20,11 +23,14 @@ export class RequestInterceptor {
     if (lowerUrl.indexOf('.ts') !== -1 && lowerUrl.indexOf('.ts/') === -1) {
       return true
     }
-    return false
+    return this.urlFilter.isVideoUrl(url)
   }
 
   interceptRequest(url: string): boolean {
     if (this.shouldIntercept(url)) {
+      if (this.interceptedUrls.indexOf(url) !== -1) {
+        return false
+      }
       this.interceptedUrls.push(url)
       if (this.onIntercept) {
         let type = this.detectType(url)
@@ -46,7 +52,13 @@ export class RequestInterceptor {
     if (lowerUrl.indexOf('.flv') !== -1 || lowerUrl.indexOf('flv') !== -1) {
       return 'flv'
     }
-    return 'ts'
+    if (lowerUrl.indexOf('.ts') !== -1) {
+      return 'ts'
+    }
+    if (this.urlFilter.isVideoUrl(url)) {
+      return 'mp4'
+    }
+    return 'unknown'
   }
 
   getInterceptedUrls(): string[] {

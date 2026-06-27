@@ -4,9 +4,13 @@
     "pages/HtmlXPathPocPage",
     "pages/WebViewSnifferPocPage",
     "pages/AVPlayerPocPage",
+    "pages/search/SearchPage",
     "pages/detail/DetailPage",
-    "pages/detail/EpisodePage",
     "pages/player/PlayerPage",
-    "pages/settings/RuleDebugPage"
+    "pages/history/HistoryPage",
+    "pages/settings/DanmakuSettingsPage",
+    "pages/settings/DanmakuBlockRulesPage",
+    "pages/settings/RuleDebugPage",
+    "pages/settings/RuleShopPage"
   ]
 }

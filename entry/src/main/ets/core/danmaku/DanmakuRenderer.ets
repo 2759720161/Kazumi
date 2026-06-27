@@ -1,12 +1,24 @@
 import { DanmakuItem } from '../../models/DanmakuItem'
 import { DanmakuTrackAllocator } from './DanmakuTrackAllocator'
+import { DanmakuStyleSettings } from './DanmakuStyleSettings'
+import { DanmakuRuntimeStats } from './DanmakuRuntimeStats'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('DanmakuRenderer')
 
 const TARGET_FPS = 30
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS
-const SCROLL_DURATION_SEC = 8
+const DEFAULT_TEXT_WIDTH = 200
+const MAX_ACTIVE_PER_TRACK = 5
+const MAX_ACTIVE_PER_TRACK_MASSIVE = 8
+const MIN_ACTIVE_CAPACITY = 32
+const MAX_ACTIVE_CAPACITY = 180
+const MAX_ACTIVE_CAPACITY_MASSIVE = 300
+const MIN_STROKE_WIDTH = 0.8
+const MAX_STROKE_WIDTH = 1.8
+const EDGE_CLEAR_PADDING = 16
+const SPAWN_X_PADDING = 12
+const FIXED_DANMAKU_DURATION_MS = 4000
 const FPS_LOW_THRESHOLD = 20
 const FPS_CRITICAL_THRESHOLD = 15
 const FPS_LOW_DURATION_MS = 3000
@@ -32,43 +44,116 @@ export class DanmakuRenderer {
   private criticalFpsStartMs: number = 0
   private densityReduced: boolean = false
   private criticalStopped: boolean = false
+  private style: DanmakuStyleSettings = DanmakuStyleSettings.getDefault()
+  private missingCanvasWarned: boolean = false
+  private topTrackEndTimes: number[] = []
+  private bottomTrackEndTimes: number[] = []
+  private stats: DanmakuRuntimeStats
 
-  constructor(trackAllocator: DanmakuTrackAllocator) {
+  constructor(trackAllocator: DanmakuTrackAllocator, stats: DanmakuRuntimeStats) {
     this.trackAllocator = trackAllocator
+    this.stats = stats
   }
 
   setCanvasContext(context: CanvasRenderingContext2D, width: number, height: number): void {
     this.canvasContext = context
     this.canvasWidth = width
     this.canvasHeight = height
+    this.missingCanvasWarned = false
     this.recalculateParams()
+    this.updateStats()
+    logger.info('渲染Canvas绑定: width=%{public}d, height=%{public}d, maxVisible=%{public}d',
+      width, height, this.maxVisibleCount)
   }
 
   updateCanvasSize(width: number, height: number): void {
     this.canvasWidth = width
     this.canvasHeight = height
     this.recalculateParams()
+    this.updateStats()
+    logger.info('渲染Canvas尺寸更新: width=%{public}d, height=%{public}d, maxVisible=%{public}d',
+      width, height, this.maxVisibleCount)
+  }
 
+  setStyle(style: DanmakuStyleSettings): void {
+    this.style = style
+    this.trackAllocator.updateStyle(style.fontSize, style.displayArea, style.lineHeight)
+    this.activeDanmaku.forEach((item: DanmakuItem) => {
+      item.textWidth = 0
+    })
+    this.rebuildActiveTrackBounds()
+    this.recalculateParams()
+    this.updateStats()
+    logger.info('弹幕样式应用: border=%{public}s, borderSize=%{public}s, color=%{public}s, fontSize=%{public}s, fontWeight=%{public}d, opacity=%{public}s, duration=%{public}s, area=%{public}s, lineHeight=%{public}s, followSpeed=%{public}s',
+      String(style.border), style.borderSize.toFixed(1), String(style.useSourceColor), style.fontSize.toFixed(0),
+      style.fontWeight, style.opacity.toFixed(2), style.scrollDurationSec.toFixed(1), style.displayArea.toFixed(2),
+      style.lineHeight.toFixed(1), String(style.followSpeed))
   }
 
   getCanvasWidth(): number {
     return this.canvasWidth
   }
 
-  addActiveDanmaku(item: DanmakuItem): void {
+  getSpawnX(): number {
+    return this.canvasWidth + SPAWN_X_PADDING
+  }
+
+  canAcceptDanmaku(): boolean {
+    return this.activeDanmaku.length < this.maxVisibleCount
+  }
+
+  isReady(): boolean {
+    return this.canvasContext !== null && this.canvasWidth > 0 && this.canvasHeight > 0 && this.maxVisibleCount > 0
+  }
+
+  addActiveDanmaku(item: DanmakuItem): boolean {
     if (this.activeDanmaku.length >= this.maxVisibleCount) {
-      return
+      logger.warn('活跃弹幕达到上限: active=%{public}d, max=%{public}d',
+        this.activeDanmaku.length, this.maxVisibleCount)
+      this.stats.droppedCount++
+      this.stats.lastDropReason = 'active_limit'
+      return false
+    }
+    if (this.isFixedDanmaku(item)) {
+      if (!this.prepareFixedDanmaku(item)) {
+        this.stats.droppedCount++
+        this.stats.lastDropReason = 'fixed_track_full'
+        return false
+      }
     }
     this.activeDanmaku.push(item)
+    this.stats.shownCount++
+    this.stats.activeCount = this.activeDanmaku.length
+    if (this.activeDanmaku.length === 1 || this.activeDanmaku.length % 20 === 0) {
+      logger.info('活跃弹幕增加: active=%{public}d, text=%{public}s',
+        this.activeDanmaku.length, item.content)
+    }
+    return true
+  }
+
+  prepareDanmakuItem(item: DanmakuItem): void {
+    if (item.textWidth > 0 || this.canvasContext === null) {
+      return
+    }
+    const ctx = this.canvasContext
+    ctx.font = this.getFont()
+    const measured = ctx.measureText(item.content)
+    item.textWidth = measured.width > 0 ? measured.width : DEFAULT_TEXT_WIDTH
   }
 
   startRendering(): void {
-    if (this.isRendering || this.canvasContext === null) {
+    if (this.isRendering || !this.isReady()) {
+      if (!this.isReady() && !this.missingCanvasWarned) {
+        logger.warn('弹幕渲染未启动: canvasContext为空')
+        this.missingCanvasWarned = true
+      }
       return
     }
     this.isRendering = true
     this.isPaused = false
     this.lastFrameTimeMs = Date.now()
+    logger.info('弹幕渲染启动: width=%{public}d, height=%{public}d',
+      this.canvasWidth, this.canvasHeight)
     this.renderTimerId = setInterval(() => {
       this.renderFrame()
     }, FRAME_INTERVAL_MS)
@@ -101,6 +186,7 @@ export class DanmakuRenderer {
       clearInterval(this.renderTimerId)
       this.renderTimerId = -1
     }
+    logger.info('弹幕渲染停止')
   }
 
   setPlaybackSpeed(speed: number): void {
@@ -110,14 +196,46 @@ export class DanmakuRenderer {
   clearAll(): void {
     this.activeDanmaku = []
     this.trackAllocator.reset()
+    this.topTrackEndTimes = []
+    this.bottomTrackEndTimes = []
+    this.stats.activeCount = 0
     this.densityReduced = false
     this.criticalStopped = false
+    this.clearCanvas()
+  }
+
+  removeActiveDanmaku(predicate: (item: DanmakuItem) => boolean): number {
+    let writeIndex = 0
+    let removed = 0
+    for (let i = 0; i < this.activeDanmaku.length; i++) {
+      const item = this.activeDanmaku[i]
+      if (predicate(item)) {
+        item.isAlive = false
+        removed++
+      } else {
+        if (writeIndex !== i) {
+          this.activeDanmaku[writeIndex] = item
+        }
+        writeIndex++
+      }
+    }
+    if (writeIndex < this.activeDanmaku.length) {
+      this.activeDanmaku.length = writeIndex
+    }
+    if (removed > 0) {
+      this.rebuildActiveTrackBounds()
+      this.drawFrame()
+    }
+    this.stats.activeCount = this.activeDanmaku.length
+    return removed
   }
 
   release(): void {
     this.stopRendering()
+    this.clearCanvas()
     this.canvasContext = null
     this.activeDanmaku = []
+    this.stats.activeCount = 0
     this.frameTimestamps = []
     this.densityReduced = false
     this.criticalStopped = false
@@ -127,9 +245,12 @@ export class DanmakuRenderer {
     if (this.canvasWidth <= 0) {
       return
     }
-    this.scrollSpeed = this.canvasWidth / (SCROLL_DURATION_SEC * TARGET_FPS)
+    this.scrollSpeed = this.canvasWidth / (this.style.scrollDurationSec * TARGET_FPS)
     const trackCount = this.trackAllocator.getTrackCount()
-    this.maxVisibleCount = trackCount * 2
+    const perTrack = this.style.massiveMode ? MAX_ACTIVE_PER_TRACK_MASSIVE : MAX_ACTIVE_PER_TRACK
+    const maxCap = this.style.massiveMode ? MAX_ACTIVE_CAPACITY_MASSIVE : MAX_ACTIVE_CAPACITY
+    this.maxVisibleCount = Math.max(MIN_ACTIVE_CAPACITY,
+      Math.min(maxCap, trackCount * perTrack))
     if (this.densityReduced) {
       this.maxVisibleCount = Math.floor(this.maxVisibleCount * DENSITY_REDUCTION_RATIO)
     }
@@ -152,12 +273,15 @@ export class DanmakuRenderer {
   }
 
   private updatePositions(): void {
-    const speed = this.scrollSpeed * this.playbackSpeed
+    const speed = this.scrollSpeed * (this.style.followSpeed ? this.playbackSpeed : 1.0)
     for (let i = 0; i < this.activeDanmaku.length; i++) {
       const item = this.activeDanmaku[i]
+      if (this.isFixedDanmaku(item)) {
+        continue
+      }
       item.x -= speed
 
-      const textWidth = item.textWidth > 0 ? item.textWidth : 200
+      const textWidth = item.textWidth > 0 ? item.textWidth : DEFAULT_TEXT_WIDTH
       const rightBound = item.x + textWidth
       this.trackAllocator.updateTrackBound(item.trackIndex, rightBound)
     }
@@ -169,7 +293,7 @@ export class DanmakuRenderer {
     }
 
     const ctx = this.canvasContext
-    ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight)
+    ctx.clearRect(0, 0, this.canvasWidth + EDGE_CLEAR_PADDING, this.canvasHeight + EDGE_CLEAR_PADDING)
 
     for (let i = 0; i < this.activeDanmaku.length; i++) {
       const item = this.activeDanmaku[i]
@@ -181,19 +305,64 @@ export class DanmakuRenderer {
     }
   }
 
+  private clearCanvas(): void {
+    if (this.canvasContext !== null && this.canvasWidth > 0 && this.canvasHeight > 0) {
+      this.canvasContext.clearRect(0, 0, this.canvasWidth + EDGE_CLEAR_PADDING, this.canvasHeight + EDGE_CLEAR_PADDING)
+    }
+  }
+
+  private rebuildActiveTrackBounds(): void {
+    this.trackAllocator.reset()
+    const trackCount = this.trackAllocator.getTrackCount()
+    let writeIndex = 0
+    for (let i = 0; i < this.activeDanmaku.length; i++) {
+      const item = this.activeDanmaku[i]
+      if (item.trackIndex < 0 || item.trackIndex >= trackCount) {
+        item.isAlive = false
+        continue
+      }
+      if (writeIndex !== i) {
+        this.activeDanmaku[writeIndex] = item
+      }
+      writeIndex++
+      if (!this.isFixedDanmaku(item)) {
+        const textWidth = item.textWidth > 0 ? item.textWidth : DEFAULT_TEXT_WIDTH
+        this.trackAllocator.updateTrackBound(item.trackIndex, item.x + textWidth)
+      }
+    }
+    if (writeIndex < this.activeDanmaku.length) {
+      this.activeDanmaku.length = writeIndex
+    }
+  }
+
   private drawDanmakuItem(ctx: CanvasRenderingContext2D, item: DanmakuItem): void {
-    if (item.x + (item.textWidth > 0 ? item.textWidth : 200) < 0) {
+    if (!this.isFixedDanmaku(item) && item.x + (item.textWidth > 0 ? item.textWidth : DEFAULT_TEXT_WIDTH) < 0) {
       return
     }
 
-    ctx.font = `${item.fontSize}px sans-serif`
-    ctx.fillStyle = item.color
+    const color = this.style.useSourceColor ? item.color : '#FFFFFF'
+    const y = this.getDanmakuY(item)
+    const drawX = Math.round(this.isFixedDanmaku(item) ? this.getFixedDanmakuX(item) : item.x)
+    const drawY = Math.round(y)
+
+    ctx.font = this.getFont()
+    ctx.globalAlpha = this.style.opacity
     ctx.textBaseline = 'middle'
-    ctx.fillText(item.content, item.x, this.trackAllocator.getTrackY(item.trackIndex))
+    if (this.style.border && this.style.borderSize > 0) {
+      ctx.lineWidth = Math.max(MIN_STROKE_WIDTH, Math.min(MAX_STROKE_WIDTH, this.style.borderSize))
+      ctx.lineJoin = 'round'
+      ctx.lineCap = 'round'
+      ctx.miterLimit = 2
+      ctx.strokeStyle = '#000000'
+      ctx.strokeText(item.content, drawX, drawY)
+    }
+    ctx.fillStyle = color
+    ctx.fillText(item.content, drawX, drawY)
+    ctx.globalAlpha = 1.0
 
     if (item.textWidth === 0) {
       const measured = ctx.measureText(item.content)
-      item.textWidth = measured.width > 0 ? measured.width : 200
+      item.textWidth = measured.width > 0 ? measured.width : DEFAULT_TEXT_WIDTH
     }
   }
 
@@ -201,10 +370,12 @@ export class DanmakuRenderer {
     let writeIdx = 0
     for (let i = 0; i < this.activeDanmaku.length; i++) {
       const item = this.activeDanmaku[i]
-      const textWidth = item.textWidth > 0 ? item.textWidth : 200
-      if (item.x + textWidth < 0) {
+      const textWidth = item.textWidth > 0 ? item.textWidth : DEFAULT_TEXT_WIDTH
+      const expired = this.isFixedDanmaku(item)
+        ? item.endRenderMs > 0 && Date.now() >= item.endRenderMs
+        : item.x + textWidth < 0
+      if (expired) {
         item.isAlive = false
-        this.trackAllocator.releaseTrack(item.trackIndex)
       } else {
         if (writeIdx !== i) {
           this.activeDanmaku[writeIdx] = item
@@ -215,6 +386,51 @@ export class DanmakuRenderer {
     if (writeIdx < this.activeDanmaku.length) {
       this.activeDanmaku.length = writeIdx
     }
+    this.stats.activeCount = this.activeDanmaku.length
+  }
+
+  private getFont(): string {
+    const fontSize = this.style.fontSize
+    const fontWeight = Math.max(1, Math.min(9, this.style.fontWeight)) * 100
+    return `${fontWeight} ${fontSize}px sans-serif`
+  }
+
+  private isFixedDanmaku(item: DanmakuItem): boolean {
+    return item.type === 4 || item.type === 5
+  }
+
+  private prepareFixedDanmaku(item: DanmakuItem): boolean {
+    const now = Date.now()
+    const trackCount = Math.max(1, this.trackAllocator.getTrackCount())
+    const tracks = item.type === 5 ? this.topTrackEndTimes : this.bottomTrackEndTimes
+    for (let i = 0; i < trackCount; i++) {
+      const endTime = i < tracks.length ? tracks[i] : 0
+      if (endTime <= now) {
+        item.trackIndex = i
+        item.startRenderMs = now
+        item.endRenderMs = now + FIXED_DANMAKU_DURATION_MS
+        tracks[i] = item.endRenderMs
+        return true
+      }
+    }
+    return false
+  }
+
+  private getFixedDanmakuX(item: DanmakuItem): number {
+    const textWidth = item.textWidth > 0 ? item.textWidth : DEFAULT_TEXT_WIDTH
+    return Math.max(0, (this.canvasWidth - textWidth) / 2)
+  }
+
+  private getDanmakuY(item: DanmakuItem): number {
+    if (item.type === 5) {
+      return this.trackAllocator.getTrackY(item.trackIndex)
+    }
+    if (item.type === 4) {
+      const lineHeight = this.trackAllocator.getLineHeight()
+      const displayHeight = this.trackAllocator.getDisplayHeight()
+      return displayHeight - Math.round(lineHeight / 2) - item.trackIndex * lineHeight
+    }
+    return this.trackAllocator.getTrackY(item.trackIndex)
   }
 
   private monitorFps(now: number): void {
@@ -225,6 +441,7 @@ export class DanmakuRenderer {
       this.frameTimestamps.shift()
     }
     this.currentFps = this.frameTimestamps.length
+    this.stats.currentFps = this.currentFps
 
     if (this.currentFps < FPS_LOW_THRESHOLD) {
       if (this.lowFpsStartMs === 0) {
@@ -255,5 +472,12 @@ export class DanmakuRenderer {
         logger.info('帧率恢复(%{public}dfps)，恢复弹幕密度', this.currentFps)
       }
     }
+  }
+
+  private updateStats(): void {
+    this.stats.canvasWidth = this.canvasWidth
+    this.stats.canvasHeight = this.canvasHeight
+    this.stats.trackCount = this.trackAllocator.getTrackCount()
+    this.stats.activeCount = this.activeDanmaku.length
   }
 }

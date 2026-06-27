@@ -30,11 +30,11 @@ export class RdbManager {
       const currentVersion = store.version;
       if (currentVersion < RdbConstants.DB_VERSION) {
         logger.info('DB upgrade needed: %{public}d -> %{public}d', currentVersion, RdbConstants.DB_VERSION);
-        await RdbMigration.migrateToVersion(this, RdbConstants.DB_VERSION);
+        await RdbMigration.migrateToVersion(this, RdbConstants.DB_VERSION, currentVersion);
         store.version = RdbConstants.DB_VERSION;
       } else if (currentVersion === 0) {
         logger.info('DB first creation');
-        await RdbMigration.migrateToVersion(this, RdbConstants.DB_VERSION);
+        await RdbMigration.migrateToVersion(this, RdbConstants.DB_VERSION, currentVersion);
         store.version = RdbConstants.DB_VERSION;
       }
       logger.info('RdbStore initialized at version %{public}d', RdbConstants.DB_VERSION);

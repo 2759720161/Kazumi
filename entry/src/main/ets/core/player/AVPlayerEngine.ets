@@ -1,5 +1,5 @@
 import { media } from '@kit.MediaKit'
-import { IPlayerEngine, PlaybackOptions, PlayerState } from './IPlayerEngine'
+import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode } from './IPlayerEngine'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('AVPlayerEngine')
@@ -12,26 +12,33 @@ export class AVPlayerEngine implements IPlayerEngine {
   private currentOptions: PlaybackOptions | null = null
   private prepareTimeoutTimer: number = -1
   private readonly prepareTimeoutMs: number = 12000
+  private pendingAspectMode: VideoAspectMode | null = null
+  private pendingInitialPlayAfterSeek: boolean = false
+  private pendingInitialSeekMs: number = -1
+  private initialSeekFallbackTimer: number = -1
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
+    if (this.avPlayer !== null && surfaceId.length > 0) {
+      try {
+        this.avPlayer.surfaceId = surfaceId
+        logger.info('AVPlayer surface rebound: %{public}s', surfaceId)
+      } catch (_err) {
+        logger.warn('AVPlayer surface rebind failed')
+      }
+    }
   }
 
   prepare(options: PlaybackOptions): void {
     this.clearPrepareTimeout()
+    this.clearInitialSeekState()
     this.resetState()
     this.currentOptions = options
     this.state.stateName = 'creating'
     this.notifyStateChange()
 
-    let hasHeaders = options.referer.length > 0 || options.userAgent.length > 0 ||
-      Object.keys(options.headers).length > 0
-
-    if (hasHeaders) {
-      this.prepareWithMediaSource(options)
-    } else {
-      this.prepareWithUrl(options)
-    }
+    this.logIgnoredRequestHeaders(options)
+    this.prepareWithUrl(options)
   }
 
   private prepareWithUrl(options: PlaybackOptions): void {
@@ -52,22 +59,22 @@ export class AVPlayerEngine implements IPlayerEngine {
     })
   }
 
-  private prepareWithMediaSource(options: PlaybackOptions): void {
-    logger.info('Headers requested but current SDK does not support MediaSource')
+  private logIgnoredRequestHeaders(options: PlaybackOptions): void {
+    const headerKeys = Object.keys(options.headers)
+    const hasHeaders = options.referer.length > 0 || options.userAgent.length > 0 || headerKeys.length > 0
+    if (!hasHeaders) {
+      return
+    }
+    logger.warn('AVPlayer does not support request headers in current implementation; trying direct URL playback')
     if (options.referer.length > 0) {
       logger.info('  Referer (not applied): %{public}s', options.referer.substring(0, 60))
     }
     if (options.userAgent.length > 0) {
       logger.info('  UserAgent (not applied): %{public}s', options.userAgent.substring(0, 40))
     }
-    let headerKeys = Object.keys(options.headers)
     if (headerKeys.length > 0) {
       logger.info('  Custom headers (not applied): %{public}d', headerKeys.length)
     }
-    this.state.stateName = 'error'
-    this.state.error = '当前播放器不支持该源的请求头设置，建议等待高级播放器'
-    this.state.playing = false
-    this.notifyStateChange()
   }
 
   private registerListeners(): void {
@@ -102,9 +109,22 @@ export class AVPlayerEngine implements IPlayerEngine {
           this.state.buffering = false
           if (this.avPlayer) {
             this.state.durationMs = this.avPlayer.duration
+            const w = this.avPlayer.width
+            const h = this.avPlayer.height
+            if (w > 0 && h > 0) {
+              this.state.videoWidth = w
+              this.state.videoHeight = h
+              logger.info('AVPlayer video size: %{public}dx%{public}d', w, h)
+            }
           }
-          if (this.avPlayer) {
+          if (this.avPlayer && this.currentOptions !== null && this.currentOptions.startPositionMs > 0) {
+            const startPos = this.currentOptions.startPositionMs
+            this.seekBeforeInitialPlay(startPos)
+          } else if (this.avPlayer) {
             this.avPlayer.play()
+          }
+          if (this.pendingAspectMode !== null) {
+            this.setAspectMode(this.pendingAspectMode)
           }
           break
         case 'playing':
@@ -123,10 +143,12 @@ export class AVPlayerEngine implements IPlayerEngine {
           break
         case 'released':
           this.clearPrepareTimeout()
+          this.clearInitialSeekState()
           this.state.playing = false
           break
         case 'error':
           this.clearPrepareTimeout()
+          this.clearInitialSeekState()
           this.state.playing = false
           this.state.error = 'Player error'
           break
@@ -156,8 +178,13 @@ export class AVPlayerEngine implements IPlayerEngine {
       this.notifyStateChange()
     })
 
+    this.avPlayer.on('seekDone', (seekDoneTime: number) => {
+      this.handleSeekDone(seekDoneTime)
+    })
+
     this.avPlayer.on('error', (err: Error) => {
       this.clearPrepareTimeout()
+      this.clearInitialSeekState()
       const msg = err instanceof Error ? err.message : String(err)
       logger.error('AVPlayer error callback: %{public}s', msg)
       this.state.error = msg.length > 0 ? 'AVPlayer error: ' + msg : 'AVPlayer error (check URL format and network)'
@@ -166,12 +193,52 @@ export class AVPlayerEngine implements IPlayerEngine {
     })
   }
 
+  private seekBeforeInitialPlay(positionMs: number): void {
+    if (!this.avPlayer) {
+      return
+    }
+    try {
+      logger.info('AVPlayer initial seek before play: %{public}dms', positionMs)
+      this.pendingInitialPlayAfterSeek = true
+      this.pendingInitialSeekMs = positionMs
+      this.avPlayer.seek(positionMs)
+      this.startInitialSeekFallbackTimer()
+    } catch (err) {
+      logger.warn('AVPlayer initial seek threw, fallback to direct play: %{public}s',
+        err instanceof Error ? err.message : String(err))
+      this.clearInitialSeekState()
+      if (this.avPlayer) {
+        this.avPlayer.play()
+      }
+    }
+  }
+
+  private handleSeekDone(seekDoneTime: number): void {
+    if (!this.pendingInitialPlayAfterSeek) {
+      return
+    }
+    logger.info('AVPlayer initial seek done: %{public}dms', seekDoneTime)
+    this.playAfterInitialSeek()
+  }
+
+  private playAfterInitialSeek(): void {
+    this.clearInitialSeekState()
+    if (!this.avPlayer || this.state.stateName === 'released' || this.state.stateName === 'error') {
+      return
+    }
+    this.avPlayer.play()
+  }
+
   play(): void {
     if (this.avPlayer) {
       try {
         this.avPlayer.play()
+        this.state.playing = true
+        this.state.stateName = 'playing'
+        this.notifyStateChange()
       } catch (e) {
         this.state.error = 'play error'
+        this.notifyStateChange()
       }
     }
   }
@@ -180,8 +247,12 @@ export class AVPlayerEngine implements IPlayerEngine {
     if (this.avPlayer) {
       try {
         this.avPlayer.pause()
+        this.state.playing = false
+        this.state.stateName = 'paused'
+        this.notifyStateChange()
       } catch (e) {
         this.state.error = 'pause error'
+        this.notifyStateChange()
       }
     }
   }
@@ -205,28 +276,79 @@ export class AVPlayerEngine implements IPlayerEngine {
   setSpeed(speed: number): void {
     if (this.avPlayer) {
       let playbackSpeed: media.PlaybackSpeed = media.PlaybackSpeed.SPEED_FORWARD_1_00_X
+      let normalizedSpeed = 1.0
       if (speed <= 0.25) {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_0_25_X
+        normalizedSpeed = 0.25
       } else if (speed <= 0.5) {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_0_50_X
+        normalizedSpeed = 0.5
       } else if (speed <= 0.75) {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_0_75_X
+        normalizedSpeed = 0.75
       } else if (speed <= 1.0) {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_1_00_X
+        normalizedSpeed = 1.0
       } else if (speed <= 1.25) {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_1_25_X
+        normalizedSpeed = 1.25
       } else if (speed <= 1.75) {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_1_75_X
+        normalizedSpeed = 1.75
       } else {
         playbackSpeed = media.PlaybackSpeed.SPEED_FORWARD_2_00_X
+        normalizedSpeed = 2.0
       }
       this.avPlayer.setSpeed(playbackSpeed)
+      this.state.speed = normalizedSpeed
+      this.notifyStateChange()
     }
   }
 
   setVolume(volume: number): void {
     if (this.avPlayer) {
       this.avPlayer.setVolume(volume)
+    }
+  }
+
+  setAspectMode(mode: VideoAspectMode): void {
+    this.pendingAspectMode = mode
+    if (this.avPlayer !== null) {
+      try {
+        const modeName = this.getAspectModeName(mode)
+        const scaleType = this.getVideoScaleType(mode)
+        this.avPlayer.videoScaleType = scaleType
+        this.pendingAspectMode = null
+        logger.info('AVPlayer setAspectMode ok: mode=%{public}s, params=videoScaleType=%{public}d',
+          modeName, scaleType)
+      } catch (err) {
+        logger.warn('AVPlayer setAspectMode failed: %{public}s', String(err))
+      }
+    }
+  }
+
+  private getVideoScaleType(mode: VideoAspectMode): media.VideoScaleType {
+    switch (mode) {
+      case VideoAspectMode.contain:
+        return media.VideoScaleType.VIDEO_SCALE_TYPE_SCALED_ASPECT
+      case VideoAspectMode.cover:
+        return media.VideoScaleType.VIDEO_SCALE_TYPE_FIT_CROP
+      case VideoAspectMode.fill:
+      default:
+        return media.VideoScaleType.VIDEO_SCALE_TYPE_FIT
+    }
+  }
+
+  private getAspectModeName(mode: VideoAspectMode): string {
+    switch (mode) {
+      case VideoAspectMode.contain:
+        return 'contain(自动适应)'
+      case VideoAspectMode.cover:
+        return 'cover(裁切填充)'
+      case VideoAspectMode.fill:
+        return 'fill(拉伸填充)'
+      default:
+        return 'unknown'
     }
   }
 
@@ -240,6 +362,7 @@ export class AVPlayerEngine implements IPlayerEngine {
 
   release(): void {
     this.clearPrepareTimeout()
+    this.clearInitialSeekState()
     if (this.avPlayer) {
       try {
         this.avPlayer.release()
@@ -271,8 +394,34 @@ export class AVPlayerEngine implements IPlayerEngine {
     }
   }
 
+  private startInitialSeekFallbackTimer(): void {
+    this.clearInitialSeekFallbackTimer()
+    this.initialSeekFallbackTimer = setTimeout(() => {
+      this.initialSeekFallbackTimer = -1
+      if (!this.pendingInitialPlayAfterSeek) {
+        return
+      }
+      logger.warn('AVPlayer initial seek timeout, fallback to play: %{public}dms', this.pendingInitialSeekMs)
+      this.playAfterInitialSeek()
+    }, 1600)
+  }
+
+  private clearInitialSeekFallbackTimer(): void {
+    if (this.initialSeekFallbackTimer >= 0) {
+      clearTimeout(this.initialSeekFallbackTimer)
+      this.initialSeekFallbackTimer = -1
+    }
+  }
+
+  private clearInitialSeekState(): void {
+    this.clearInitialSeekFallbackTimer()
+    this.pendingInitialPlayAfterSeek = false
+    this.pendingInitialSeekMs = -1
+  }
+
   private failPlayback(message: string): void {
     this.clearPrepareTimeout()
+    this.clearInitialSeekState()
     this.state.error = message
     this.state.stateName = 'error'
     this.state.playing = false

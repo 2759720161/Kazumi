@@ -46,6 +46,7 @@ struct HtmlXPathPocPage {
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
+    .scrollBar(BarState.Off)
     .background('#FFFFFF')
     .ignoreLayoutSafeArea()
   }

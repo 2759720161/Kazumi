@@ -54,11 +54,11 @@
     },
     {
       "name": "rating_star",
-      "value": "#4CAF50"
+      "value": "#4DA3FF"
     },
     {
       "name": "rating_star_empty",
-      "value": "#555555"
+      "value": "#5F6B7A"
     },
     {
       "name": "text_on_primary",
@@ -77,44 +77,48 @@
       "value": "#0D1117"
     },
     {
-      "name": "page_background_green",
-      "value": "#0D1117"
+      "name": "page_background_media",
+      "value": "#0B1220"
     },
     {
-      "name": "text_title_green",
-      "value": "#E0E5E2"
+      "name": "player_side_panel_surface",
+      "value": "#D90B1220"
     },
     {
-      "name": "text_body_green",
-      "value": "#D8DDD9"
+      "name": "text_title",
+      "value": "#E6EEF8"
     },
     {
-      "name": "text_label_green",
-      "value": "#B8BEB5"
+      "name": "text_body",
+      "value": "#D8E2EE"
     },
     {
-      "name": "text_muted_green",
-      "value": "#8B918A"
+      "name": "text_label",
+      "value": "#B8C4D2"
     },
     {
-      "name": "text_subtitle_green",
-      "value": "#9AA098"
+      "name": "text_muted",
+      "value": "#8B98A8"
     },
     {
-      "name": "text_hint_green",
-      "value": "#8A9088"
+      "name": "text_subtitle",
+      "value": "#9AA8B8"
     },
     {
-      "name": "text_placeholder_green",
-      "value": "#8B918A"
+      "name": "text_hint",
+      "value": "#8A96A8"
+    },
+    {
+      "name": "text_placeholder",
+      "value": "#8A96A8"
     },
     {
       "name": "text_episode_unselected",
-      "value": "#C8CEC5"
+      "value": "#C8D4E2"
     },
     {
       "name": "text_download_button",
-      "value": "#E8F5E8"
+      "value": "#E8F2FF"
     },
     {
       "name": "text_overlay_sub",
@@ -129,16 +133,16 @@
       "value": "#EF5350"
     },
     {
-      "name": "accent_green",
-      "value": "#4CAF50"
+      "name": "accent_blue",
+      "value": "#4DA3FF"
     },
     {
-      "name": "accent_green_light",
-      "value": "#2E4A32"
+      "name": "accent_blue_light",
+      "value": "#173A5C"
     },
     {
       "name": "source_badge_bg",
-      "value": "#D9E6F4DE"
+      "value": "#D9173A5C"
     },
     {
       "name": "status_success",
@@ -162,39 +166,39 @@
     },
     {
       "name": "border_tag",
-      "value": "#3A3F38"
+      "value": "#303A4C"
     },
     {
       "name": "border_panel",
-      "value": "#3D4239"
+      "value": "#334057"
     },
     {
       "name": "border_item",
-      "value": "#363B34"
+      "value": "#303A4C"
     },
     {
-      "name": "divider_green",
-      "value": "#333830"
+      "name": "divider_blue",
+      "value": "#2D3A4D"
     },
     {
       "name": "skeleton_background",
-      "value": "#2A2E2C"
+      "value": "#202B3A"
     },
     {
       "name": "episode_card_background",
-      "value": "#1A1F1C"
+      "value": "#101A2A"
     },
     {
       "name": "episode_item_selected_bg",
-      "value": "#1E2A22"
+      "value": "#132A44"
     },
     {
       "name": "episode_item_unselected_bg",
-      "value": "#1C201A"
+      "value": "#111C2C"
     },
     {
       "name": "road_unselected_bg",
-      "value": "#1E2420"
+      "value": "#142033"
     },
     {
       "name": "button_primary_bg",
@@ -202,7 +206,7 @@
     },
     {
       "name": "button_accent_bg",
-      "value": "#D94CAF50"
+      "value": "#D94DA3FF"
     },
     {
       "name": "button_info_bg",
@@ -218,11 +222,11 @@
     },
     {
       "name": "button_floating_bg",
-      "value": "#D92E4A32"
+      "value": "#D9173A5C"
     },
     {
       "name": "panel_dark_bg",
-      "value": "#D9E0E5E2"
+      "value": "#D9E6EEF8"
     },
     {
       "name": "overlay_control_bg",
@@ -270,7 +274,7 @@
     },
     {
       "name": "shadow_button_accent",
-      "value": "#204CAF50"
+      "value": "#204DA3FF"
     },
     {
       "name": "shadow_button_info",
@@ -287,6 +291,14 @@
     {
       "name": "color_transparent",
       "value": "#00000000"
+    },
+    {
+      "name": "card_surface_blue",
+      "value": "#D9111C2C"
+    },
+    {
+      "name": "tag_chip_bg",
+      "value": "#1AFFFFFF"
     }
   ]
 }

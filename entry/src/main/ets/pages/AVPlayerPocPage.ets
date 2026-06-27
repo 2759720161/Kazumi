@@ -366,6 +366,7 @@ struct AVPlayerPocPage {
       }
       .layoutWeight(1)
       .width('100%')
+      .scrollBar(BarState.Off)
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)

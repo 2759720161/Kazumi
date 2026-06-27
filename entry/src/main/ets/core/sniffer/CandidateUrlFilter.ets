@@ -1,4 +1,7 @@
 import { SnifferResult } from './SnifferResult'
+import { Logger } from '../../utils/Logger'
+
+const logger = new Logger('UrlFilter')
 
 const AD_DOMAINS: string[] = [
   'doubleclick.net',
@@ -20,7 +23,7 @@ const NON_MEDIA_DOMAINS: string[] = [
   'snssdk.com'
 ]
 
-const VIDEO_EXTENSIONS: string[] = ['.m3u8', '.mp4', '.flv', '.ts', '.m4v', '.webm']
+const VIDEO_EXTENSIONS: string[] = ['.m3u8', '.mp4', '.flv', '.ts', '.m4v', '.webm', '.mknvideo']
 
 const NON_MEDIA_EXTENSIONS: string[] = [
   '.js', '.css', '.html', '.htm', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg',
@@ -29,8 +32,17 @@ const NON_MEDIA_EXTENSIONS: string[] = [
 
 const MEDIA_URL_HINTS: string[] = [
   '://v16', '://v26', '://v3', '://v6', '://v9',
+  '://lf', '://lf2', '://lf3', '://lf6', '://lf9', '://lf20',
+  '://vkc', '://vkce', '://fev', '://febo',
   '/video/tos/',
-  'videocdn', 'video-cdn', 'mcdn', 'bytecdntp'
+  'videocdn', 'video-cdn', 'mcdn', 'bytecdntp',
+  'bytetos.com', 'csp-sign', 'tos-cn-v-',
+  'play.mknacg.top:9009/d/', 'tjdownload.pan.wo.cn', 'pan.wo.cn/openapi/download',
+  '/openapi/download?fid=',
+  '/videos/', '/videoplayback', '/videoplay',
+  'cdnvideo', 'cdn-video', 'hlsvideo',
+  'streaming', 'liveld',
+  'cdn.vvvip'
 ]
 
 export class CandidateUrlFilter {
@@ -38,15 +50,41 @@ export class CandidateUrlFilter {
 
   isVideoUrl(url: string): boolean {
     let lowerUrl = url.toLowerCase()
+    const cleanUrl = lowerUrl.split('?')[0].split('#')[0]
+    for (let i = 0; i < NON_MEDIA_EXTENSIONS.length; i++) {
+      if (cleanUrl.endsWith(NON_MEDIA_EXTENSIONS[i])) {
+        return false
+      }
+    }
     for (let i = 0; i < VIDEO_EXTENSIONS.length; i++) {
-      if (lowerUrl.indexOf(VIDEO_EXTENSIONS[i]) !== -1) {
+      if (cleanUrl.indexOf(VIDEO_EXTENSIONS[i]) !== -1) {
         return true
       }
     }
-    if (lowerUrl.indexOf('m3u8') !== -1 || lowerUrl.indexOf('mp4') !== -1) {
+    if (cleanUrl.indexOf('m3u8') !== -1 || cleanUrl.indexOf('mp4') !== -1) {
       return true
     }
     return this.isLikelyExtensionlessMediaUrl(lowerUrl)
+  }
+
+  isHttpVideoUrl(url: string): boolean {
+    let lowerUrl = url.toLowerCase()
+    if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
+      return false
+    }
+    if (lowerUrl.indexOf('blob:') !== -1) {
+      return false
+    }
+    if (this.isAdUrl(url)) {
+      return false
+    }
+    const cleanUrl = lowerUrl.split('?')[0].split('#')[0]
+    for (let i = 0; i < NON_MEDIA_EXTENSIONS.length; i++) {
+      if (cleanUrl.endsWith(NON_MEDIA_EXTENSIONS[i])) {
+        return false
+      }
+    }
+    return true
   }
 
   isAdUrl(url: string): boolean {
@@ -65,24 +103,102 @@ export class CandidateUrlFilter {
 
   filter(url: string, source: string): SnifferResult | null {
     if (this.isDataOrBlobUrl(url)) {
+      logger.debug('filter REJECT blob/data: %{public}s', url.substring(0, 80))
       return null
     }
-    if (this.isAdUrl(url)) {
+    const candidateUrl = this.extractNestedMediaUrl(url)
+    if (candidateUrl !== url) {
+      logger.info('filter UNWRAP nested media: %{public}s -> %{public}s',
+        url.substring(0, 80), candidateUrl.substring(0, 80))
+    }
+    if (this.isAdUrl(candidateUrl)) {
+      logger.debug('filter REJECT ad: %{public}s', candidateUrl.substring(0, 80))
       return null
     }
-    if (!this.isVideoUrl(url)) {
+    if (!this.isVideoUrl(candidateUrl)) {
+      logger.debug('filter REJECT not-video: %{public}s', candidateUrl.substring(0, 80))
       return null
     }
-    if (this.seenUrls.has(url)) {
+    if (this.seenUrls.has(candidateUrl)) {
+      logger.debug('filter REJECT dup: %{public}s', candidateUrl.substring(0, 80))
       return null
     }
-    this.seenUrls.add(url)
-    let type = SnifferResult.detectType(url)
-    if (type === 'unknown' && this.isLikelyExtensionlessMediaUrl(url.toLowerCase())) {
+    this.seenUrls.add(candidateUrl)
+    let type = SnifferResult.detectType(candidateUrl)
+    if (type === 'unknown' && this.isLikelyExtensionlessMediaUrl(candidateUrl.toLowerCase())) {
       type = 'mp4'
     }
-    let quality = this.guessQuality(url)
-    return new SnifferResult(url, type, quality, source)
+    let quality = this.guessQuality(candidateUrl)
+    logger.info('filter ACCEPT [%{public}s] %{public}s from %{public}s', type, candidateUrl.substring(0, 80), source)
+    return new SnifferResult(candidateUrl, type, quality, source)
+  }
+
+  filterVideoElementUrl(url: string, source: string): SnifferResult | null {
+    const candidateUrl = this.extractNestedMediaUrl(url)
+    if (candidateUrl !== url) {
+      logger.info('videoElement UNWRAP nested media: %{public}s -> %{public}s',
+        url.substring(0, 80), candidateUrl.substring(0, 80))
+    }
+    if (!this.isHttpVideoUrl(candidateUrl)) {
+      logger.debug('videoElement REJECT not-http/ad: %{public}s', candidateUrl.substring(0, 80))
+      return null
+    }
+    if (this.seenUrls.has(candidateUrl)) {
+      logger.debug('videoElement REJECT dup: %{public}s', candidateUrl.substring(0, 80))
+      return null
+    }
+    this.seenUrls.add(candidateUrl)
+    let type = SnifferResult.detectType(candidateUrl)
+    if (type === 'unknown') {
+      type = 'mp4'
+    }
+    let quality = this.guessQuality(candidateUrl)
+    logger.info('videoElement ACCEPT [%{public}s] %{public}s from %{public}s', type, candidateUrl.substring(0, 80), source)
+    return new SnifferResult(candidateUrl, type, quality, source)
+  }
+
+  private extractNestedMediaUrl(url: string): string {
+    const queryIndex = url.indexOf('?')
+    if (queryIndex === -1) {
+      return url
+    }
+    const query = url.substring(queryIndex + 1)
+    const params = query.split('&')
+    const keys: string[] = ['url=', 'play=', 'src=', 'video=', 'videourl=']
+    for (let i = 0; i < params.length; i++) {
+      const part = params[i]
+      const lowerPart = part.toLowerCase()
+      for (let j = 0; j < keys.length; j++) {
+        if (lowerPart.startsWith(keys[j])) {
+          const rawValue = part.substring(keys[j].length)
+          const decoded = this.decodeUrlParam(rawValue)
+          const nestedValues = decoded.split(',')
+          for (let k = 0; k < nestedValues.length; k++) {
+            const nestedValue = nestedValues[k].trim()
+            if (this.isHttpVideoUrl(nestedValue) && this.isVideoUrl(nestedValue)) {
+              return nestedValue
+            }
+          }
+        }
+      }
+    }
+    return url
+  }
+
+  private decodeUrlParam(value: string): string {
+    let decoded = value.replace(/\+/g, '%20')
+    for (let i = 0; i < 2; i++) {
+      try {
+        const next = decodeURIComponent(decoded)
+        if (next === decoded) {
+          break
+        }
+        decoded = next
+      } catch (e) {
+        break
+      }
+    }
+    return decoded
   }
 
   private isLikelyExtensionlessMediaUrl(lowerUrl: string): boolean {

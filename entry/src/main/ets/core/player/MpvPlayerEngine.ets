@@ -1,10 +1,10 @@
-import { IPlayerEngine, PlaybackOptions, PlayerState } from './IPlayerEngine'
+import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode } from './IPlayerEngine'
 import { Logger } from '../../utils/Logger'
 import mpvNapi from 'libmpv_napi.so'
 
 const logger = new Logger('MpvPlayerEngine')
 
-const MPV_FORMAT_STRING = 1
+const MPV_FORMAT_FLAG = 3
 const MPV_FORMAT_DOUBLE = 5
 const MPV_EVENT_LOG_MESSAGE = 2
 const MPV_EVENT_START_FILE = 6
@@ -95,12 +95,25 @@ export class MpvPlayerEngine implements IPlayerEngine {
   private ctxId: number = -1
   private readonly prepareTimeoutMs: number = 15000
   private prepareTimeoutTimer: number = -1
-  private hwdecMode: string = 'ohcodec'
+  private hwdecMode: string = 'auto'
   private hlsAdFilterEnabled: boolean = true
   private segAllowImgEnabled: boolean = true
+  private pendingAspectMode: VideoAspectMode | null = null
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
+    if (this.isInitialized && this.ctxId >= 0 && napi !== null && surfaceId.length > 0) {
+      try {
+        const err = napi.nativeSetSurfaceId(this.ctxId, surfaceId)
+        if (err < 0) {
+          logger.warn('mpv surface rebind failed: %{public}d', err)
+        } else {
+          logger.info('mpv surface rebound: %{public}s', surfaceId)
+        }
+      } catch (_err) {
+        logger.warn('mpv surface rebind threw')
+      }
+    }
   }
 
   setHwdecMode(mode: string): void {
@@ -158,6 +171,10 @@ export class MpvPlayerEngine implements IPlayerEngine {
       }
       this.isInitialized = true
       logger.info('mpv initialized successfully')
+
+      if (this.pendingAspectMode !== null) {
+        this.setAspectMode(this.pendingAspectMode)
+      }
 
       napi.nativeOnEvent(this.ctxId, (event: MpvEventData) => {
         this.handleMpvEvent(event)
@@ -261,6 +278,28 @@ export class MpvPlayerEngine implements IPlayerEngine {
     }
   }
 
+  setAspectMode(mode: VideoAspectMode): void {
+    this.pendingAspectMode = mode
+    if (!this.isInitialized || this.ctxId < 0 || napi === null) {
+      return
+    }
+    try {
+      const modeName = this.getAspectModeName(mode)
+      const keepAspect = this.getMpvKeepAspectValue(mode)
+      const err = napi.nativeSetProperty(this.ctxId, 'keepaspect', keepAspect)
+      if (err < 0) {
+        logger.warn('mpv setAspectMode failed: mode=%{public}s, keepaspect=%{public}s, err=%{public}d',
+          modeName, keepAspect, err)
+        return
+      }
+      this.pendingAspectMode = null
+      logger.info('mpv setAspectMode ok: mode=%{public}s, params=keepaspect=%{public}s',
+        modeName, keepAspect)
+    } catch (err) {
+      logger.warn('mpv setAspectMode threw: %{public}s', String(err))
+    }
+  }
+
   getState(): PlayerState {
     return this.state
   }
@@ -317,6 +356,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.clearPrepareTimeout()
         this.state.stateName = 'playing'
         this.state.playing = true
+        this.fetchVideoSize()
         this.notifyStateChange()
         logger.info('mpv event: file-loaded')
         break
@@ -373,8 +413,6 @@ export class MpvPlayerEngine implements IPlayerEngine {
       return
     }
 
-    logger.info('mpv property: %{public}s=%{public}f', name, event.propertyValueDouble)
-
     switch (name) {
       case 'time-pos':
         if (event.propertyValueDouble >= 0) {
@@ -385,11 +423,12 @@ export class MpvPlayerEngine implements IPlayerEngine {
       case 'duration':
         if (event.propertyValueDouble > 0) {
           this.state.durationMs = Math.max(0, Math.round(event.propertyValueDouble * 1000))
+          logger.info('mpv duration updated: %{public}dms', this.state.durationMs)
         }
         break
 
       case 'pause':
-        this.state.playing = event.propertyValueStr !== 'yes'
+        this.state.playing = !this.readMpvFlag(event)
         if (this.state.playing && this.state.stateName !== 'completed') {
           this.state.stateName = 'playing'
         } else if (!this.state.playing && this.state.stateName !== 'completed' && this.state.stateName !== 'error') {
@@ -398,7 +437,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
         break
 
       case 'eof-reached':
-        if (event.propertyValueStr === 'yes') {
+        if (this.readMpvFlag(event)) {
           this.state.completed = true
           this.state.playing = false
           this.state.stateName = 'completed'
@@ -423,6 +462,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
       napi.nativeSetProperty(this.ctxId, 'vo', 'ohcodec')
       napi.nativeSetProperty(this.ctxId, 'ao', 'ohaudio')
       napi.nativeSetProperty(this.ctxId, 'hwdec', this.hwdecMode)
+      napi.nativeSetProperty(this.ctxId, 'keepaspect', 'no')
 
       const demuxerOpts: string[] = []
       if (this.hlsAdFilterEnabled) {
@@ -462,6 +502,29 @@ export class MpvPlayerEngine implements IPlayerEngine {
     }
   }
 
+  private fetchVideoSize(): void {
+    if (this.ctxId < 0 || napi === null) {
+      return
+    }
+    try {
+      const dwStr = napi.nativeGetProperty(this.ctxId, 'dwidth')
+      const dhStr = napi.nativeGetProperty(this.ctxId, 'dheight')
+      if (dwStr !== null && dhStr !== null) {
+        const dw = parseInt(dwStr, 10)
+        const dh = parseInt(dhStr, 10)
+        if (!isNaN(dw) && !isNaN(dh) && dw > 0 && dh > 0) {
+          this.state.videoWidth = dw
+          this.state.videoHeight = dh
+          logger.info('mpv video size: %{public}dx%{public}d', dw, dh)
+        } else {
+          logger.warn('mpv video size invalid: dwidth=%{public}s, dheight=%{public}s', dwStr, dhStr)
+        }
+      }
+    } catch (err) {
+      logger.warn('mpv fetchVideoSize failed: %{public}s', String(err))
+    }
+  }
+
   private observeKeyProperties(): void {
     if (this.ctxId < 0 || napi === null) {
       return
@@ -469,11 +532,46 @@ export class MpvPlayerEngine implements IPlayerEngine {
     try {
       napi.nativeObserveProperty(this.ctxId, 1, 'time-pos', MPV_FORMAT_DOUBLE)
       napi.nativeObserveProperty(this.ctxId, 2, 'duration', MPV_FORMAT_DOUBLE)
-      napi.nativeObserveProperty(this.ctxId, 3, 'pause', MPV_FORMAT_STRING)
-      napi.nativeObserveProperty(this.ctxId, 4, 'eof-reached', MPV_FORMAT_STRING)
+      napi.nativeObserveProperty(this.ctxId, 3, 'pause', MPV_FORMAT_FLAG)
+      napi.nativeObserveProperty(this.ctxId, 4, 'eof-reached', MPV_FORMAT_FLAG)
       napi.nativeObserveProperty(this.ctxId, 5, 'buffering-state', MPV_FORMAT_DOUBLE)
     } catch (_err) {
       logger.warn('observe properties failed (non-fatal)')
+    }
+  }
+
+  private readMpvFlag(event: MpvEventData): boolean {
+    if (event.propertyValueStr === 'yes' || event.propertyValueStr === 'true' || event.propertyValueStr === '1') {
+      return true
+    }
+    if (event.propertyValueStr === 'no' || event.propertyValueStr === 'false' || event.propertyValueStr === '0') {
+      return false
+    }
+    return event.propertyValueDouble > 0
+  }
+
+  private getAspectModeName(mode: VideoAspectMode): string {
+    switch (mode) {
+      case VideoAspectMode.contain:
+        return 'contain(自动适应)'
+      case VideoAspectMode.cover:
+        return 'cover(裁切填充)'
+      case VideoAspectMode.fill:
+        return 'fill(拉伸填充)'
+      default:
+        return 'unknown'
+    }
+  }
+
+  private getMpvKeepAspectValue(mode: VideoAspectMode): string {
+    switch (mode) {
+      case VideoAspectMode.contain:
+      case VideoAspectMode.cover:
+        return 'yes'
+      case VideoAspectMode.fill:
+        return 'no'
+      default:
+        return 'yes'
     }
   }
 

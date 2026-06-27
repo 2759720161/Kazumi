@@ -59,6 +59,7 @@ export struct RuleDebugPage {
       .width('100%')
       .height('100%')
       .edgeEffect(EdgeEffect.Spring)
+      .scrollBar(BarState.Off)
       .clip(false)
     }
     .width('100%')
@@ -123,6 +124,7 @@ export struct RuleDebugPage {
         }
         .width('100%')
         .height(Math.min(this.rules.length * 56, 280))
+        .scrollBar(BarState.Off)
       }
     }
     .width('100%')
@@ -201,6 +203,7 @@ export struct RuleDebugPage {
       }
       .width('100%')
       .height(300)
+      .scrollBar(BarState.Off)
       .borderRadius(8)
       .backgroundColor($r('app.color.card_background'))
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })

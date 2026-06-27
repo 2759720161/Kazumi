@@ -1,6 +1,6 @@
 @Component
 export struct CoverSection {
-  @StorageLink('topSafeHeight') topSafeHeight: number = 0
+
   @Prop @Watch('onCoverChanged') cover: string = ''
   @Prop @Watch('onCoverChanged') coverFallback: string = ''
   @Prop @Watch('onCoverChanged') bangumiCover: string = ''
@@ -8,19 +8,17 @@ export struct CoverSection {
   @Prop originalName: string = ''
   @Prop ratingScore: number = 0
   @Prop rank: number = 0
-  @Prop airDate: string = ''
+  @Link airDate: string
   @Prop votes: number = 0
-  @Prop eps: number = 0
-  @Prop isFavorite: boolean = false
+  @Link eps: number
   @State currentCover: string = ''
   @State coverKey: string = ''
-  @State stableTopPadding: number = 92
-  onFavoriteToggle?: () => void
-  onBack?: () => void
-  onOpenExternal?: () => void
+
+  topSpacerHeight: number = 0
+
 
   aboutToAppear(): void {
-    this.stableTopPadding = this.computeTopPadding()
+
     this.coverKey = this.buildCoverKey()
     this.currentCover = this.selectBestCover()
   }
@@ -30,177 +28,207 @@ export struct CoverSection {
       if (this.currentCover.length > 0) {
         Image(this.currentCover)
           .width('100%')
-          .height(486)
+          .height('100%')
           .objectFit(ImageFit.Cover)
           .blur(26)
-          .opacity(0.42)
+          .opacity(0.38)
           .onError(() => {
             this.tryNextCover()
           })
       }
 
       Column() {
-        Row() {
-          this.SymbolIconButton($r('sys.symbol.chevron_left'), () => {
-            if (this.onBack) {
-              this.onBack()
-            }
-          })
-
-          Blank()
-
-          if (this.onOpenExternal) {
-            this.SymbolIconButton($r('sys.symbol.share'), () => {
-              if (this.onOpenExternal) {
-                this.onOpenExternal()
-              }
-            })
-          }
-        }
-        .width('100%')
-        .padding({ left: 28, right: 28, top: this.stableTopPadding })
-
-        Text(this.title)
-          .fontSize(28)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_title_green'))
-          .lineHeight(36)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-          .padding({ left: 28, right: 28, top: 12 })
-
-        Row() {
-          Image(this.currentCover.length > 0 ? this.currentCover : $r('app.media.ic_placeholder'))
-            .width(156)
-            .height(222)
-            .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
-            .borderRadius(12)
-            .alt($r('app.media.ic_placeholder'))
-            .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-
-          Column() {
-            Text('放送开始:')
-              .fontSize(15)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_label_green'))
-
-            Text(this.airDate.length > 0 ? this.airDate : '未知')
-              .fontSize(21)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.rating_star'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .margin({ top: 4 })
-
-            Text(this.votes > 0 ? `${this.votes} 人评分:` : 'Bangumi 评分:')
-              .fontSize(14)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_label_green'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .margin({ top: 12 })
-
-            Row() {
-              Text(this.ratingScore > 0 ? this.ratingScore.toFixed(1) : '-')
-                .fontSize(16)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.rating_star'))
-                .margin({ right: 6 })
-              this.Star(1)
-              this.Star(2)
-              this.Star(3)
-              this.Star(4)
-              this.Star(5)
-            }
-            .alignItems(VerticalAlign.Center)
-            .margin({ top: 4 })
-
-            Text('Bangumi Ranked:')
-              .fontSize(14)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_label_green'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .margin({ top: 12 })
-
-            Text(this.rank > 0 ? `#${this.rank}` : '#-')
-              .fontSize(22)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.rating_star'))
-              .margin({ top: 4 })
-
-            Blank()
-
-            Button() {
-              Row() {
-                SymbolGlyph(this.isFavorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'))
-                  .fontSize(20)
-                  .fontColor([$r('app.color.text_on_primary')])
-                Text(this.isFavorite ? '已追' : '未追')
-                  .fontSize(17)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor($r('app.color.text_on_primary'))
-                  .margin({ left: 12 })
-              }
-              .justifyContent(FlexAlign.Center)
-              .width('100%')
-            }
-            .width(136)
-            .height(52)
-            .borderRadius(26)
-            .backgroundColor($r('app.color.button_accent_bg'))
-            .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-            .border({ width: 0.5, color: $r('app.color.border_specular') })
-            .shadow({ radius: 16, color: $r('app.color.shadow_button_accent'), offsetY: 5 })
-            .onClick(() => {
-              if (this.onFavoriteToggle) {
-                this.onFavoriteToggle()
-              }
-            })
-          }
-          .height(222)
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-          .margin({ left: 18 })
-        }
-        .width('100%')
-        .padding({ left: 28, right: 28, top: 18 })
-        .alignItems(VerticalAlign.Top)
       }
       .width('100%')
       .height('100%')
+      .linearGradient({
+        direction: GradientDirection.Bottom,
+        colors: [
+          [$r('app.color.hero_gradient_start'), 0],
+          [$r('app.color.hero_gradient_dark'), 0.28],
+          [$r('app.color.hero_gradient_mid'), 0.72],
+          [$r('app.color.page_background_media'), 1]
+        ]
+      })
+
+      Column() {
+        Blank()
+
+        this.HeroTitle()
+
+        Blank()
+          .height(16)
+
+        this.InfoDashboard()
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 20, right: 20 })
     }
     .width('100%')
-    .height(486)
-    .backgroundColor($r('app.color.page_background_green'))
+    .height(340 + this.topSpacerHeight)
+    .backgroundColor($r('app.color.page_background_media'))
   }
 
   @Builder
-  private SymbolIconButton(symbol: Resource, action: () => void) {
-    Button() {
-      SymbolGlyph(symbol)
-        .fontSize(22)
-        .fontColor([$r('app.color.text_primary')])
+  private HeroTitle() {
+    Column() {
+      Text(this.getDisplayTitle())
+        .fontSize(28)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_title'))
+        .lineHeight(40)
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+
+      if (this.originalName.length > 0 && this.originalName !== this.title) {
+        Text(this.originalName)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_muted'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .margin({ top: 8 })
+      }
     }
-    .width(44)
-    .height(44)
-    .backgroundColor($r('app.color.button_ghost_bg'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: $r('app.color.border_subtle') })
-    .shadow({ radius: 14, color: $r('app.color.shadow_surface'), offsetY: 4 })
-    .borderRadius(22)
-    .onClick(() => {
-      action()
-    })
+    .width('100%')
+    .padding({ left: 8, right: 8 })
   }
 
   @Builder
-  private Star(index: number) {
-    SymbolGlyph($r('sys.symbol.star_fill'))
-      .fontSize(19)
-      .fontColor([this.ratingScore / 2 >= index ? $r('app.color.rating_star') : $r('app.color.rating_star_empty')])
-      .margin({ right: 1 })
+  private InfoDashboard() {
+    Row() {
+      this.AirDateInfoLine()
+      this.VerticalDivider()
+      this.EpisodeInfoLine()
+      this.VerticalDivider()
+      this.RatingMetricBlock()
+      this.VerticalDivider()
+      this.RankMetricBlock()
+    }
+    .width('100%')
+    .height(112)
+    .padding({ left: 12, right: 12, top: 14, bottom: 14 })
+    .borderRadius(16)
+    .backgroundColor($r('app.color.card_surface_blue'))
+    .backgroundBlurStyle(BlurStyle.COMPONENT_ULTRA_THICK)
+    .border({ width: 0.5, color: $r('app.color.border_specular') })
+    .shadow({ radius: 22, color: $r('app.color.shadow_surface'), offsetY: 8 })
+  }
+
+  @Builder
+  private AirDateInfoLine() {
+    Column() {
+      Text(this.getAirDateText())
+        .fontSize(this.airDate.length > 0 ? 15 : 17)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.rating_star'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+
+      Text('放送')
+        .fontSize(10)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_subtitle'))
+        .maxLines(1)
+        .textAlign(TextAlign.Center)
+        .width('100%')
+        .margin({ top: 5 })
+    }
+    .layoutWeight(1)
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  private EpisodeInfoLine() {
+    Column() {
+      Text(this.getEpisodeText())
+        .fontSize(17)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.rating_star'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+
+      Text('全集')
+        .fontSize(10)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_subtitle'))
+        .maxLines(1)
+        .textAlign(TextAlign.Center)
+        .width('100%')
+        .margin({ top: 5 })
+    }
+    .layoutWeight(1)
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  private RatingMetricBlock() {
+    Column() {
+      Text(this.getRatingText())
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.rating_star'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+
+      Text('Bgm 评分')
+        .fontSize(10)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_subtitle'))
+        .maxLines(1)
+        .textAlign(TextAlign.Center)
+        .width('100%')
+        .margin({ top: 4 })
+    }
+    .layoutWeight(1)
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  private RankMetricBlock() {
+    Column() {
+      Text(this.getRankText())
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.rating_star'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+
+      Text('全站排名')
+        .fontSize(10)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_subtitle'))
+        .maxLines(1)
+        .textAlign(TextAlign.Center)
+        .width('100%')
+        .margin({ top: 4 })
+    }
+    .layoutWeight(1)
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  private VerticalDivider() {
+    Row()
+      .width(1)
+      .height(48)
+      .backgroundColor($r('app.color.divider_blue'))
+      .margin({ left: 4, right: 4 })
   }
 
   private selectBestCover(): string {
@@ -213,10 +241,32 @@ export struct CoverSection {
     return this.coverFallback
   }
 
-  private computeTopPadding(): number {
-    const safeHeight: number = this.topSafeHeight > 0 ? this.topSafeHeight : 36
-    return safeHeight + 56
+  private getDisplayTitle(): string {
+    if (this.title.length > 0) {
+      return this.title
+    }
+    if (this.originalName.length > 0) {
+      return this.originalName
+    }
+    return '未知番剧'
   }
+
+  private getRatingText(): string {
+    return this.ratingScore > 0 ? this.ratingScore.toFixed(1) : '-'
+  }
+
+  private getRankText(): string {
+    return this.rank > 0 ? `#${this.rank}` : '-'
+  }
+
+  private getEpisodeText(): string {
+    return this.eps > 0 ? `${this.eps} 集` : '未知'
+  }
+
+  private getAirDateText(): string {
+    return this.airDate.length > 0 ? this.airDate : '未知'
+  }
+
 
   private buildCoverKey(): string {
     return `${this.bangumiCover}|${this.cover}|${this.coverFallback}`
@@ -228,8 +278,9 @@ export struct CoverSection {
       return
     }
     this.coverKey = nextKey
-    if (this.currentCover.length === 0) {
-      this.currentCover = this.selectBestCover()
+    const nextCover = this.selectBestCover()
+    if (nextCover.length > 0 && nextCover !== this.currentCover) {
+      this.currentCover = nextCover
     }
   }
 

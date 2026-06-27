@@ -6,7 +6,13 @@ import { DanmakuTrackAllocator } from './DanmakuTrackAllocator'
 import { DanmakuRenderer } from './DanmakuRenderer'
 import { DanmakuEpisodeResolver } from './DanmakuEpisodeResolver'
 import { DandanCredentialStore } from './DandanCredentialStore'
+import { DanmakuMappingStore, DanmakuMappingRecord } from './DanmakuMappingStore'
+import { DanmakuPlaybackBindingStore, DanmakuPlaybackBinding } from './DanmakuPlaybackBindingStore'
 import { EpisodeNumberExtractor } from './EpisodeNumberExtractor'
+import { DanmakuStyleSettings } from './DanmakuStyleSettings'
+import { DanmakuRuntimeStats } from './DanmakuRuntimeStats'
+import { DanmakuCacheStore } from './DanmakuCacheStore'
+import { DanmakuDeduplicator } from './DanmakuDeduplicator'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
 
@@ -22,24 +28,66 @@ const DANMAKU_FAILURE_EPISODE_INDEX_OUT_OF_RANGE = '分集索引越界'
 const DANMAKU_FAILURE_EMPTY_COMMENTS = 'comment为空'
 const DANMAKU_FAILURE_BGM_ID_PATH_FAILED = 'Bangumi ID主路径失败'
 
+class DanmakuLoadRequest {
+  animeName: string = ''
+  episodeIndex: number = 0
+  bangumiId: number = 0
+  episodeTitle: string = ''
+  episodeKey: string = ''
+  sourceId: number = -1
+  episodeUrl: string = ''
+
+  constructor(animeName: string, episodeIndex: number, bangumiId: number,
+    episodeTitle: string, episodeKey: string, sourceId: number, episodeUrl: string) {
+    this.animeName = animeName
+    this.episodeIndex = episodeIndex
+    this.bangumiId = bangumiId
+    this.episodeTitle = episodeTitle
+    this.episodeKey = episodeKey
+    this.sourceId = sourceId
+    this.episodeUrl = episodeUrl
+  }
+}
+
 export class DanmakuManager {
   private apiService: DanmakuApiService = new DanmakuApiService()
   private episodeResolver: DanmakuEpisodeResolver = new DanmakuEpisodeResolver()
+  private mappingStore: DanmakuMappingStore = DanmakuMappingStore.getInstance()
+  private bindingStore: DanmakuPlaybackBindingStore = DanmakuPlaybackBindingStore.getInstance()
+  private persistentCache: DanmakuCacheStore = DanmakuCacheStore.getInstance()
   private timeSync: DanmakuTimeSync | null = null
   private trackAllocator: DanmakuTrackAllocator | null = null
   private renderer: DanmakuRenderer | null = null
   private danmakuCache: Map<string, DanmakuItem[]> = new Map()
+  private refreshingEpisodeIds: Set<number> = new Set()
   private isDanmakuEnabled: boolean = true
   private isLoading: boolean = false
   private currentEpisodeKey: string = ''
   private failureReason: string = ''
+  private pendingLoadRequest: DanmakuLoadRequest | null = null
+  private initialized: boolean = false
+  private pendingCanvasContext: CanvasRenderingContext2D | null = null
+  private pendingCanvasWidth: number = 0
+  private pendingCanvasHeight: number = 0
+  private stats: DanmakuRuntimeStats = new DanmakuRuntimeStats()
+  private currentSettings: DanmakuStyleSettings = DanmakuStyleSettings.getDefault()
+  private currentRawDanmaku: DanmakuItem[] = []
+  private lastPlayerState: PlayerState | null = null
 
   async init(): Promise<void> {
     await DandanCredentialStore.getInstance().init()
 
-    this.trackAllocator = new DanmakuTrackAllocator()
-    this.renderer = new DanmakuRenderer(this.trackAllocator)
-    this.timeSync = new DanmakuTimeSync(this.trackAllocator, this.renderer)
+    if (!this.initialized || this.trackAllocator === null || this.renderer === null || this.timeSync === null) {
+      this.trackAllocator = new DanmakuTrackAllocator()
+      this.renderer = new DanmakuRenderer(this.trackAllocator, this.stats)
+      this.timeSync = new DanmakuTimeSync(this.trackAllocator, this.renderer, this.stats)
+      this.initialized = true
+    }
+
+    this.currentSettings = await DanmakuStyleSettings.load()
+    this.renderer.setStyle(this.currentSettings)
+    this.timeSync.setSettings(this.currentSettings)
+    this.bindPendingCanvasIfReady()
 
     try {
       const prefs = PreferencesStore.getInstance()
@@ -52,7 +100,11 @@ export class DanmakuManager {
   }
 
   onPlayerStateUpdate(state: PlayerState): void {
+    this.lastPlayerState = state
     if (!this.isDanmakuEnabled) {
+      if (this.timeSync !== null) {
+        this.timeSync.syncPlayerSnapshot(state)
+      }
       return
     }
     if (this.timeSync !== null) {
@@ -60,8 +112,81 @@ export class DanmakuManager {
     }
   }
 
+  sendLocalDanmaku(content: string, positionMs: number, type: number = 0, color: string = '#FFB74D'): boolean {
+    const trimmed = content.trim()
+    if (!this.isDanmakuEnabled || trimmed.length === 0 || this.timeSync === null) {
+      return false
+    }
+    const safePosition = Math.max(0, positionMs)
+    const item = new DanmakuItem(trimmed, safePosition, color, this.currentSettings.fontSize, type, 'Local')
+    this.insertCurrentRawDanmaku(item)
+    const shown = this.timeSync.addLocalDanmaku(item)
+    logger.info('本地弹幕发送: shown=%{public}s, position=%{public}d, type=%{public}d',
+      String(shown), safePosition, type)
+    return shown
+  }
+
+  async loadDanmakuByEpisodeId(episodeId: number, animeId: number, animeTitle: string, episodeTitle: string): Promise<boolean> {
+    if (episodeId <= 0) {
+      return false
+    }
+    try {
+      const cachedItems = await this.persistentCache.get(episodeId)
+      if (cachedItems !== null && cachedItems.length > 0) {
+        this.clearCurrentDanmaku()
+        this.onDanmakuLoaded(cachedItems)
+        this.stats.currentEpisodeId = episodeId
+        this.stats.currentAnimeId = animeId
+        this.stats.matchSource = 'manual-cache'
+        this.stats.loadedCount = cachedItems.length
+        this.failureReason = ''
+        this.refreshEpisodeCache(episodeId)
+        logger.info('手动弹幕缓存加载成功: episodeId=%{public}d, count=%{public}d', episodeId, cachedItems.length)
+        return true
+      }
+
+      const response: DanmakuApiResponse = await this.apiService.fetchDanmaku(episodeId)
+      if (response.success && response.items.length > 0) {
+        await this.persistentCache.put(episodeId, response.items)
+        this.clearCurrentDanmaku()
+        this.onDanmakuLoaded(response.items)
+        this.stats.currentEpisodeId = episodeId
+        this.stats.currentAnimeId = animeId
+        this.stats.matchSource = 'manual'
+        this.stats.loadedCount = response.items.length
+        this.failureReason = ''
+        logger.info('手动弹幕加载成功: episodeId=%{public}d, count=%{public}d', episodeId, response.items.length)
+        return true
+      }
+      logger.warn('手动弹幕加载失败: episodeId=%{public}d, success=%{public}s, items=%{public}d',
+        episodeId, String(response.success), response.items.length)
+      return false
+    } catch (_err) {
+      logger.warn('手动弹幕加载异常: episodeId=%{public}d', episodeId)
+      return false
+    }
+  }
+
+  async saveManualMapping(bangumiId: number, episodeNo: number, animeName: string,
+    animeId: number, episodeId: number, animeTitle: string, episodeTitle: string,
+    sourceId: number = -1, episodeUrl: string = ''): Promise<void> {
+    const record: DanmakuMappingRecord = new DanmakuMappingRecord()
+    record.animeId = animeId
+    record.episodeId = episodeId
+    record.animeTitle = animeTitle
+    record.episodeTitle = episodeTitle
+    await this.mappingStore.saveMapping(bangumiId, episodeNo, animeName, record)
+    const binding: DanmakuPlaybackBinding = new DanmakuPlaybackBinding()
+    binding.episodeId = episodeId
+    binding.animeId = animeId
+    binding.animeTitle = animeTitle
+    binding.episodeTitle = episodeTitle
+    this.bindingStore.saveBinding(bangumiId, episodeNo, animeName, binding, sourceId, episodeUrl).catch((_err: Error) => {})
+  }
+
   async loadDanmakuForEpisode(animeName: string, episodeIndex: number,
-    bangumiId: number = 0, episodeTitle: string = ''): Promise<void> {
+    bangumiId: number = 0, episodeTitle: string = '',
+    sourceId: number = -1, episodeUrl: string = ''): Promise<void> {
     if (!this.isDanmakuEnabled || animeName.length === 0) {
       return
     }
@@ -83,6 +208,8 @@ export class DanmakuManager {
     }
 
     if (this.isLoading) {
+      this.pendingLoadRequest = new DanmakuLoadRequest(animeName, episodeIndex, bangumiId, episodeTitle, episodeKey, sourceId, episodeUrl)
+      logger.info('弹幕加载进行中，已排队最新请求: key=%{public}s', episodeKey)
       return
     }
     this.isLoading = true
@@ -97,8 +224,44 @@ export class DanmakuManager {
     try {
       if (episodeNo <= 0) {
         this.failureReason = DANMAKU_FAILURE_EPISODE_INDEX_OUT_OF_RANGE
+        this.stats.matchSource = 'none'
         logger.warn('弹幕加载失败: %{public}s', this.failureReason)
         return
+      }
+
+      const manualMapping: DanmakuMappingRecord | null = await this.mappingStore.lookupMapping(bangumiId, episodeNo, animeName)
+      if (manualMapping !== null && manualMapping.episodeId > 0) {
+        logger.info('发现手动映射: episodeId=%{public}d, animeId=%{public}d', manualMapping.episodeId, manualMapping.animeId)
+        const manualSuccess: boolean = await this.loadDanmakuByEpisodeId(
+          manualMapping.episodeId, manualMapping.animeId, manualMapping.animeTitle, manualMapping.episodeTitle)
+        if (manualSuccess) {
+          const binding: DanmakuPlaybackBinding = new DanmakuPlaybackBinding()
+          binding.episodeId = manualMapping.episodeId
+          binding.animeId = manualMapping.animeId
+          binding.animeTitle = manualMapping.animeTitle
+          binding.episodeTitle = manualMapping.episodeTitle
+          this.bindingStore.saveBinding(bangumiId, episodeNo, animeName, binding, sourceId, episodeUrl).catch((_err: Error) => {})
+          return
+        }
+        logger.warn('手动映射加载失败，降级到自动匹配')
+      }
+
+      const binding: DanmakuPlaybackBinding | null = await this.bindingStore.lookupBinding(bangumiId, episodeNo, animeName, sourceId, episodeUrl)
+      if (binding !== null && binding.episodeId > 0) {
+        logger.info('发现播放绑定: episodeId=%{public}d, animeId=%{public}d', binding.episodeId, binding.animeId)
+        const bindingCached = await this.persistentCache.get(binding.episodeId, sourceId, episodeUrl)
+        if (bindingCached !== null && bindingCached.length > 0) {
+          this.clearCurrentDanmaku()
+          this.onDanmakuLoaded(bindingCached)
+          this.stats.currentEpisodeId = binding.episodeId
+          this.stats.currentAnimeId = binding.animeId
+          this.stats.matchSource = 'binding-cache'
+          this.stats.loadedCount = bindingCached.length
+          this.failureReason = ''
+          logger.info('播放绑定缓存加载成功: episodeId=%{public}d, count=%{public}d', binding.episodeId, bindingCached.length)
+          return
+        }
+        logger.info('播放绑定存在但缓存为空，继续自动匹配')
       }
 
       const adjustedIndex = episodeNo - 1
@@ -114,25 +277,52 @@ export class DanmakuManager {
         } else {
           this.failureReason = DANMAKU_FAILURE_NO_SEARCH_RESULT
         }
+        this.stats.matchSource = 'none'
         logger.warn('弹幕加载失败: %{public}s', this.failureReason)
         return
       }
 
       logger.info('解析到episodeId=%{public}d, 开始加载弹幕', episodeId)
+      const persistentCached = await this.persistentCache.get(episodeId, sourceId, episodeUrl)
+      if (persistentCached !== null && persistentCached.length > 0) {
+        this.failureReason = ''
+        this.stats.currentEpisodeId = episodeId
+        this.stats.currentAnimeId = 0
+        this.stats.matchSource = bangumiId > 0 ? 'bangumi-cache' : 'search-cache'
+        this.stats.loadedCount = persistentCached.length
+        this.cacheDanmaku(episodeKey, persistentCached)
+        if (episodeKey === this.currentEpisodeKey) {
+          this.onDanmakuLoaded(persistentCached)
+        }
+        this.refreshEpisodeCache(episodeId)
+        this.saveAutoMatchBinding(bangumiId, episodeNo, animeName, episodeId, 0, sourceId, episodeUrl)
+        return
+      }
+
       const response: DanmakuApiResponse = await this.apiService.fetchDanmaku(episodeId)
       if (response.success) {
         if (response.items.length === 0) {
           this.failureReason = DANMAKU_FAILURE_EMPTY_COMMENTS
+          this.stats.matchSource = 'none'
           logger.warn('弹幕加载失败: %{public}s', this.failureReason)
           return
         }
         logger.info('弹幕加载成功, episodeId=%{public}d, count=%{public}d',
           episodeId, response.items.length)
         this.failureReason = ''
+        this.stats.currentEpisodeId = episodeId
+        this.stats.currentAnimeId = 0
+        if (bangumiId > 0) {
+          this.stats.matchSource = 'bangumi'
+        } else {
+          this.stats.matchSource = 'search'
+        }
+        await this.persistentCache.put(episodeId, response.items, sourceId, episodeUrl)
         this.cacheDanmaku(episodeKey, response.items)
         if (episodeKey === this.currentEpisodeKey) {
           this.onDanmakuLoaded(response.items)
         }
+        this.saveAutoMatchBinding(bangumiId, episodeNo, animeName, episodeId, 0, sourceId, episodeUrl)
       } else {
         this.failureReason = DANMAKU_FAILURE_PROXY_UNAVAILABLE
         logger.warn('弹幕加载失败: %{public}s', this.failureReason)
@@ -143,6 +333,7 @@ export class DanmakuManager {
         err instanceof Error ? err.message : String(err))
     } finally {
       this.isLoading = false
+      await this.consumePendingLoadRequest(episodeKey)
     }
   }
 
@@ -155,17 +346,17 @@ export class DanmakuManager {
     }
 
     if (!this.isDanmakuEnabled) {
-      this.stopRendering()
-    } else if (this.currentEpisodeKey.length > 0) {
-      const lastUnderscore = this.currentEpisodeKey.lastIndexOf('_')
-      if (lastUnderscore > 0) {
-        const episodeIndex = parseInt(this.currentEpisodeKey.substring(lastUnderscore + 1), 10)
-        const animeName = this.currentEpisodeKey.substring(0, lastUnderscore)
-        const secondUnderscore = animeName.lastIndexOf('_')
-        const realAnimeName = secondUnderscore > 0 ? animeName.substring(0, secondUnderscore) : animeName
-        if (realAnimeName.length > 0 && !isNaN(episodeIndex)) {
-          logger.info('弹幕重新加载: bangumiId信息丢失，使用标题搜索路径')
-          this.loadDanmakuForEpisode(realAnimeName, episodeIndex)
+      this.suspendDisplay()
+    } else {
+      if (this.timeSync !== null) {
+        if (this.lastPlayerState !== null) {
+          this.timeSync.syncPlayerSnapshot(this.lastPlayerState)
+        }
+        if (this.currentRawDanmaku.length > 0) {
+          this.applyCurrentDanmakuData()
+        }
+        if (this.lastPlayerState !== null) {
+          this.timeSync.onPlayerStateUpdate(this.lastPlayerState)
         }
       }
     }
@@ -181,6 +372,14 @@ export class DanmakuManager {
     return this.failureReason
   }
 
+  getIsLoading(): boolean {
+    return this.isLoading
+  }
+
+  hasDanmakuData(): boolean {
+    return this.failureReason.length === 0 && this.currentRawDanmaku.length > 0
+  }
+
   getRenderer(): DanmakuRenderer | null {
     return this.renderer
   }
@@ -192,16 +391,45 @@ export class DanmakuManager {
     return 0
   }
 
-  onCanvasReady(context: CanvasRenderingContext2D, width: number, height: number): void {
-    if (this.trackAllocator !== null) {
-      this.trackAllocator.updateCanvasSize(width, height)
-    }
+  getCurrentManualMapping(bangumiId: number, episodeNo: number, animeName: string): Promise<DanmakuMappingRecord | null> {
+    return this.mappingStore.lookupMapping(bangumiId, episodeNo, animeName)
+  }
+
+  async clearManualMapping(bangumiId: number, episodeNo: number, animeName: string): Promise<boolean> {
+    return await this.mappingStore.clearMapping(bangumiId, episodeNo, animeName)
+  }
+
+  async reloadSettings(): Promise<void> {
+    const previousSettings = this.currentSettings
+    this.currentSettings = await DanmakuStyleSettings.load()
     if (this.renderer !== null) {
-      this.renderer.setCanvasContext(context, width, height)
+      this.renderer.setStyle(this.currentSettings)
     }
+    if (this.timeSync !== null) {
+      this.timeSync.setSettings(this.currentSettings)
+      if (this.currentRawDanmaku.length > 0 && previousSettings.deduplication !== this.currentSettings.deduplication) {
+        this.applyCurrentDanmakuData()
+      } else {
+        this.timeSync.applySettingsToActiveDanmaku()
+      }
+    }
+    logger.info('弹幕设置已热更新: color=%{public}s, hideColor=%{public}s, dedup=%{public}s',
+      String(this.currentSettings.useSourceColor), String(this.currentSettings.hideColor),
+      String(this.currentSettings.deduplication))
+  }
+
+  onCanvasReady(context: CanvasRenderingContext2D, width: number, height: number): void {
+    logger.info('弹幕Canvas ready: width=%{public}d, height=%{public}d', width, height)
+    this.pendingCanvasContext = context
+    this.pendingCanvasWidth = width
+    this.pendingCanvasHeight = height
+    this.bindPendingCanvasIfReady()
   }
 
   onCanvasSizeChanged(width: number, height: number): void {
+    logger.info('弹幕Canvas size changed: width=%{public}d, height=%{public}d', width, height)
+    this.pendingCanvasWidth = width
+    this.pendingCanvasHeight = height
     if (this.trackAllocator !== null) {
       this.trackAllocator.updateCanvasSize(width, height)
     }
@@ -210,6 +438,7 @@ export class DanmakuManager {
     }
     if (this.timeSync !== null) {
       this.timeSync.resyncAfterResize()
+      this.timeSync.recoverAfterCanvasReady()
     }
   }
 
@@ -231,12 +460,45 @@ export class DanmakuManager {
     this.danmakuCache.clear()
     this.currentEpisodeKey = ''
     this.isLoading = false
+    this.pendingLoadRequest = null
+    this.initialized = false
+    this.pendingCanvasContext = null
+    this.pendingCanvasWidth = 0
+    this.pendingCanvasHeight = 0
+    this.refreshingEpisodeIds.clear()
+    this.stats.resetForEpisode()
+    this.currentRawDanmaku = []
     logger.info('DanmakuManager已释放')
   }
 
   private onDanmakuLoaded(items: DanmakuItem[]): void {
+    this.currentRawDanmaku = items
+    this.applyCurrentDanmakuData()
+  }
+
+  private insertCurrentRawDanmaku(item: DanmakuItem): void {
+    let insertIndex = 0
+    while (insertIndex < this.currentRawDanmaku.length && this.currentRawDanmaku[insertIndex].timeMs <= item.timeMs) {
+      insertIndex++
+    }
+    this.currentRawDanmaku.splice(insertIndex, 0, item)
+  }
+
+  private applyCurrentDanmakuData(): void {
     if (this.timeSync !== null) {
-      this.timeSync.setDanmakuData(items)
+      if (this.renderer !== null) {
+        this.renderer.clearAll()
+      }
+      if (this.trackAllocator !== null) {
+        this.trackAllocator.reset()
+      }
+      const playbackItems = this.currentSettings.deduplication
+        ? DanmakuDeduplicator.mergeDuplicateDanmakus(this.currentRawDanmaku)
+        : this.currentRawDanmaku
+      if (this.currentSettings.deduplication && playbackItems.length !== this.currentRawDanmaku.length) {
+        logger.info('弹幕去重完成: %{public}d -> %{public}d', this.currentRawDanmaku.length, playbackItems.length)
+      }
+      this.timeSync.setDanmakuData(playbackItems)
     }
   }
 
@@ -265,6 +527,20 @@ export class DanmakuManager {
     }
   }
 
+  private suspendDisplay(): void {
+    if (this.timeSync !== null) {
+      this.timeSync.suspendDisplay()
+      return
+    }
+    if (this.renderer !== null) {
+      this.renderer.stopRendering()
+      this.renderer.clearAll()
+    }
+    if (this.trackAllocator !== null) {
+      this.trackAllocator.reset()
+    }
+  }
+
   private cacheDanmaku(episodeKey: string, items: DanmakuItem[]): void {
     if (this.danmakuCache.size >= DANMAKU_CACHE_MAX_EPISODES) {
       const firstKey: string = this.danmakuCache.keys().next().value as string
@@ -273,5 +549,60 @@ export class DanmakuManager {
       }
     }
     this.danmakuCache.set(episodeKey, items)
+  }
+
+  private refreshEpisodeCache(episodeId: number): void {
+    if (episodeId <= 0 || this.refreshingEpisodeIds.has(episodeId)) {
+      return
+    }
+    this.refreshingEpisodeIds.add(episodeId)
+    this.apiService.fetchDanmaku(episodeId).then(async (response: DanmakuApiResponse) => {
+      if (response.success && response.items.length > 0) {
+        await this.persistentCache.put(episodeId, response.items)
+      }
+    }).catch((err: Error) => {
+      logger.warn('后台刷新弹幕缓存失败: episodeId=%{public}d, err=%{public}s',
+        episodeId, err instanceof Error ? err.message : String(err))
+    }).finally(() => {
+      this.refreshingEpisodeIds.delete(episodeId)
+    })
+  }
+
+  private async consumePendingLoadRequest(finishedEpisodeKey: string): Promise<void> {
+    const pending = this.pendingLoadRequest
+    if (pending === null) {
+      return
+    }
+    this.pendingLoadRequest = null
+    if (pending.episodeKey === finishedEpisodeKey) {
+      return
+    }
+    logger.info('执行排队的弹幕加载: key=%{public}s', pending.episodeKey)
+    await this.loadDanmakuForEpisode(pending.animeName, pending.episodeIndex, pending.bangumiId, pending.episodeTitle, pending.sourceId, pending.episodeUrl)
+  }
+
+  private saveAutoMatchBinding(bangumiId: number, episodeNo: number, animeName: string,
+    episodeId: number, animeId: number, sourceId: number = -1, episodeUrl: string = ''): void {
+    const binding: DanmakuPlaybackBinding = new DanmakuPlaybackBinding()
+    binding.episodeId = episodeId
+    binding.animeId = animeId
+    binding.animeTitle = ''
+    binding.episodeTitle = ''
+    this.bindingStore.saveBinding(bangumiId, episodeNo, animeName, binding, sourceId, episodeUrl).catch((_err: Error) => {})
+  }
+
+  private bindPendingCanvasIfReady(): void {
+    if (this.pendingCanvasContext === null || this.pendingCanvasWidth <= 0 || this.pendingCanvasHeight <= 0) {
+      return
+    }
+    if (this.trackAllocator !== null) {
+      this.trackAllocator.updateCanvasSize(this.pendingCanvasWidth, this.pendingCanvasHeight)
+    }
+    if (this.renderer !== null) {
+      this.renderer.setCanvasContext(this.pendingCanvasContext, this.pendingCanvasWidth, this.pendingCanvasHeight)
+    }
+    if (this.timeSync !== null) {
+      this.timeSync.recoverAfterCanvasReady()
+    }
   }
 }

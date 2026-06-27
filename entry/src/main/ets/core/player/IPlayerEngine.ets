@@ -1,4 +1,29 @@
+export enum VideoAspectMode {
+  contain = 0,
+  cover = 1,
+  fill = 2
+}
+
+export namespace VideoAspectModeHelper {
+  export function getLabel(mode: VideoAspectMode): string {
+    switch (mode) {
+      case VideoAspectMode.contain: return '自动适应'
+      case VideoAspectMode.cover: return '裁切填充'
+      case VideoAspectMode.fill: return '拉伸填充'
+      default: return '自动适应'
+    }
+  }
+
+  export function fromValue(value: number): VideoAspectMode {
+    if (value >= VideoAspectMode.contain && value <= VideoAspectMode.fill) {
+      return value as VideoAspectMode
+    }
+    return VideoAspectMode.contain
+  }
+}
+
 export interface IPlayerEngine {
+  setSurfaceId(surfaceId: string): void
   prepare(options: PlaybackOptions): void
   play(): void
   pause(): void
@@ -6,6 +31,7 @@ export interface IPlayerEngine {
   seek(positionMs: number): void
   setSpeed(speed: number): void
   setVolume(volume: number): void
+  setAspectMode(mode: VideoAspectMode): void
   getState(): PlayerState
   onStateChange(callback: (state: PlayerState) => void): void
   release(): void
@@ -31,4 +57,6 @@ export class PlayerState {
   completed: boolean = false
   error: string = ''
   stateName: string = 'idle'
+  videoWidth: number = 0
+  videoHeight: number = 0
 }

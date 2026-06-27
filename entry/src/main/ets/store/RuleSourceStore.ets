@@ -15,6 +15,7 @@ export class RuleSourceStore {
 
   async getAll(): Promise<RuleSource[]> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_RULE_SOURCE);
+    predicates.orderByAsc(RdbConstants.COL_SORT_ORDER);
     predicates.orderByAsc(RdbConstants.COL_NAME);
     const resultSet = await this.rdbManager.query(predicates);
     return this.parseResultSet(resultSet);
@@ -23,6 +24,7 @@ export class RuleSourceStore {
   async getEnabled(): Promise<RuleSource[]> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_RULE_SOURCE);
     predicates.equalTo(RdbConstants.COL_ENABLED, 1);
+    predicates.orderByAsc(RdbConstants.COL_SORT_ORDER);
     predicates.orderByAsc(RdbConstants.COL_NAME);
     const resultSet = await this.rdbManager.query(predicates);
     return this.parseResultSet(resultSet);
@@ -68,6 +70,7 @@ export class RuleSourceStore {
       ad_blocker: rule.adBlocker ? 1 : 0,
       multi_sources: rule.multiSources ? 1 : 0,
       enabled: rule.enabled ? 1 : 0,
+      sort_order: rule.sortOrder,
       raw_json: JSON.stringify(rule.toJSON()),
       created_at: now,
       updated_at: now
@@ -100,6 +103,7 @@ export class RuleSourceStore {
       ad_blocker: rule.adBlocker ? 1 : 0,
       multi_sources: rule.multiSources ? 1 : 0,
       enabled: rule.enabled ? 1 : 0,
+      sort_order: rule.sortOrder,
       raw_json: JSON.stringify(rule.toJSON()),
       updated_at: Date.now()
     };
@@ -113,15 +117,8 @@ export class RuleSourceStore {
   }
 
   async deleteLegacyGugu3Sources(): Promise<number> {
-    const rules = await this.getAll();
-    let deleted = 0;
-    for (let i = 0; i < rules.length; i++) {
-      const rule = rules[i];
-      if (this.isLegacyGugu3Source(rule)) {
-        deleted += await this.deleteById(rule.id);
-      }
-    }
-    return deleted;
+    logger.info('Legacy gugu3 cleanup skipped; gugu3 is now an installable online rule');
+    return 0;
   }
 
   async setEnabled(id: number, enabled: boolean): Promise<number> {
@@ -176,6 +173,7 @@ export class RuleSourceStore {
           rule.adBlocker = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_AD_BLOCKER)) === 1;
           rule.multiSources = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_MULTI_SOURCES)) === 1;
           rule.enabled = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_ENABLED)) === 1;
+          rule.sortOrder = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_SORT_ORDER));
           rule.createdAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_CREATED_AT));
           rule.updatedAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_UPDATED_AT));
 
@@ -199,10 +197,24 @@ export class RuleSourceStore {
     return list;
   }
 
-  private isLegacyGugu3Source(rule: RuleSource): boolean {
-    const name = rule.name.toLowerCase();
-    const baseUrl = rule.baseUrl.toLowerCase();
-    const searchUrl = rule.searchURL.toLowerCase();
-    return name.includes('gugu3') || baseUrl.includes('gugu3.com') || searchUrl.includes('gugu3.com');
+  async getNextSortOrder(): Promise<number> {
+    const sql = `SELECT MAX(${RdbConstants.COL_SORT_ORDER}) AS max_sort FROM ${RdbConstants.TABLE_RULE_SOURCE}`;
+    const resultSet = await this.rdbManager.querySql(sql);
+    let maxSort = 0;
+    if (resultSet.goToFirstRow()) {
+      maxSort = resultSet.getLong(0);
+    }
+    resultSet.close();
+    return maxSort + 1;
+  }
+
+  async updateSortOrder(id: number, sortOrder: number): Promise<number> {
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_RULE_SOURCE);
+    predicates.equalTo(RdbConstants.COL_ID, id);
+    const values: relationalStore.ValuesBucket = {
+      sort_order: sortOrder,
+      updated_at: Date.now()
+    };
+    return await this.rdbManager.update(RdbConstants.TABLE_RULE_SOURCE, values, predicates);
   }
 }

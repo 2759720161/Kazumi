@@ -4,15 +4,18 @@ import { RuleRuntimeModel } from '../../models/RuleRuntimeModel';
 import { AnimeItem } from '../../models/AnimeItem';
 import { Episode } from '../../models/Episode';
 import { PlaybackRoad } from '../../models/PlaybackRoad';
+import { SearchResultFilter } from './SearchResultFilter';
 import { Logger } from '../../utils/Logger';
 
 const logger = new Logger('SearchExecutor');
 
 export class SearchExecutor {
   private parser: HtmlXPathParser;
+  private searchResultFilter: SearchResultFilter;
 
   constructor() {
     this.parser = new HtmlXPathParser();
+    this.searchResultFilter = new SearchResultFilter();
   }
 
   parseSearchResults(html: string, runtime: RuleRuntimeModel): AnimeItem[] {
@@ -21,6 +24,9 @@ export class SearchExecutor {
       logger.info('Search html length=%{public}d, hasListClass=%{public}s',
         html.length, String(html.includes('public-list-box')));
       const doc: HtmlDocument = this.parser.parse(html);
+      if (runtime.rule.name.toLowerCase() === '7sefun') {
+        return this.parse7sefunSearchResults(doc, runtime);
+      }
       let listNodes = this.parser.selectNodes(runtime.rule.searchList, doc);
       if (listNodes.length === 0) {
         listNodes = this.selectFallbackSearchNodes(doc);
@@ -33,73 +39,141 @@ export class SearchExecutor {
           runtime.rule.name, listNodes.length);
       }
 
-      for (let i = 0; i < listNodes.length; i++) {
-        try {
-          const node = listNodes[i];
-          const item = new AnimeItem();
-          item.sourceName = runtime.rule.name;
-          item.sourceId = runtime.rule.id;
+      this.appendSearchItems(items, listNodes, runtime, 'Search item');
 
-          item.name = this.selectFirstText(runtime.rule.searchName, node);
-          if (item.name.length === 0) {
-            item.name = this.selectFallbackName(node);
-          }
+      const filtered = this.searchResultFilter.filterAndDeduplicate(items, runtime.rule.name);
+      if (filtered.length > 0 || items.length === 0) {
+        return filtered;
+      }
 
-          let resultText = this.selectFirstLink(runtime.rule.searchResult, node);
-          if (resultText.length === 0) {
-            resultText = this.selectFallbackLink(node);
-          }
-          if (resultText.length > 0) {
-            item.url = this.resolvePageUrl(resultText, runtime);
-          }
-
-          const coverText = this.selectFirstImage(node);
-          if (coverText.length > 0) {
-            const resolvedUrl = this.resolveImageUrl(coverText, runtime);
-            const fallbackUrl = this.extractFallbackUrl(resolvedUrl);
-            if (fallbackUrl.length > 0) {
-              if (this.needsProxy(fallbackUrl)) {
-                item.cover = resolvedUrl;
-                item.coverFallback = fallbackUrl;
-              } else {
-                item.cover = fallbackUrl;
-                item.coverFallback = resolvedUrl;
-              }
-            } else {
-              item.cover = resolvedUrl;
-              item.coverFallback = '';
-            }
-          }
-
-          logger.info('Search item[%{public}d]: name=%{public}s, coverLen=%{public}d, coverPrefix=%{public}s',
-            i, item.name, item.cover.length,
-            item.cover.length > 80 ? item.cover.substring(0, 80) : item.cover);
-
-          if (item.name.length > 0 && item.url.length > 0) {
-            items.push(item);
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.warn('Failed to parse search item %{public}d: %{public}s', i, msg);
+      const fallbackNodes = this.selectFallbackSearchNodes(doc);
+      if (fallbackNodes.length > 0) {
+        const fallbackItems: AnimeItem[] = [];
+        this.appendSearchItems(fallbackItems, fallbackNodes, runtime, 'Fallback search item');
+        const fallbackFiltered = this.searchResultFilter.filterAndDeduplicate(fallbackItems, runtime.rule.name);
+        if (fallbackFiltered.length > 0) {
+          logger.info('Search rule %{public}s recovered by fallback parser: nodes=%{public}d, valid=%{public}d',
+            runtime.rule.name, fallbackNodes.length, fallbackFiltered.length);
+          return fallbackFiltered;
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Search parsing failed for rule %{public}s: %{public}s', runtime.rule.name, msg);
     }
-    return items;
+    return [];
+  }
+
+  private parse7sefunSearchResults(doc: HtmlDocument, runtime: RuleRuntimeModel): AnimeItem[] {
+    const nodes = this.parser.selectNodes("//div[contains(@class,'module-search-item')]", doc);
+    if (nodes.length === 0) {
+      return [];
+    }
+
+    const items: AnimeItem[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const item = new AnimeItem();
+      item.sourceName = runtime.rule.name;
+      item.sourceId = runtime.rule.id;
+
+      const detailAnchor = this.find7sefunDetailAnchor(node);
+      if (detailAnchor !== null) {
+        item.name = (detailAnchor.attributes.get('title') ?? '').trim();
+        if (item.name.length === 0) {
+          item.name = detailAnchor.text.trim();
+        }
+        const href = detailAnchor.attributes.get('href') ?? '';
+        if (href.length > 0) {
+          item.url = this.resolvePageUrl(href, runtime);
+        }
+      }
+      if (item.name.length === 0) {
+        item.name = this.find7sefunImageAlt(node);
+      }
+
+      const coverText = this.selectFirstImage(node);
+      if (coverText.length > 0) {
+        const resolvedUrl = this.resolveImageUrl(coverText, runtime);
+        const fallbackUrl = this.extractFallbackUrl(resolvedUrl);
+        if (fallbackUrl.length > 0) {
+          if (this.needsProxy(fallbackUrl)) {
+            item.cover = resolvedUrl;
+            item.coverFallback = fallbackUrl;
+          } else {
+            item.cover = fallbackUrl;
+            item.coverFallback = resolvedUrl;
+          }
+        } else {
+          item.cover = resolvedUrl;
+          item.coverFallback = '';
+        }
+      }
+
+      logger.info('7sefun search item[%{public}d]: name=%{public}s, url=%{public}s',
+        i, item.name, item.url);
+      if (item.name.length > 0 && item.url.length > 0) {
+        items.push(item);
+      }
+    }
+
+    const filtered = this.searchResultFilter.filterAndDeduplicate(items, runtime.rule.name);
+    logger.info('Search rule 7sefun parsed by dedicated parser: nodes=%{public}d, valid=%{public}d',
+      nodes.length, filtered.length);
+    return filtered;
+  }
+
+  private find7sefunDetailAnchor(node: HtmlNode): HtmlNode | null {
+    if (node.nodeType === NodeType.ELEMENT && node.tagName.toLowerCase() === 'a') {
+      const href = node.attributes.get('href') ?? '';
+      if (href.includes('/voddetail/')) {
+        return node;
+      }
+    }
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const found = this.find7sefunDetailAnchor(node.childNodes[i]);
+      if (found !== null) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  private find7sefunImageAlt(node: HtmlNode): string {
+    if (node.nodeType === NodeType.ELEMENT && node.tagName.toLowerCase() === 'img') {
+      return (node.attributes.get('alt') ?? '').trim();
+    }
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const value = this.find7sefunImageAlt(node.childNodes[i]);
+      if (value.length > 0) {
+        return value;
+      }
+    }
+    return '';
   }
 
   private selectFallbackSearchNodes(doc: HtmlDocument): HtmlNode[] {
-    const candidates: string[] = [
+    const containerCandidates: string[] = [
+      "//div[contains(@class,'module-card-item') and contains(@class,'module-item')]",
       "//div[contains(@class,'cata_video_item')]",
       "//div[contains(@class,'public-list-box') and contains(@class,'search-box')]",
       "//div[contains(@class,'module-card-item')]",
       "//li[contains(@class,'video-item')]",
       "//li[contains(@class,'search-item')]"
     ];
-    for (let i = 0; i < candidates.length; i++) {
-      const nodes = this.parser.selectNodes(candidates[i], doc);
+    for (let i = 0; i < containerCandidates.length; i++) {
+      const nodes = this.parser.selectNodes(containerCandidates[i], doc);
+      if (nodes.length > 0) {
+        return nodes;
+      }
+    }
+    const detailLinkCandidates: string[] = [
+      "//a[contains(@href,'/voddetail/')]",
+      "//a[contains(@href,'/vod/detail/')]",
+      "//a[contains(@href,'/detail/')]"
+    ];
+    for (let i = 0; i < detailLinkCandidates.length; i++) {
+      const nodes = this.parser.selectNodes(detailLinkCandidates[i], doc);
       if (nodes.length > 0) {
         return nodes;
       }
@@ -107,13 +181,80 @@ export class SearchExecutor {
     return [];
   }
 
+  private appendSearchItems(
+    items: AnimeItem[],
+    listNodes: HtmlNode[],
+    runtime: RuleRuntimeModel,
+    logPrefix: string
+  ): void {
+    for (let i = 0; i < listNodes.length; i++) {
+      try {
+        const item = this.parseSearchItem(listNodes[i], runtime);
+
+        logger.info('%{public}s[%{public}d]: name=%{public}s, coverLen=%{public}d, coverPrefix=%{public}s',
+          logPrefix, i, item.name, item.cover.length,
+          item.cover.length > 80 ? item.cover.substring(0, 80) : item.cover);
+
+        if (item.name.length > 0 || item.url.length > 0) {
+          items.push(item);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn('Failed to parse search item %{public}d: %{public}s', i, msg);
+      }
+    }
+  }
+
+  private parseSearchItem(node: HtmlNode, runtime: RuleRuntimeModel): AnimeItem {
+    const item = new AnimeItem();
+    item.sourceName = runtime.rule.name;
+    item.sourceId = runtime.rule.id;
+
+    item.name = this.selectFirstText(runtime.rule.searchName, node);
+    if (item.name.length === 0 || this.isLikelyMetadataText(item.name)) {
+      item.name = this.selectFallbackName(node);
+    }
+
+    let resultText = this.selectFirstLink(runtime.rule.searchResult, node);
+    if (resultText.length === 0) {
+      resultText = this.selectFallbackLink(node);
+    }
+    if (resultText.length > 0) {
+      item.url = this.resolvePageUrl(resultText, runtime);
+    }
+
+    const coverText = this.selectFirstImage(node);
+    if (coverText.length > 0) {
+      const resolvedUrl = this.resolveImageUrl(coverText, runtime);
+      const fallbackUrl = this.extractFallbackUrl(resolvedUrl);
+      if (fallbackUrl.length > 0) {
+        if (this.needsProxy(fallbackUrl)) {
+          item.cover = resolvedUrl;
+          item.coverFallback = fallbackUrl;
+        } else {
+          item.cover = fallbackUrl;
+          item.coverFallback = resolvedUrl;
+        }
+      } else {
+        item.cover = resolvedUrl;
+        item.coverFallback = '';
+      }
+    }
+
+    return item;
+  }
+
   private selectFallbackName(context: HtmlDocument | HtmlNode): string {
     const candidates: string[] = [
-      ".//h5[contains(@class,'card-title')]/a/text()",
+      "./@title",
       ".//a/@title",
+      ".//div[contains(@class,'module-card-item-title')]//strong/text()",
+      ".//div[contains(@class,'module-card-item-title')]//a",
+      ".//h5[contains(@class,'card-title')]/a/text()",
       ".//img/@alt",
       ".//div[contains(@class,'thumb-txt')]/text()",
       ".//a[contains(@class,'time-title')]/text()",
+      "./text()",
       ".//h3/text()",
       ".//h2/text()"
     ];
@@ -127,19 +268,67 @@ export class SearchExecutor {
   }
 
   private selectFallbackLink(context: HtmlDocument | HtmlNode): string {
-    const candidates: string[] = [
-      ".//h5[contains(@class,'card-title')]/a/@href",
+    const detailCandidates: string[] = [
+      ".//a[contains(@href,'/voddetail/')]/@href",
+      ".//a[contains(@href,'/vod/detail/')]/@href",
       ".//a[contains(@href,'/detail/')]/@href",
-      ".//a[contains(@class,'public-list-exp')]/@href",
-      ".//a/@href"
+      ".//h5[contains(@class,'card-title')]/a/@href",
+      "./@href"
     ];
-    for (let i = 0; i < candidates.length; i++) {
-      const value = this.selectFirstLink(candidates[i], context);
-      if (value.length > 0) {
+    for (let i = 0; i < detailCandidates.length; i++) {
+      const value = this.selectFirstLink(detailCandidates[i], context);
+      if (value.length > 0 && this.isLikelyDetailUrl(value)) {
+        return value;
+      }
+    }
+    const anyLinkCandidates: string[] = [
+      ".//a[contains(@class,'public-list-exp')]/@href"
+    ];
+    for (let i = 0; i < anyLinkCandidates.length; i++) {
+      const value = this.selectFirstLink(anyLinkCandidates[i], context);
+      if (value.length > 0 && this.isLikelyDetailUrl(value)) {
         return value;
       }
     }
     return '';
+  }
+
+  private isLikelyDetailUrl(url: string): boolean {
+    const trimmed = url.trim();
+    if (trimmed.includes('/voddetail/')) {
+      return true;
+    }
+    if (trimmed.includes('/vod/detail/')) {
+      return true;
+    }
+    if (trimmed.includes('/detail/')) {
+      return true;
+    }
+    if (trimmed.startsWith('javascript:')) {
+      return false;
+    }
+    if (trimmed.startsWith('#')) {
+      return false;
+    }
+    if (trimmed.includes('/vodplay/')) {
+      return false;
+    }
+    return true;
+  }
+
+  private isLikelyMetadataText(text: string): boolean {
+    const value = text.trim();
+    if (value.length === 0) {
+      return false;
+    }
+    if (value.includes('/') && (value.includes('日本') || value.includes('动漫') || value.includes('动画'))) {
+      return true;
+    }
+    const commaCount = value.split(',').length - 1 + value.split('，').length - 1;
+    if (commaCount >= 4 && !value.includes('《')) {
+      return true;
+    }
+    return false;
   }
 
   private cleanFallbackName(name: string): string {
@@ -167,17 +356,80 @@ export class SearchExecutor {
   private selectFirstLink(xpath: string, context: HtmlDocument | HtmlNode): string {
     const result = this.parser.evaluate(xpath, context);
     if (result.strings.length > 0) {
-      return result.strings[0].trim();
+      const value = result.strings[0].trim();
+      if (this.looksLikeUrlOrPath(value)) {
+        return value;
+      }
+      return '';
     }
     if (result.nodes.length > 0) {
-      const node = result.nodes[0];
-      const href = node.attributes.get('href') ?? '';
-      if (href.length > 0) {
-        return href.trim();
+      for (let i = 0; i < result.nodes.length; i++) {
+        const directLink = this.extractNodeLink(result.nodes[i]);
+        if (directLink.length > 0) {
+          return directLink;
+        }
       }
-      return this.getTextContent(node).trim();
+      for (let i = 0; i < result.nodes.length; i++) {
+        const descendantLink = this.findDescendantLink(result.nodes[i]);
+        if (descendantLink.length > 0) {
+          return descendantLink;
+        }
+      }
+      return '';
     }
     return '';
+  }
+
+  private extractNodeLink(node: HtmlNode): string {
+    const attrs: string[] = ['href', 'data-href', 'data-url'];
+    for (let i = 0; i < attrs.length; i++) {
+      const value = node.attributes.get(attrs[i]) ?? '';
+      const trimmed = value.trim();
+      if (this.looksLikeUrlOrPath(trimmed)) {
+        return trimmed;
+      }
+    }
+    return '';
+  }
+
+  private findDescendantLink(node: HtmlNode): string {
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const child = node.childNodes[i];
+      if (child.nodeType !== NodeType.ELEMENT) {
+        continue;
+      }
+      const directLink = this.extractNodeLink(child);
+      if (directLink.length > 0) {
+        return directLink;
+      }
+      const descendantLink = this.findDescendantLink(child);
+      if (descendantLink.length > 0) {
+        return descendantLink;
+      }
+    }
+    return '';
+  }
+
+  private looksLikeUrlOrPath(value: string): boolean {
+    if (value.length === 0) {
+      return false;
+    }
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      return true;
+    }
+    if (value.startsWith('//')) {
+      return true;
+    }
+    if (value.startsWith('/') && value.length > 1) {
+      return true;
+    }
+    if (value.startsWith('javascript:')) {
+      return false;
+    }
+    if (value.startsWith('#')) {
+      return false;
+    }
+    return false;
   }
 
   private selectFirstImage(context: HtmlDocument | HtmlNode): string {
@@ -390,6 +642,12 @@ export class SearchExecutor {
       if (roadNodes.length === 0) {
         roadNodes = this.selectFallbackRoadNodes(doc);
         if (roadNodes.length === 0) {
+          const fallbackRoads = this.parseVodPlayRoads(html, runtime);
+          if (fallbackRoads.length > 0) {
+            logger.info('Using vodplay regex road parser for rule %{public}s, roads=%{public}d',
+              runtime.rule.name, fallbackRoads.length);
+            return fallbackRoads;
+          }
           logger.warn('No road nodes found for rule: %{public}s, xpath=%{public}s',
             runtime.rule.name, runtime.rule.chapterRoads);
           return roads;
@@ -427,7 +685,10 @@ export class SearchExecutor {
       for (let i = 0; i < roadNodes.length; i++) {
         try {
           const roadNode = roadNodes[i];
-          const episodeNodes = this.parser.selectNodes(runtime.rule.chapterResult, roadNode);
+          let episodeNodes = this.parser.selectNodes(runtime.rule.chapterResult, roadNode);
+          if (episodeNodes.length === 0) {
+            episodeNodes = this.selectFallbackEpisodeNodes(roadNode);
+          }
           if (episodeNodes.length === 0) {
             logger.debug('Road %{public}d has no episodes, skipping', i);
             continue;
@@ -469,9 +730,212 @@ export class SearchExecutor {
     return roads;
   }
 
+  private parseVodPlayRoads(html: string, runtime: RuleRuntimeModel): PlaybackRoad[] {
+    const roads: PlaybackRoad[] = [];
+    const parts = html.split('vod-play-list-container');
+    if (parts.length > 1) {
+      for (let i = 1; i < parts.length; i++) {
+        const road = this.parseVodPlayRoadPart(parts[i], runtime, roads.length);
+        if (road !== null) {
+          roads.push(road);
+        }
+      }
+      return roads;
+    }
+
+    return this.parseVodPlayRoadsByUrlGroup(html, runtime);
+  }
+
+  private parseVodPlayRoadPart(part: string, runtime: RuleRuntimeModel, roadIndex: number): PlaybackRoad | null {
+    const episodeNames: string[] = [];
+    const episodeUrls: string[] = [];
+    const seen = new Set<string>();
+    const linkPattern: RegExp = /<a\b([^>]*)href=["']([^"']*(?:\/vodplay\/|\/vod\/play\/)[^"']*)["']([^>]*)>([\s\S]*?)<\/a>/g;
+    let match = linkPattern.exec(part);
+    while (match !== null) {
+      const rawUrl = match[2].trim();
+      if (!seen.has(rawUrl)) {
+        seen.add(rawUrl);
+        const attrText = match[1] + ' ' + match[3];
+        let episodeName = this.extractVodPlayEpisodeName(rawUrl);
+        if (episodeName.length === 0) {
+          episodeName = this.extractEpisodeNameFromText(this.cleanHtmlSnippet(match[4]));
+        }
+        if (episodeName.length === 0) {
+          episodeName = this.extractEpisodeNameFromText(this.extractTitleAttribute(attrText));
+        }
+        if (episodeName.length === 0) {
+          episodeName = `第${episodeNames.length + 1}集`;
+        }
+        episodeNames.push(episodeName);
+        episodeUrls.push(this.resolvePageUrl(rawUrl, runtime));
+      }
+      match = linkPattern.exec(part);
+    }
+
+    if (episodeUrls.length === 0) {
+      return null;
+    }
+    const road = PlaybackRoad.create(`线路${roadIndex + 1}`, episodeNames, episodeUrls,
+      runtime.rule.id, runtime.rule.name, '');
+    logger.info('Vodplay fallback road %{public}d: episodes=%{public}d',
+      roadIndex, episodeUrls.length);
+    return road;
+  }
+
+  private parseVodPlayRoadsByUrlGroup(html: string, runtime: RuleRuntimeModel): PlaybackRoad[] {
+    const roads: PlaybackRoad[] = [];
+    const namesByRoad = new Map<string, string[]>();
+    const urlsByRoad = new Map<string, string[]>();
+    const seen = new Set<string>();
+    const roadKeys: string[] = [];
+    const linkPattern: RegExp = /<a\b([^>]*)href=["']([^"']*(?:\/vodplay\/|\/vod\/play\/)[^"']*)["']([^>]*)>([\s\S]*?)<\/a>/g;
+    let match = linkPattern.exec(html);
+    while (match !== null) {
+      const rawUrl = match[2].trim();
+      if (!seen.has(rawUrl)) {
+        seen.add(rawUrl);
+        const roadKey = this.extractVodPlayRoadKey(rawUrl);
+        if (!namesByRoad.has(roadKey)) {
+          namesByRoad.set(roadKey, []);
+          urlsByRoad.set(roadKey, []);
+          roadKeys.push(roadKey);
+        }
+        const attrText = match[1] + ' ' + match[3];
+        let episodeName = this.extractVodPlayEpisodeName(rawUrl);
+        if (episodeName.length === 0) {
+          episodeName = this.extractEpisodeNameFromText(this.cleanHtmlSnippet(match[4]));
+        }
+        if (episodeName.length === 0) {
+          episodeName = this.extractEpisodeNameFromText(this.extractTitleAttribute(attrText));
+        }
+        if (episodeName.length === 0) {
+          const names = namesByRoad.get(roadKey) ?? [];
+          episodeName = `第${names.length + 1}集`;
+        }
+        const names = namesByRoad.get(roadKey);
+        const urls = urlsByRoad.get(roadKey);
+        if (names !== undefined && urls !== undefined) {
+          names.push(episodeName);
+          urls.push(this.resolvePageUrl(rawUrl, runtime));
+        }
+      }
+      match = linkPattern.exec(html);
+    }
+
+    for (let i = 0; i < roadKeys.length; i++) {
+      const key = roadKeys[i];
+      const episodeNames: string[] = [];
+      const episodeUrls: string[] = [];
+      const groupedNames = namesByRoad.get(key) ?? [];
+      const groupedUrls = urlsByRoad.get(key) ?? [];
+      for (let j = 0; j < groupedUrls.length; j++) {
+        episodeNames.push(j < groupedNames.length ? groupedNames[j] : `第${j + 1}集`);
+        episodeUrls.push(groupedUrls[j]);
+      }
+      if (episodeUrls.length > 0) {
+        const road = PlaybackRoad.create(`线路${key}`, episodeNames, episodeUrls,
+          runtime.rule.id, runtime.rule.name, '');
+        roads.push(road);
+        logger.info('Vodplay fallback road %{public}d: episodes=%{public}d',
+          roads.length - 1, episodeUrls.length);
+      }
+    }
+    return roads;
+  }
+
+  private extractVodPlayRoadKey(url: string): string {
+    const oldStyle = url.match(/\/vodplay\/[^\/]*-(\d+)-\d+\.html/);
+    if (oldStyle !== null) {
+      return oldStyle[1];
+    }
+    const newStyle = url.match(/\/sid\/(\d+)\/nid\/\d+\.html/);
+    if (newStyle !== null) {
+      return newStyle[1];
+    }
+    return '1';
+  }
+
+  private extractVodPlayEpisodeName(url: string): string {
+    let episodeText = '';
+    const oldStyle = url.match(/\/vodplay\/[^\/]*-\d+-(\d+)\.html/);
+    if (oldStyle !== null) {
+      episodeText = oldStyle[1];
+    }
+    const newStyle = url.match(/\/sid\/\d+\/nid\/(\d+)\.html/);
+    if (episodeText.length === 0 && newStyle !== null) {
+      episodeText = newStyle[1];
+    }
+    if (episodeText.length === 0) {
+      return '';
+    }
+    const episodeNo = parseInt(episodeText);
+    if (!Number.isFinite(episodeNo) || episodeNo <= 0) {
+      return '';
+    }
+    const text = episodeNo < 10 ? `0${episodeNo}` : `${episodeNo}`;
+    return `第${text}集`;
+  }
+
+  private extractEpisodeNameFromText(value: string): string {
+    const match = value.match(/第\s*([0-9０-９]+)\s*集/);
+    if (match === null) {
+      return '';
+    }
+    const normalized = this.normalizeDigits(match[1]);
+    const episodeNo = parseInt(normalized);
+    if (!Number.isFinite(episodeNo) || episodeNo <= 0) {
+      return `第${match[1]}集`;
+    }
+    const text = episodeNo < 10 ? `0${episodeNo}` : `${episodeNo}`;
+    return `第${text}集`;
+  }
+
+  private normalizeDigits(value: string): string {
+    let result = '';
+    for (let i = 0; i < value.length; i++) {
+      const ch = value.charAt(i);
+      const code = ch.charCodeAt(0);
+      if (code >= 0xFF10 && code <= 0xFF19) {
+        result += String.fromCharCode(code - 0xFF10 + 0x30);
+      } else {
+        result += ch;
+      }
+    }
+    return result;
+  }
+
+  private extractTitleAttribute(attrs: string): string {
+    const match = attrs.match(/\btitle=["']([^"']*)["']/);
+    if (match === null) {
+      return '';
+    }
+    return this.decodeHtmlEntities(match[1].trim());
+  }
+
+  private cleanHtmlSnippet(html: string): string {
+    const withoutTags = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    return this.decodeHtmlEntities(withoutTags);
+  }
+
+  private decodeHtmlEntities(value: string): string {
+    return value
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+  }
+
   private selectFallbackRoadNodes(doc: HtmlDocument): HtmlNode[] {
     const roadCandidates: string[] = [
+      "//div[contains(@class,'module-play-list-content')]",
+      "//div[contains(@class,'module-play-list')]",
+      "//div[contains(@class,'module-list') and contains(@class,'sort-list')]",
       "//div[contains(@class,'tab-pane')]",
+      "//div[contains(@class,'vod-play-list-container')]",
       "//div[contains(@class,'video_detail_playlist_wrapper')]",
       "//div[contains(@class,'playlist')]",
       "//ul[contains(@class,'playlist')]",
@@ -490,12 +954,16 @@ export class SearchExecutor {
   private filterNodesWithPlaybackLinks(nodes: HtmlNode[]): HtmlNode[] {
     const result: HtmlNode[] = [];
     for (let i = 0; i < nodes.length; i++) {
-      const links = this.parser.selectNodes(".//a[contains(@href,'/play/')]", nodes[i]);
+      const links = this.parser.selectNodes(".//a[contains(@href,'/play/') or contains(@href,'/vodplay/')]", nodes[i]);
       if (links.length > 0) {
         result.push(nodes[i]);
       }
     }
     return result;
+  }
+
+  private selectFallbackEpisodeNodes(node: HtmlNode): HtmlNode[] {
+    return this.parser.selectNodes(".//a[contains(@href,'/play/') or contains(@href,'/vodplay/')]", node);
   }
 
   private isDirectEpisodeMode(runtime: RuleRuntimeModel, roadNodes: HtmlNode[]): boolean {

@@ -32,7 +32,7 @@ struct Index {
         TabContent() {
           HomePage()
         }
-        .tabBar(this.bottomTabStyle($r('sys.symbol.house'), $r('sys.symbol.house_fill'), '推荐'))
+        .tabBar(this.bottomTabStyle($r('sys.symbol.house'), $r('sys.symbol.house_fill'), '首页'))
 
         TabContent() {
           TimelinePage()

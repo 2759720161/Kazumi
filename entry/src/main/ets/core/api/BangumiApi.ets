@@ -1360,9 +1360,10 @@ export class BangumiApi {
     const items: AnimeItem[] = []
     const bodyObj: Record<string, Object> = {}
     bodyObj['keyword'] = ''
-    bodyObj['sort'] = 'score'
+    bodyObj['sort'] = 'rank'
     const filterObj: Record<string, Object> = {}
     filterObj['type'] = [2] as Object
+    filterObj['rank'] = ['>0', '<=99999'] as Object
     filterObj['rating'] = ['>=7.5'] as Object
     filterObj['rating_count'] = ['>=500'] as Object
     filterObj['nsfw'] = false as Object
@@ -1425,6 +1426,38 @@ export class BangumiApi {
         logger.warn('searchHighScore from %{public}s error: %{public}s', domain, msg)
         request.destroy()
       }
+    }
+
+    const fallbackItems = await BangumiApi.fetchMirrorPopular('', offset)
+    if (fallbackItems.length > 0) {
+      const scoredItems: AnimeItem[] = []
+      for (let i = 0; i < fallbackItems.length; i++) {
+        const item = fallbackItems[i]
+        if (item.ratingScore > 0) {
+          scoredItems.push(item)
+        }
+      }
+      scoredItems.sort((a: AnimeItem, b: AnimeItem): number => {
+        if (a.rank > 0 && b.rank > 0 && a.rank !== b.rank) {
+          return a.rank - b.rank
+        }
+        if (a.rank > 0 && b.rank <= 0) {
+          return -1
+        }
+        if (a.rank <= 0 && b.rank > 0) {
+          return 1
+        }
+        if (b.ratingScore !== a.ratingScore) {
+          return b.ratingScore - a.ratingScore
+        }
+        return b.votes - a.votes
+      })
+      const limitedItems: AnimeItem[] = []
+      for (let i = 0; i < scoredItems.length && i < limit; i++) {
+        limitedItems.push(scoredItems[i])
+      }
+      logger.info('searchHighScore fallback returned %{public}d items', limitedItems.length)
+      return limitedItems
     }
 
     return items

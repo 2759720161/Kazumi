@@ -5,14 +5,14 @@ import { router } from '@kit.ArkUI'
 export struct RecommendCard {
   @Prop item: RecommendCardModel = new RecommendCardModel()
   @Prop showRank: boolean = false
-  @Prop showScore: boolean = true
+  @Prop cardWidth: number = 112
 
   build() {
     Column() {
       Stack({ alignContent: Alignment.TopStart }) {
         Image(this.item.getGridCover().length > 0 ? this.item.getGridCover() : $r('app.media.ic_placeholder'))
           .width('100%')
-          .aspectRatio(3 / 4)
+          .height('100%')
           .objectFit(ImageFit.Cover)
           .borderRadius({ topLeft: 12, topRight: 12 })
           .alt($r('app.media.ic_placeholder'))
@@ -27,24 +27,9 @@ export struct RecommendCard {
             .backgroundColor($r('app.color.accent_blue'))
         }
 
-        if (this.showScore && this.item.score > 0) {
-          Row({ space: 2 }) {
-            Text('\u2605')
-              .fontSize(9)
-              .fontColor('#FFD700')
-            Text(this.item.getScoreText())
-              .fontSize(11)
-              .fontColor(Color.White)
-              .fontWeight(FontWeight.Medium)
-          }
-          .padding({ left: 5, right: 5, top: 2, bottom: 2 })
-          .borderRadius(6)
-          .backgroundColor('#B3000000')
-          .position({ x: '68%', y: 4 })
-        }
       }
       .width('100%')
-      .aspectRatio(3 / 4)
+      .height(this.getPosterHeight())
       .clip(true)
       .borderRadius({ topLeft: 12, topRight: 12 })
 
@@ -56,22 +41,16 @@ export struct RecommendCard {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .textAlign(TextAlign.Start)
           .width('100%')
+          .height(32)
           .lineHeight(16)
-
-        if (this.item.getMetaText().length > 0) {
-          Text(this.item.getMetaText())
-            .fontSize(10)
-            .fontColor($r('app.color.text_secondary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-            .margin({ top: 2 })
-        }
       }
       .width('100%')
-      .padding({ left: 6, right: 6, top: 4, bottom: 4 })
+      .height(44)
+      .padding({ left: 6, right: 6, top: 6, bottom: 6 })
       .alignItems(HorizontalAlign.Start)
     }
+    .width('100%')
+    .height(this.getCardHeight())
     .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
@@ -105,5 +84,13 @@ export struct RecommendCard {
         bangumiId: this.item.bangumiId
       }
     })
+  }
+
+  private getPosterHeight(): number {
+    return Math.round(this.cardWidth * 4 / 3)
+  }
+
+  private getCardHeight(): number {
+    return this.getPosterHeight() + 44
   }
 }

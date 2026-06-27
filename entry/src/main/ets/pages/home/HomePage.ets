@@ -1,15 +1,12 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
-import { HistoryRecord } from '../../models/HistoryRecord'
 import { RecommendViewModel } from '../../viewmodel/RecommendViewModel'
 import { HeroBanner } from '../../components/recommend/HeroBanner'
-import { QuickAccessBar } from '../../components/recommend/QuickAccessBar'
 import { PosterRailSection } from '../../components/recommend/PosterRailSection'
-import { ContinueWatchingSection } from '../../components/recommend/ContinueWatchingSection'
 import { TagTopicSection } from '../../components/recommend/TagTopicSection'
 import { LoadingOverlay } from '../../components/common/LoadingOverlay'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
-import { router, componentUtils } from '@kit.ArkUI'
+import { router } from '@kit.ArkUI'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -33,7 +30,6 @@ export struct HomePage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
-  @StorageLink('currentTab') @Watch('onTabChanged') currentTab: number = 0
   @State scrollOffset: number = 0
   @State isLoading: boolean = true
   @State hasLoadError: boolean = false
@@ -42,20 +38,16 @@ export struct HomePage {
   @State seasonalList: RecommendCardModel[] = []
   @State highScoreList: RecommendCardModel[] = []
   @State tagTopicList: RecommendCardModel[] = []
-  @State continueWatchingItems: HistoryRecord[] = []
   @State seasonLabel: string = ''
+  @State tagLoading: boolean = false
+  @State selectedTag: string = ''
 
   private vm: RecommendViewModel = new RecommendViewModel()
   private scroller: Scroller = new Scroller()
+  private loadToken: number = 0
 
   aboutToAppear(): void {
     this.loadRecommend()
-  }
-
-  private onTabChanged(): void {
-    if (this.currentTab === 0 && !this.isLoading) {
-      this.refreshHistory()
-    }
   }
 
   build() {
@@ -97,9 +89,11 @@ export struct HomePage {
   private HomeNavigationContent() {
     HdsNavigation() {
       Scroll(this.scroller) {        Column({ space: 20 }) {
-          Blank()
-            .height(this.getHomeTopSpacerHeight())
-            .width('100%')
+          if (this.heroList.length === 0) {
+            Blank()
+              .height(this.getHomeTopSpacerHeight())
+              .width('100%')
+          }
 
           if (this.isLoading && this.heroList.length === 0 && this.trendingList.length === 0) {
             LoadingOverlay({ message: '加载推荐内容...' })
@@ -112,23 +106,10 @@ export struct HomePage {
             })
           } else {
             if (this.heroList.length > 0) {
-              HeroBanner({ items: this.heroList })
-                .width('100%')
-            }
-
-            QuickAccessBar({
-              onScrollToHighScore: () => {
-                this.scrollToSection('sectionHighScore')
-              },
-              onScrollToSeasonal: () => {
-                this.scrollToSection('sectionSeasonal')
-              }
-            })
-              .width('100%')
-              .padding({ left: 16, right: 16 })
-
-            if (this.continueWatchingItems.length > 0) {
-              ContinueWatchingSection({ items: this.continueWatchingItems })
+              HeroBanner({
+                items: this.heroList,
+                topInset: this.getHomeTopSpacerHeight()
+              })
                 .width('100%')
             }
 
@@ -137,8 +118,7 @@ export struct HomePage {
                 title: '热门番组',
                 subtitle: '近期讨论度最高',
                 items: this.trendingList,
-                showRank: false,
-                showScore: true
+                showRank: false
               })
             }
 
@@ -147,10 +127,8 @@ export struct HomePage {
                 title: this.seasonLabel,
                 subtitle: '正在放送',
                 items: this.seasonalList,
-                showRank: true,
-                showScore: true
+                showRank: true
               })
-              .id('sectionSeasonal')
             }
 
             if (this.highScoreList.length > 0) {
@@ -158,14 +136,14 @@ export struct HomePage {
                 title: '高分佳作',
                 subtitle: '评分人数充足的口碑作品',
                 items: this.highScoreList,
-                showRank: true,
-                showScore: true
+                showRank: true
               })
-              .id('sectionHighScore')
             }
 
             TagTopicSection({
               items: this.tagTopicList,
+              selectedTag: this.selectedTag,
+              isLoading: this.tagLoading,
               onTagSelect: (tag: string) => {
                 this.handleTagSelect(tag)
               }
@@ -196,66 +174,94 @@ export struct HomePage {
     .titleBar(this.buildHomeTitleBarOptions())
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
-    .hideBackButton(false)
+    .hideBackButton(true)
     .backgroundColor(Color.Transparent)
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
   }
 
   private async loadRecommend(): Promise<void> {
+    const token = ++this.loadToken
     this.isLoading = true
     this.hasLoadError = false
+    this.heroList = []
+    this.trendingList = []
+    this.seasonalList = []
+    this.highScoreList = []
+    this.seasonLabel = this.vm.seasonLabel
     try {
-      await this.vm.load()
-      this.heroList = this.vm.heroList
-      this.trendingList = this.vm.trendingList
-      this.seasonalList = this.vm.seasonalList
-      this.highScoreList = this.vm.highScoreList
-      this.continueWatchingItems = this.vm.continueWatching
-      this.seasonLabel = this.vm.seasonLabel
+      let hero: RecommendCardModel[] = []
+      let trending: RecommendCardModel[] = []
+      let seasonal: RecommendCardModel[] = []
+      let highScore: RecommendCardModel[] = []
+      let seasonLabel: string = this.vm.seasonLabel
 
-      const allEmpty = this.heroList.length === 0 &&
-        this.trendingList.length === 0 &&
-        this.seasonalList.length === 0 &&
-        this.highScoreList.length === 0
-      if (allEmpty) {
-        this.hasLoadError = true
+      try {
+        trending = await this.vm.loadHomeTrending()
+      } catch (err) {
+        logger.warn('loadHomeTrending failed')
       }
+
+      try {
+        hero = await this.vm.buildHomeHeroFromTrending()
+      } catch (err) {
+        logger.warn('buildHomeHeroFromTrending failed')
+      }
+
+      await Promise.all([
+        this.vm.loadHomeSeasonal()
+          .then((items: RecommendCardModel[]) => {
+            seasonal = items
+            seasonLabel = this.vm.seasonLabel
+          })
+          .catch((err: Error) => {
+            logger.warn('loadHomeSeasonal failed')
+          }),
+        this.vm.loadHomeHighScore()
+          .then((items: RecommendCardModel[]) => {
+            highScore = items
+          })
+          .catch((err: Error) => {
+            logger.warn('loadHomeHighScore failed')
+          })
+      ])
+
+      if (token !== this.loadToken) {
+        return
+      }
+
+      this.heroList = [...hero]
+      this.trendingList = [...trending]
+      this.seasonalList = [...seasonal]
+      this.highScoreList = [...highScore]
+      this.seasonLabel = seasonLabel
+      this.hasLoadError = hero.length === 0 &&
+        trending.length === 0 &&
+        seasonal.length === 0 &&
+        highScore.length === 0
     } catch (err) {
       logger.error('loadRecommend failed: %{public}s', err instanceof Error ? err.message : String(err))
       this.hasLoadError = true
     } finally {
-      this.isLoading = false
-    }
-  }
-
-  private async refreshHistory(): Promise<void> {
-    try {
-      await this.vm.refreshContinueWatching()
-      this.continueWatchingItems = this.vm.continueWatching
-    } catch (err) {
-      logger.warn('refreshHistory failed')
+      if (token === this.loadToken) {
+        this.isLoading = false
+      }
     }
   }
 
   private async handleTagSelect(tag: string): Promise<void> {
+    this.selectedTag = tag
+
     if (tag.length === 0) {
       this.tagTopicList = []
       return
     }
-    await this.vm.loadByTag(tag)
-    this.tagTopicList = this.vm.tagTopicList
-  }
 
-  private scrollToSection(id: string): void {
+    this.tagLoading = true
     try {
-      const info = componentUtils.getRectangleById(id)
-      const scrollInfo = componentUtils.getRectangleById('homeScrollContainer')
-      const screenTopOffset = info.screenOffset.y - scrollInfo.screenOffset.y
-      const currentYOffset = this.scroller.currentOffset().yOffset
-      const targetY = currentYOffset + screenTopOffset - 8
-      this.scroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, targetY) })
-    } catch (err) {
-      logger.warn('scrollToSection failed for %{public}s', id)
+      await this.vm.loadByTag(tag)
+      this.tagTopicList = this.vm.tagTopicList
+    } finally {
+      this.tagLoading = false
     }
   }
 
@@ -291,8 +297,7 @@ export struct HomePage {
 
   private buildHomeTitle(): HdsNavigationTitle {
     return {
-      mainTitle: 'Kazumi',
-      subTitle: '推荐'
+      mainTitle: '首页'
     }
   }
 
@@ -304,7 +309,7 @@ export struct HomePage {
   }
 
   private buildHomeTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('Kazumi')
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('首页')
     base.style = buildImmersiveTitleBarStyle()
     base.content = this.buildHomeTitleBarContent()
     return base

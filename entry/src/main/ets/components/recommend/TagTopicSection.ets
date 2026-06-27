@@ -1,23 +1,19 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
+import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
 import { router } from '@kit.ArkUI'
-
-const GENRE_TAGS: string[] = [
-  '日常', '原创', '校园', '搞笑', '奇幻',
-  '百合', '恋爱', '悬疑', '热血', '后宫',
-  '机战', '轻改', '偶像', '治愈', '异世界'
-]
 
 @Component
 export struct TagTopicSection {
   @Prop items: RecommendCardModel[] = []
+  @Prop selectedTag: string = ''
+  @Prop isLoading: boolean = false
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
-  @State selectedTag: string = ''
   onTagSelect?: (tag: string) => void
 
   build() {
     Column({ space: 8 }) {
       Row() {
-        Text('分类专题')
+        Text(this.getTitleText())
           .fontSize(18)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
@@ -27,7 +23,7 @@ export struct TagTopicSection {
 
       Scroll() {
         Row({ space: 8 }) {
-          ForEach(GENRE_TAGS, (tag: string, index?: number) => {
+          ForEach(RECOMMEND_GENRE_TAGS, (tag: string, index?: number) => {
             Text(tag)
               .fontSize(13)
               .fontColor(tag === this.selectedTag ? Color.White : $r('app.color.text_primary'))
@@ -50,22 +46,71 @@ export struct TagTopicSection {
       .edgeEffect(EdgeEffect.Spring)
       .width('100%')
 
-      if (this.items.length > 0) {
-        Grid() {
-          ForEach(this.items, (item: RecommendCardModel, index?: number) => {
-            GridItem() {
-              this.TagResultCard(item)
-            }
-          }, (item: RecommendCardModel, index?: number) => 'tag_item_' + item.id.toString() + '_' + (index ?? 0).toString())
+      Column() {
+        if (this.selectedTag.length === 0) {
+          Text('选择一个标签发现番剧')
+            .fontSize(13)
+            .fontColor($r('app.color.text_hint'))
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .padding({ top: 24, bottom: 24 })
+        } else if (this.isLoading) {
+          this.SkeletonGrid()
+        } else if (this.items.length === 0) {
+          Text('暂无相关番组')
+            .fontSize(13)
+            .fontColor($r('app.color.text_hint'))
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .padding({ top: 24, bottom: 24 })
+        } else {
+          Grid() {
+            ForEach(this.items, (item: RecommendCardModel, index?: number) => {
+              GridItem() {
+                this.TagResultCard(item)
+              }
+            }, (item: RecommendCardModel, index?: number) => 'tag_item_' + item.id.toString() + '_' + (index ?? 0).toString())
+          }
+          .columnsTemplate(this.getGridColumns())
+          .columnsGap(10)
+          .rowsGap(10)
+          .scrollBar(BarState.Off)
+          .width('100%')
         }
-        .columnsTemplate(this.getGridColumns())
-        .columnsGap(10)
-        .rowsGap(10)
-        .scrollBar(BarState.Off)
-        .width('100%')
-        .padding({ left: 16, right: 16 })
       }
+      .width('100%')
+      .padding({ left: 16, right: 16 })
     }
+    .width('100%')
+  }
+
+  @Builder
+  private SkeletonGrid() {
+    Grid() {
+      ForEach([0, 1, 2, 3, 4, 5], (i: number, index?: number) => {
+        GridItem() {
+          Column() {
+            Column()
+              .width('100%')
+              .aspectRatio(3 / 4)
+              .borderRadius({ topLeft: 10, topRight: 10 })
+              .backgroundColor($r('app.color.card_background'))
+
+            Column()
+              .width('70%')
+              .height(12)
+              .borderRadius(4)
+              .backgroundColor($r('app.color.card_background'))
+              .margin({ top: 4 })
+          }
+          .borderRadius(10)
+        }
+      }, (i: number, index?: number) => 'skeleton_' + i.toString())
+    }
+    .columnsTemplate(this.getGridColumns())
+    .columnsGap(10)
+    .rowsGap(10)
+    .scrollBar(BarState.Off)
     .width('100%')
   }
 
@@ -137,6 +182,13 @@ export struct TagTopicSection {
         }
       })
     })
+  }
+
+  private getTitleText(): string {
+    if (this.selectedTag.length > 0) {
+      return this.selectedTag + '专题'
+    }
+    return '分类专题'
   }
 
   private getGridColumns(): string {

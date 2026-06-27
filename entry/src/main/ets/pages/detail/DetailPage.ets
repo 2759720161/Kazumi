@@ -69,6 +69,7 @@ export struct DetailPage {
   @State sourceName: string = ''
   @State currentCollectType: number = CollectType.none
   @State showSourceSheet: boolean = false
+  @State autoOpenSourceSheet: boolean = false
   @State sourceSheetCloseSignal: number = 0
   @State bangumiId: number = -1
   @State descExpanded: boolean = false
@@ -108,10 +109,16 @@ export struct DetailPage {
       if (params['sourceName'] !== undefined) this.sourceName = params['sourceName'] as string
       if (params['sourceId'] !== undefined) this.ruleSourceId = params['sourceId'] as number
       if (params['bangumiId'] !== undefined) this.bangumiId = params['bangumiId'] as number
+      if (params['autoOpenSourceSheet'] !== undefined) this.autoOpenSourceSheet = params['autoOpenSourceSheet'] as boolean
     }
     this.loadDetail()
     this.fetchSubjectDetail()
 
+    if (this.autoOpenSourceSheet) {
+      setTimeout(() => {
+        this.showSourceSheet = true
+      }, 300)
+    }
   }
 
   build() {

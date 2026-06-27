@@ -3,15 +3,10 @@ import { AnimeItem } from '../models/AnimeItem'
 import { HistoryRecord } from '../models/HistoryRecord'
 import { BangumiApi } from '../core/api/BangumiApi'
 import { HistoryStore } from '../store/HistoryStore'
+import { RECOMMEND_GENRE_TAGS } from '../constants/RecommendTags'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('RecommendViewModel')
-
-const GENRE_TAGS: string[] = [
-  '日常', '原创', '校园', '搞笑', '奇幻',
-  '百合', '恋爱', '悬疑', '热血', '后宫',
-  '机战', '轻改', '偶像', '治愈', '异世界'
-]
 
 export class RecommendViewModel {
   heroList: RecommendCardModel[] = []
@@ -106,6 +101,40 @@ export class RecommendViewModel {
     } catch (err) {
       logger.warn('loadMoreSeasonal failed')
     }
+  }
+
+  async loadHomeTrending(): Promise<RecommendCardModel[]> {
+    await this.loadTrending()
+    return [...this.trendingList]
+  }
+
+  async loadHomeSeasonal(): Promise<RecommendCardModel[]> {
+    this.seasonLabel = BangumiApi.getCurrentSeasonLabel()
+    await this.loadSeasonal()
+    return [...this.seasonalList]
+  }
+
+  async loadHomeHighScore(): Promise<RecommendCardModel[]> {
+    await this.loadHighScore()
+    return [...this.highScoreList]
+  }
+
+  async buildHomeHeroFromTrending(): Promise<RecommendCardModel[]> {
+    const candidates: RecommendCardModel[] = []
+    const usedIds: Set<number> = new Set()
+    const heroLimit = 5
+
+    for (let i = 0; i < this.trendingList.length && candidates.length < heroLimit; i++) {
+      const item = this.trendingList[i]
+      if (!usedIds.has(item.id) && item.backdrop.length > 0) {
+        usedIds.add(item.id)
+        candidates.push(item)
+      }
+    }
+
+    await this.enrichHeroList(candidates)
+    this.heroList = candidates
+    return [...this.heroList]
   }
 
   private async loadTrending(): Promise<void> {

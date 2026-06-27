@@ -7,7 +7,6 @@ export struct PosterRailSection {
   @Prop subtitle: string = ''
   @Prop items: RecommendCardModel[] = []
   @Prop showRank: boolean = false
-  @Prop showScore: boolean = true
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
   onMoreClick?: () => void
 
@@ -55,13 +54,15 @@ export struct PosterRailSection {
               RecommendCard({
                 item: item,
                 showRank: this.showRank,
-                showScore: this.showScore
+                cardWidth: this.getCardWidth()
               })
             }
             .width(this.getCardWidth())
+            .height(this.getCardHeight())
           }, (item: RecommendCardModel, index?: number) => 'rail_' + this.title + '_' + item.id.toString() + '_' + (index ?? 0).toString())
         }
         .padding({ left: 16, right: 16 })
+        .height(this.getCardHeight())
       }
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
@@ -78,5 +79,9 @@ export struct PosterRailSection {
       return 132
     }
     return 112
+  }
+
+  private getCardHeight(): number {
+    return Math.round(this.getCardWidth() * 4 / 3) + 44
   }
 }

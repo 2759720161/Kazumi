@@ -4,6 +4,7 @@ import { router } from '@kit.ArkUI'
 @Component
 export struct ContinueWatchingSection {
   @Prop items: HistoryRecord[] = []
+  private readonly maxVisible: number = 5
 
   build() {
     Column({ space: 8 }) {
@@ -12,12 +13,26 @@ export struct ContinueWatchingSection {
           .fontSize(18)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
+
+        Blank()
+
+        Row({ space: 4 }) {
+          Text('全部')
+            .fontSize(13)
+            .fontColor($r('app.color.accent_blue'))
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(13)
+            .fontColor([$r('app.color.accent_blue')])
+        }
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/history/HistoryPage' })
+        })
       }
       .width('100%')
       .padding({ left: 16, right: 16 })
 
       Column({ space: 8 }) {
-        ForEach(this.items, (record: HistoryRecord, index?: number) => {
+        ForEach(this.getVisibleItems(), (record: HistoryRecord, index?: number) => {
           this.ContinueCard(record)
         }, (record: HistoryRecord, index?: number) => 'continue_' + record.animeId + '_' + (index ?? 0).toString())
       }
@@ -25,6 +40,13 @@ export struct ContinueWatchingSection {
       .padding({ left: 16, right: 16 })
     }
     .width('100%')
+  }
+
+  private getVisibleItems(): HistoryRecord[] {
+    if (this.items.length > this.maxVisible) {
+      return this.items.slice(0, this.maxVisible)
+    }
+    return this.items
   }
 
   @Builder

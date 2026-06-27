@@ -9,7 +9,7 @@ import { TagTopicSection } from '../../components/recommend/TagTopicSection'
 import { LoadingOverlay } from '../../components/common/LoadingOverlay'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
-import { router } from '@kit.ArkUI'
+import { router, componentUtils } from '@kit.ArkUI'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -117,7 +117,14 @@ export struct HomePage {
                 .width('100%')
             }
 
-            QuickAccessBar()
+            QuickAccessBar({
+              onScrollToHighScore: () => {
+                this.scrollToSection('sectionHighScore')
+              },
+              onScrollToSeasonal: () => {
+                this.scrollToSection('sectionSeasonal')
+              }
+            })
               .width('100%')
               .padding({ left: 16, right: 16 })
 
@@ -144,6 +151,7 @@ export struct HomePage {
                 showRank: true,
                 showScore: true
               })
+              .id('sectionSeasonal')
             }
 
             if (this.highScoreList.length > 0) {
@@ -154,6 +162,7 @@ export struct HomePage {
                 showRank: true,
                 showScore: true
               })
+              .id('sectionHighScore')
             }
 
             TagTopicSection({
@@ -235,6 +244,16 @@ export struct HomePage {
     }
     await this.vm.loadByTag(tag)
     this.tagTopicList = this.vm.tagTopicList
+  }
+
+  private scrollToSection(id: string): void {
+    try {
+      const info = componentUtils.getRectangleById(id)
+      const targetY = info.screenOffset.y - this.topSafeHeight - 56
+      this.scroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, targetY) })
+    } catch (err) {
+      logger.warn('scrollToSection failed for %{public}s', id)
+    }
   }
 
   private buildHomeSearchIcon(): HdsNavigationIconOptions {

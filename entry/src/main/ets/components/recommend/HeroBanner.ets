@@ -5,6 +5,7 @@ import { router } from '@kit.ArkUI'
 export struct HeroBanner {
   @State currentIndex: number = 0
   @Prop items: RecommendCardModel[] = []
+  @StorageLink('screenWidthVp') screenWidthVp: number = 360
   private swiperController: SwiperController = new SwiperController()
   private autoPlayInterval: number = 5000
 
@@ -23,7 +24,7 @@ export struct HeroBanner {
         this.currentIndex = index
       })
       .width('100%')
-      .height(320)
+      .height(this.getHeroHeight())
 
       Row({ space: 6 }) {
         ForEach(this.items, (_: RecommendCardModel, index?: number) => {
@@ -38,48 +39,44 @@ export struct HeroBanner {
       .margin({ bottom: 16, left: 20 })
     }
     .width('100%')
-    .height(320)
+    .height(this.getHeroHeight())
   }
 
   @Builder
   private HeroSlide(item: RecommendCardModel) {
-    Stack({ alignContent: Alignment.BottomStart }) {
+    Stack() {
       Image(item.getHeroBackdrop().length > 0 ? item.getHeroBackdrop() : $r('app.media.ic_placeholder'))
         .width('100%')
         .height('100%')
         .objectFit(ImageFit.Cover)
-        .blur(12)
+        .blur(20)
         .alt($r('app.media.ic_placeholder'))
 
-      Column() {
-        Row()
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#66000000')
-      }
-      .width('100%')
-      .height('100%')
-      .position({ x: 0, y: 0 })
+      Row()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#66000000')
 
-      Column() {
-        Row().width('100%').height(80)
-
+      Row() {
         Column({ space: 8 }) {
+          Row().width('100%').height(60)
+
           Text(item.title)
-            .fontSize(24)
+            .fontSize(22)
             .fontWeight(FontWeight.Bold)
             .fontColor(Color.White)
-            .maxLines(1)
+            .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('60%')
+            .width('100%')
+            .lineHeight(28)
 
           if (item.summary.length > 0) {
-            Text(item.summary.length > 50 ? item.summary.substring(0, 50) + '...' : item.summary)
+            Text(item.summary.length > 60 ? item.summary.substring(0, 60) + '...' : item.summary)
               .fontSize(13)
               .fontColor('#CCFFFFFF')
               .maxLines(2)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .width('60%')
+              .width('100%')
               .lineHeight(18)
           }
 
@@ -125,7 +122,7 @@ export struct HeroBanner {
           }
 
           Row({ space: 10 }) {
-            Button('查看详情')
+            Button('开始观看')
               .height(32)
               .padding({ left: 18, right: 18 })
               .fontSize(13)
@@ -136,7 +133,7 @@ export struct HeroBanner {
                 this.navigateToDetail(item)
               })
 
-            Button('收藏')
+            Button('详情')
               .height(32)
               .padding({ left: 18, right: 18 })
               .fontSize(13)
@@ -150,18 +147,54 @@ export struct HeroBanner {
           }
           .margin({ top: 4 })
         }
-        .padding({ left: 20, right: 16 })
-        .width('100%')
+        .width(this.getTextWidth())
+        .padding({ left: 20, right: 12 })
+        .justifyContent(FlexAlign.Start)
+
+        Column() {
+          Image(item.getGridCover().length > 0 ? item.getGridCover() : $r('app.media.ic_placeholder'))
+            .width('100%')
+            .aspectRatio(3 / 4)
+            .objectFit(ImageFit.Cover)
+            .borderRadius(12)
+            .shadow({ radius: 20, color: '#4D000000', offsetY: 8 })
+            .alt($r('app.media.ic_placeholder'))
+        }
+        .width(this.getPosterWidth())
+        .padding({ right: 16 })
+        .justifyContent(FlexAlign.Center)
       }
       .width('100%')
       .height('100%')
-      .justifyContent(FlexAlign.SpaceBetween)
     }
     .width('100%')
-    .height(320)
+    .height(this.getHeroHeight())
     .onClick(() => {
       this.navigateToDetail(item)
     })
+  }
+
+  private getHeroHeight(): number {
+    if (this.screenWidthVp >= 840) {
+      return 360
+    } else if (this.screenWidthVp >= 600) {
+      return 340
+    }
+    return 300
+  }
+
+  private getTextWidth(): string {
+    if (this.screenWidthVp >= 600) {
+      return '58%'
+    }
+    return '72%'
+  }
+
+  private getPosterWidth(): string {
+    if (this.screenWidthVp >= 600) {
+      return '42%'
+    }
+    return '28%'
   }
 
   private navigateToDetail(item: RecommendCardModel): void {

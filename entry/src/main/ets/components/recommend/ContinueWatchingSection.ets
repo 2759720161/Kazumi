@@ -16,79 +16,66 @@ export struct ContinueWatchingSection {
       .width('100%')
       .padding({ left: 16, right: 16 })
 
-      Scroll() {
-        Row({ space: 10 }) {
-          ForEach(this.items, (record: HistoryRecord, index?: number) => {
-            this.ContinueCard(record)
-          }, (record: HistoryRecord, index?: number) => 'continue_' + record.animeId + '_' + (index ?? 0).toString())
-        }
-        .padding({ left: 16, right: 16 })
+      Column({ space: 8 }) {
+        ForEach(this.items, (record: HistoryRecord, index?: number) => {
+          this.ContinueCard(record)
+        }, (record: HistoryRecord, index?: number) => 'continue_' + record.animeId + '_' + (index ?? 0).toString())
       }
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring)
       .width('100%')
+      .padding({ left: 16, right: 16 })
     }
     .width('100%')
   }
 
   @Builder
   private ContinueCard(record: HistoryRecord) {
-    Column() {
-      Stack({ alignContent: Alignment.Bottom }) {
-        Image(record.animeCover.length > 0 ? record.animeCover : $r('app.media.ic_placeholder'))
+    Row({ space: 12 }) {
+      Image(record.animeCover.length > 0 ? record.animeCover : $r('app.media.ic_placeholder'))
+        .width(52)
+        .height(72)
+        .objectFit(ImageFit.Cover)
+        .borderRadius(8)
+        .alt($r('app.media.ic_placeholder'))
+
+      Column({ space: 4 }) {
+        Text(record.animeName)
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+          .fontWeight(FontWeight.Medium)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
-          .height(64)
-          .objectFit(ImageFit.Cover)
-          .borderRadius({ topLeft: 10, topRight: 10 })
-          .alt($r('app.media.ic_placeholder'))
 
-        Row() {
-          Text(record.episodeName)
-            .fontSize(11)
-            .fontColor(Color.White)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .layoutWeight(1)
-            .textShadow({ radius: 2, color: '#66000000', offsetX: 0, offsetY: 1 })
+        Text(record.episodeName)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
 
-          if (record.durationMs > 0) {
-            Text(this.formatProgress(record.positionMs, record.durationMs))
-              .fontSize(10)
-              .fontColor('#CCFFFFFF')
-              .textShadow({ radius: 2, color: '#66000000', offsetX: 0, offsetY: 1 })
-          }
+        if (record.durationMs > 0 && record.positionMs > 0) {
+          Progress({ value: record.positionMs, total: record.durationMs, type: ProgressType.Linear })
+            .width('100%')
+            .height(3)
+            .color($r('app.color.accent_blue'))
+            .backgroundColor($r('app.color.divider_color'))
+            .borderRadius(2)
+            .margin({ top: 2 })
         }
-        .width('100%')
-        .padding({ left: 8, right: 8, bottom: 6 })
-        .linearGradient({
-          direction: GradientDirection.Bottom,
-          colors: [['#00000000', 0], ['#66000000', 1]]
-        })
-      }
-      .width('100%')
-      .height(64)
-      .clip(true)
-      .borderRadius({ topLeft: 10, topRight: 10 })
 
-      if (record.durationMs > 0 && record.positionMs > 0) {
-        Progress({ value: record.positionMs, total: record.durationMs, type: ProgressType.Linear })
-          .width('100%')
-          .height(2)
-          .color($r('app.color.accent_blue'))
-          .backgroundColor($r('app.color.divider_color'))
+        if (record.durationMs > 0) {
+          Text(this.formatProgress(record.positionMs, record.durationMs))
+            .fontSize(10)
+            .fontColor($r('app.color.text_hint'))
+            .width('100%')
+        }
       }
-
-      Text(record.animeName)
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .padding({ left: 6, right: 6, top: 4 })
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
     }
-    .width(150)
-    .borderRadius(10)
+    .width('100%')
+    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+    .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     .clip(true)

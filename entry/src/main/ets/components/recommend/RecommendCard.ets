@@ -46,31 +46,20 @@ export struct RecommendCard {
         Column() {
           Row().width('100%').layoutWeight(1)
 
-          Column() {
-            Text(this.item.title)
-              .fontSize(12)
-              .fontColor(Color.White)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .width('100%')
-              .textShadow({ radius: 2, color: '#66000000', offsetX: 0, offsetY: 1 })
-
-            Text(this.item.getMetaText())
-              .fontSize(10)
-              .fontColor('#CCFFFFFF')
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .width('100%')
-              .textShadow({ radius: 2, color: '#66000000', offsetX: 0, offsetY: 1 })
-          }
-          .width('100%')
-          .padding({ left: 8, right: 8, bottom: 8 })
+          Text(this.item.getMetaText())
+            .fontSize(10)
+            .fontColor('#CCFFFFFF')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+            .textShadow({ radius: 2, color: '#66000000', offsetX: 0, offsetY: 1 })
+            .padding({ left: 8, right: 8, bottom: 8 })
         }
         .width('100%')
         .height('100%')
         .linearGradient({
           direction: GradientDirection.Bottom,
-          colors: [['#00000000', 0.5], ['#66000000', 1]]
+          colors: [['#00000000', 0.6], ['#66000000', 1]]
         })
         .borderRadius({ topLeft: 12, topRight: 12 })
       }
@@ -88,10 +77,19 @@ export struct RecommendCard {
           .textAlign(TextAlign.Start)
           .width('100%')
           .lineHeight(16)
+
+        if (this.item.getMetaText().length > 0) {
+          Text(this.item.getMetaText())
+            .fontSize(10)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+            .margin({ top: 2 })
+        }
       }
       .width('100%')
-      .height(38)
-      .padding({ left: 6, right: 6, top: 4 })
+      .padding({ left: 6, right: 6, top: 4, bottom: 4 })
       .alignItems(HorizontalAlign.Start)
     }
     .borderRadius(12)

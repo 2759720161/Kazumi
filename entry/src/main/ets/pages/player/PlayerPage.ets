@@ -15,6 +15,8 @@ import { AspectModePanel } from '../../components/player/AspectModePanel'
 import { VideoSourceResolver } from '../../core/sniffer/VideoSourceResolver'
 import { VideoSourceRequest } from '../../core/sniffer/VideoSourceRequest'
 import { VideoSourceResult } from '../../core/sniffer/VideoSourceResult'
+import { ResolveErrorCode } from '../../core/sniffer/ResolveErrorCode'
+import { ResolveLogEvent } from '../../core/sniffer/ResolveLogEvent'
 import { HistoryStore } from '../../store/HistoryStore'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { HistoryRecord } from '../../models/HistoryRecord'
@@ -84,7 +86,6 @@ export struct PlayerPage {
   @State isDanmakuLoading: boolean = false
   @State showMoreMenu: boolean = false
   @State showDanmakuMatchPanel: boolean = false
-  @State showDanmakuInputSheet: boolean = false
   @State showEpisodeSidePanel: boolean = false
   @State episodePanelOffsetX: number = 0
   @State @Watch('onDanmakuSettingsVisibilityChanged') showDanmakuSettingsPanel: boolean = false
@@ -92,14 +93,13 @@ export struct PlayerPage {
   @State danmakuSettingsOpenVersion: number = 0
   @State showHud: boolean = false
   @State hudText: string = ''
-  @State localDanmakuText: string = ''
-  @State localDanmakuType: number = 0
   @State currentCollectType: number = CollectType.none
   @State showCollectMenu: boolean = false
   @State currentAspectMode: VideoAspectMode = VideoAspectMode.contain
   @State showAspectModePanel: boolean = false
   @State showRoadPickerPopup: boolean = false
   @State sequentialPlayEpisodeIndex: number = -1
+  @State resolveLogs: ResolveLogEvent[] = []
 
   @State hasCurrentManualMapping: boolean = false
   @State currentManualMappingText: string = ''
@@ -110,6 +110,7 @@ export struct PlayerPage {
   private historyStore: HistoryStore = new HistoryStore()
   private collectController: CollectController = new CollectController()
   private sourceResolver: VideoSourceResolver = new VideoSourceResolver()
+  private logListener: ((event: ResolveLogEvent) => void) | null = null
   private webController: webview.WebviewController = new webview.WebviewController()
   private animeId: string = ''
   private animeCover: string = ''
@@ -130,7 +131,6 @@ export struct PlayerPage {
   private brightnessApplyTimer: number = -1
   private danmakuSettingsReloadTimer: number = -1
   private danmakuLoadingPollTimer: number = -1
-  private danmakuInputFocusTimer: number = -1
   private lastBrightnessApplyMs: number = 0
   private pendingBrightnessValue: number = -1
   private wasPlayingBeforeDrag: boolean = false
@@ -211,12 +211,15 @@ export struct PlayerPage {
   aboutToDisappear(): void {
     this.saveHistory()
     this.sourceResolver.cancel()
+    if (this.logListener !== null) {
+      this.sourceResolver.removeLogListener(this.logListener)
+      this.logListener = null
+    }
     this.clearPendingSeek()
     this.pauseAutoHideTimer()
     this.clearHudTimer()
     this.clearBrightnessApplyTimer()
     this.clearDanmakuSettingsReloadTimer()
-    this.clearDanmakuInputFocusTimer()
     this.stopDanmakuLoadingPoll()
     if (this.danmakuManager !== null) {
       this.danmakuManager.release()
@@ -254,10 +257,6 @@ export struct PlayerPage {
       .width('100%')
       .height('100%')
       .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
-
-      if (!this.isFullScreen) {
-        this.DownloadButton()
-      }
 
       if (this.snifferWebVisible) {
         Web({ src: '', controller: this.webController })
@@ -305,7 +304,15 @@ export struct PlayerPage {
           })
           .onControllerAttached(() => {
             this.webviewReady = true
-            this.sourceResolver.setWebController(this.webController)
+    this.sourceResolver.setWebController(this.webController)
+
+    this.logListener = (event: ResolveLogEvent) => {
+      if (this.resolveLogs.length >= 50) {
+        this.resolveLogs.splice(0, 1)
+      }
+      this.resolveLogs.push(event)
+    }
+    this.sourceResolver.addLogListener(this.logListener)
             if (this.pendingSniff) {
               this.pendingSniff = false
               this.startSniffing()
@@ -357,89 +364,6 @@ export struct PlayerPage {
         return this.clearCurrentManualMapping()
       }
     })
-  }
-
-  @Builder
-  private DanmakuInputPanel() {
-    Column() {
-      Row() {
-        Text('发送弹幕')
-          .fontSize(18)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_title'))
-          .layoutWeight(1)
-
-        Row() {
-          this.LocalDanmakuTypeChip('滚动', 0)
-          this.LocalDanmakuTypeChip('顶部', 5)
-          this.LocalDanmakuTypeChip('底部', 4)
-        }
-        .alignItems(VerticalAlign.Center)
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 12, bottom: 8 })
-
-      Row() {
-        TextInput({ text: this.localDanmakuText, placeholder: '发个友善的弹幕见证                                                                                                                                                           当下' })
-          .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
-          .backgroundColor($r('app.color.color_transparent'))
-          .borderRadius(22)
-          .padding({ left: 14, right: 8 })
-          .id('danmakuTextInput')
-          .enableKeyboardOnFocus(true)
-          .onChange((value: string) => {
-            this.localDanmakuText = value
-          })
-          .onSubmit(() => {
-            this.submitLocalDanmaku()
-          })
-
-        Text('发送')
-          .fontSize(14)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.localDanmakuText.trim().length > 0 ? $r('app.color.text_title') : $r('app.color.text_subtitle'))
-          .width(56)
-          .height(32)
-          .textAlign(TextAlign.Center)
-          .borderRadius(16)
-          .backgroundColor(this.localDanmakuText.trim().length > 0 ? $r('app.color.accent_blue_light') : $r('app.color.page_background_media'))
-          .onClick(() => {
-            this.submitLocalDanmaku()
-          })
-      }
-      .width('100%')
-      .height(46)
-      .backgroundColor($r('app.color.card_background'))
-      .borderRadius(23)
-      .border({ width: 1, color: $r('app.color.border_panel') })
-      .padding({ right: 6 })
-      .margin({ left: 16, right: 16, bottom: 12 })
-      .alignItems(VerticalAlign.Center)
-
-    }
-    .width('100%')
-    .height(this.bottomSafeHeight + 128)
-    .padding({ bottom: this.bottomSafeHeight + 12 })
-    .borderRadius(18)
-    .backgroundColor($r('app.color.page_background_media'))
-    .translate({ y: this.keyboardAvoidHeight > 0 ? -this.keyboardAvoidHeight : 0 })
-  }
-
-  @Builder
-  private LocalDanmakuTypeChip(label: string, type: number) {
-    Text(label)
-      .fontSize(12)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(this.localDanmakuType === type ? $r('app.color.text_on_primary') : $r('app.color.text_title'))
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .borderRadius(12)
-      .backgroundColor(this.localDanmakuType === type ? $r('app.color.accent_blue') : $r('app.color.card_background'))
-      .margin({ left: 6 })
-      .onClick(() => {
-        this.localDanmakuType = type
-      })
   }
 
   @Builder
@@ -589,10 +513,6 @@ export struct PlayerPage {
         this.DanmakuMatchOverlay()
       }
 
-      if (this.showDanmakuInputSheet) {
-        this.DanmakuInputOverlay()
-      }
-
       if (this.isFullScreen && this.showEpisodeSidePanel) {
         this.EpisodeSidePanel()
       }
@@ -649,32 +569,6 @@ export struct PlayerPage {
       this.pauseAutoHideTimer()
     })
     .onDisAppear(() => {
-      this.startAutoHideTimer()
-    })
-  }
-
-  @Builder
-  private DanmakuInputOverlay() {
-    Column() {
-      Blank()
-        .width('100%')
-        .layoutWeight(1)
-        .onClick(() => {
-          this.closeDanmakuInputPanel()
-        })
-
-      this.DanmakuInputPanel()
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor('#33000000')
-    .zIndex(12)
-    .onAppear(() => {
-      this.pauseAutoHideTimer()
-      this.scheduleDanmakuInputFocus()
-    })
-    .onDisAppear(() => {
-      this.clearDanmakuInputFocusTimer()
       this.startAutoHideTimer()
     })
   }
@@ -749,10 +643,6 @@ export struct PlayerPage {
         this.seekForward(10000)
       })
 
-      this.TopSymbolButton($r('sys.symbol.rectangle_on_rectangle'), '画中画', () => {
-        this.logUnsupportedPlayerAction('画中画')
-      })
-
       if (!this.isFullScreen) {
         if (this.isDanmakuLoading) {
           this.DanmakuLoadingButton()
@@ -763,7 +653,7 @@ export struct PlayerPage {
 
       this.TopSymbolButton(
         this.currentCollectType > CollectType.none ? CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart_badge_plus'),
-        this.currentCollectType > CollectType.none ? CollectType.getLabel(this.currentCollectType) : '追番',
+        this.currentCollectType > CollectType.none ? CollectType.getLabel(this.currentCollectType) : '收藏',
         () => {
           this.showCollectMenu = true
         },
@@ -822,10 +712,6 @@ export struct PlayerPage {
           })
           this.MoreMenuItem('视频比例', () => {
             this.showAspectModePanel = true
-          })
-          this.MoreMenuItem('远程投屏', () => {
-            this.logUnsupportedPlayerAction('远程投屏')
-            this.showMoreMenu = false
           })
 
         } else {
@@ -1065,8 +951,6 @@ export struct PlayerPage {
         this.openDanmakuSettings()
       })
 
-      this.DanmakuInputButton()
-
       Blank()
         .layoutWeight(1)
 
@@ -1078,8 +962,8 @@ export struct PlayerPage {
 
       this.SymbolToolButton(this.isFullScreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left') :
         $r('sys.symbol.arrow_up_left_and_arrow_down_right'), this.isFullScreen ? '退出全屏' : '全屏', () => {
-          this.toggleFullScreen()
-        })
+        this.toggleFullScreen()
+      })
     }
     .height(this.bottomSafeHeight + 62)
     .width('100%')
@@ -1219,40 +1103,6 @@ export struct PlayerPage {
   }
 
   @Builder
-  private DanmakuInputButton() {
-    Row() {
-      Text('发个友善的弹幕见证当下')
-        .fontSize(14)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#CCFFFFFF')
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
-
-      Text('发送')
-        .fontSize(14)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_title'))
-        .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-        .borderRadius(18)
-        .backgroundColor($r('app.color.accent_blue_light'))
-    }
-    .width(310)
-    .height(40)
-    .padding({ left: 18, right: 4 })
-    .borderRadius(20)
-    .backgroundColor('#2EFFFFFF')
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: '#33FFFFFF' })
-    .alignItems(VerticalAlign.Center)
-    .justifyContent(FlexAlign.Center)
-    .onClick(() => {
-      this.openDanmakuInputSheet()
-      this.showControlsWithAutoHide()
-    })
-  }
-
-  @Builder
   private HudView() {
     Column() {
       Text(this.hudText)
@@ -1347,22 +1197,15 @@ export struct PlayerPage {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
 
-          if (this.roads.length > 1 && this.roads.length <= 3) {
-            Text(this.getSelectedRoadName())
-              .fontSize(13)
-              .fontColor($r('app.color.text_hint'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .margin({ left: 8 })
-          } else if (this.roads.length > 3) {
+          if (this.roads.length > 1) {
             Row() {
               Text(this.getSelectedRoadName())
                 .fontSize(13)
                 .fontColor($r('app.color.text_hint'))
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
-              SymbolGlyph($r('sys.symbol.chevron_right'))
-                .fontSize(12)
+              SymbolGlyph($r('sys.symbol.chevron_down'))
+                .fontSize(11)
                 .fontColor([$r('app.color.text_hint')])
             }
             .margin({ left: 8 })
@@ -1383,10 +1226,6 @@ export struct PlayerPage {
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: 0, bottom: 2 })
-
-        if (this.roads.length > 1 && this.roads.length <= 3) {
-          this.PlaybackRoadSelector()
-        }
 
         if (this.getVisibleEpisodes().length > 0) {
           Grid() {
@@ -1484,7 +1323,31 @@ export struct PlayerPage {
         .alignItems(VerticalAlign.Center)
 
         if (this.roads.length > 1) {
-          this.PlaybackRoadSelector()
+          Row() {
+            Text(this.getSelectedRoadName())
+              .fontSize(13)
+              .fontColor($r('app.color.text_hint'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            SymbolGlyph($r('sys.symbol.chevron_down'))
+              .fontSize(11)
+              .fontColor([$r('app.color.text_hint')])
+          }
+          .width('100%')
+          .padding({ left: 18, right: 14, top: 0, bottom: 8 })
+          .onClick(() => {
+            this.showRoadPickerPopup = !this.showRoadPickerPopup
+          })
+          .bindPopup(this.showRoadPickerPopup, {
+            builder: this.RoadPickerPopupContent,
+            placement: Placement.BottomLeft,
+            showInSubWindow: false,
+            onStateChange: (e: PopupStateChangeParam) => {
+              if (!e.isVisible) {
+                this.showRoadPickerPopup = false
+              }
+            }
+          })
         }
 
         Scroll() {
@@ -1578,47 +1441,6 @@ export struct PlayerPage {
     .onDisAppear(() => {
       this.startAutoHideTimer()
     })
-  }
-
-  @Builder
-  private PlaybackRoadSelector() {
-    List({ space: 8 }) {
-      ForEach(this.roads, (road: PlaybackRoad, index?: number) => {
-        ListItem() {
-          Row() {
-            Text(this.getRoadDisplayName(road, index))
-              .fontSize(12)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(index === this.visibleRoadIndex ? $r('app.color.text_on_primary') : $r('app.color.text_subtitle'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .height(32)
-          .padding({ left: 12, right: 12 })
-          .borderRadius(16)
-          .backgroundColor(index === this.visibleRoadIndex ? $r('app.color.accent_blue') : $r('app.color.road_unselected_bg'))
-          .border({ width: 1, color: index === this.visibleRoadIndex ? $r('app.color.accent_blue') : $r('app.color.border_item') })
-          .onClick(() => {
-            if (index !== undefined) {
-              this.onRoadSelected(index)
-            }
-          })
-          .gesture(TapGesture({ count: 2 })
-            .onAction(() => {
-              if (index !== undefined && index === this.visibleRoadIndex && this.visibleRoadIndex !== this.selectedRoadIndex) {
-                this.visibleRoadIndex = this.selectedRoadIndex
-                this.showHudText(`已切回播放线路`)
-              }
-            }))
-        }
-      }, (road: PlaybackRoad, index?: number) => `player_road_${index}`)
-    }
-    .listDirection(Axis.Horizontal)
-    .scrollBar(BarState.Off)
-    .width('100%')
-    .height(36)
-    .padding({ left: 16, right: 16 })
-    .margin({ bottom: 6 })
   }
 
   @Builder
@@ -1764,22 +1586,6 @@ export struct PlayerPage {
     .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
-  }
-
-  @Builder
-  private DownloadButton() {
-    Button() {
-      Text('↓')
-        .fontSize(34)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_download_button'))
-    }
-    .width(72)
-    .height(72)
-    .borderRadius(20)
-    .backgroundColor($r('app.color.accent_blue_light'))
-    .shadow({ radius: 18, color: $r('app.color.shadow_button_accent'), offsetY: 8 })
-    .position({ x: '80%', y: '84%' })
   }
 
   @Builder
@@ -1949,7 +1755,6 @@ export struct PlayerPage {
       this.showDanmakuMatchPanel = false
       this.showDanmakuSettingsPanel = false
       this.showDanmakuSettingsSheet = false
-      this.showDanmakuInputSheet = false
       this.pauseAutoHideTimer()
       this.showEpisodeSidePanel = true
     }
@@ -1959,10 +1764,6 @@ export struct PlayerPage {
     this.episodePanelOffsetX = 0
     this.showEpisodeSidePanel = false
     this.startAutoHideTimer()
-  }
-
-  private logUnsupportedPlayerAction(action: string): void {
-    logger.info('Player action not implemented yet: %{public}s', action)
   }
 
   private applyAspectMode(mode: VideoAspectMode): void {
@@ -2030,6 +1831,11 @@ export struct PlayerPage {
   }
 
   private async handleSniffResult(result: VideoSourceResult): Promise<void> {
+    if (result.errorCode === ResolveErrorCode.Cancelled) {
+      logger.info('Sniff result discarded: session cancelled')
+      return
+    }
+
     if (result.isPlayable()) {
       const request = new VideoSourceRequest()
       request.episodeUrl = this.episodeUrl
@@ -2047,12 +1853,15 @@ export struct PlayerPage {
       this.sniffStatus = 'success'
       logger.info('Sniff success: %{public}s [%{public}s] in %{public}dms',
         result.videoUrl.substring(0, 80), result.videoType, result.sniffDurationMs)
-    } else if (result.status === 'captcha') {
+    } else if (result.errorCode === ResolveErrorCode.Captcha) {
       this.sniffStatus = 'captcha'
       this.sniffMessage = result.errorMessage
-    } else if (result.status === 'timeout') {
+    } else if (result.errorCode === ResolveErrorCode.Timeout) {
       this.sniffStatus = 'timeout'
       this.sniffMessage = result.errorMessage
+    } else if (result.errorCode === ResolveErrorCode.Network) {
+      this.sniffStatus = 'error'
+      this.sniffMessage = result.errorMessage.length > 0 ? result.errorMessage : '网络错误'
     } else {
       this.sniffStatus = 'error'
       this.sniffMessage = result.errorMessage.length > 0 ? result.errorMessage : '未找到视频流'
@@ -2155,7 +1964,7 @@ export struct PlayerPage {
 
   private showControlsWithAutoHide(): void {
     this.isControlVisible = true
-    if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showDanmakuInputSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && this.selectedPanelTab !== 1) {
+    if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && this.selectedPanelTab !== 1) {
       this.startAutoHideTimer()
     }
   }
@@ -2163,7 +1972,7 @@ export struct PlayerPage {
   private startAutoHideTimer(): void {
     this.pauseAutoHideTimer()
     this.controlHideTimer = setTimeout(() => {
-      if (!this.isDraggingProgress && !this.showMoreMenu && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showDanmakuInputSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && this.selectedPanelTab !== 1) {
+      if (!this.isDraggingProgress && !this.showMoreMenu && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && this.selectedPanelTab !== 1) {
         this.isControlVisible = false
       }
       this.controlHideTimer = -1
@@ -2257,67 +2066,10 @@ export struct PlayerPage {
     this.selectedPanelTab = 1
   }
 
-  private openDanmakuInputSheet(): void {
-    if (!this.hasEngine || this.danmakuManager === null) {
-      this.showHudText('播放器未就绪')
-      return
-    }
-    if (!this.isDanmakuEnabled) {
-      this.isDanmakuEnabled = this.danmakuManager.toggleDanmaku()
-    }
-    this.showEpisodeSidePanel = false
-    this.pauseAutoHideTimer()
-    this.showDanmakuInputSheet = true
-  }
-
-  private scheduleDanmakuInputFocus(): void {
-    this.clearDanmakuInputFocusTimer()
-    this.danmakuInputFocusTimer = setTimeout(() => {
-      this.danmakuInputFocusTimer = -1
-      if (this.showDanmakuInputSheet) {
-        focusControl.requestFocus('danmakuTextInput')
-      }
-    }, 280)
-  }
-
-  private clearDanmakuInputFocusTimer(): void {
-    if (this.danmakuInputFocusTimer >= 0) {
-      clearTimeout(this.danmakuInputFocusTimer)
-      this.danmakuInputFocusTimer = -1
-    }
-  }
-
-  private submitLocalDanmaku(): void {
-    const text = this.localDanmakuText.trim()
-    if (text.length === 0) {
-      return
-    }
-    if (this.danmakuManager === null) {
-      this.showHudText('弹幕未就绪')
-      return
-    }
-
-    const shown = this.danmakuManager.sendLocalDanmaku(text, this.positionMs, this.localDanmakuType)
-    if (shown) {
-      this.localDanmakuText = ''
-      this.closeDanmakuInputPanel()
-      this.showHudText('弹幕已发送')
-    } else {
-      this.showHudText('弹幕暂不可显示')
-    }
-  }
-
-  private closeDanmakuInputPanel(): void {
-    this.clearDanmakuInputFocusTimer()
-    this.showDanmakuInputSheet = false
-  }
-
-
   private async openDanmakuMatchPanel(): Promise<void> {
     this.showMoreMenu = false
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
-    this.showDanmakuInputSheet = false
     this.showEpisodeSidePanel = false
     this.pauseAutoHideTimer()
     await this.refreshCurrentManualMapping()

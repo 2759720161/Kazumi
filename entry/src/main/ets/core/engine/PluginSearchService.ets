@@ -1,6 +1,5 @@
 import { RuleSource } from '../../models/RuleSource'
 import { RuleRuntimeModel } from '../../models/RuleRuntimeModel'
-import { AnimeItem } from '../../models/AnimeItem'
 import { PluginSearchState, SearchResultRef } from '../../models/PluginSearchState'
 import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
@@ -11,6 +10,8 @@ import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('PluginSearchService')
 
+const SEARCH_CONCURRENCY = 4
+
 export class PluginSearchService {
   private ruleStore: RuleSourceStore = new RuleSourceStore()
   private searchExecutor: SearchExecutor = new SearchExecutor()
@@ -18,14 +19,14 @@ export class PluginSearchService {
   private antiCrawlHandler: AntiCrawlHandler = new AntiCrawlHandler()
   private pluginStates: PluginSearchState[] = []
   private onStateChange: ((states: PluginSearchState[]) => void) | null = null
-  private isCancelled: boolean = false
+  private searchEpoch: number = 0
 
   setOnStateChange(callback: (states: PluginSearchState[]) => void): void {
     this.onStateChange = callback
   }
 
   cancel(): void {
-    this.isCancelled = true
+    this.searchEpoch++
   }
 
   getPluginStates(): PluginSearchState[] {
@@ -33,15 +34,15 @@ export class PluginSearchService {
   }
 
   async searchAll(keyword: string): Promise<void> {
-    this.isCancelled = false
+    const currentEpoch = ++this.searchEpoch
     const enabledRules = await this.ruleStore.getEnabled()
-    if (this.isCancelled) {
+    if (this.searchEpoch !== currentEpoch) {
       return
     }
     if (enabledRules.length === 0) {
       logger.warn('No enabled rule sources')
       this.pluginStates = []
-      this.notifyStateChange()
+      this.notifyStateChange(currentEpoch)
       return
     }
 
@@ -49,42 +50,55 @@ export class PluginSearchService {
     for (let i = 0; i < enabledRules.length; i++) {
       this.pluginStates.push(PluginSearchState.pending(enabledRules[i].id, enabledRules[i].name))
     }
-    this.notifyStateChange()
+    this.notifyStateChange(currentEpoch)
 
-    const promises: Promise<void>[] = []
-    for (let i = 0; i < enabledRules.length; i++) {
-      promises.push(this.searchByPlugin(i, enabledRules[i], keyword))
+    let nextIndex = 0
+    const runWorker = async (): Promise<void> => {
+      while (this.searchEpoch === currentEpoch) {
+        const idx = nextIndex++
+        if (idx >= enabledRules.length) {
+          return
+        }
+        await this.searchByPlugin(idx, enabledRules[idx], keyword, currentEpoch)
+      }
     }
-    await Promise.all(promises)
-    if (!this.isCancelled) {
-      this.sortCompletedStates()
-      this.notifyStateChange()
+    const workers: Promise<void>[] = []
+    const concurrency = Math.min(SEARCH_CONCURRENCY, enabledRules.length)
+    for (let i = 0; i < concurrency; i++) {
+      workers.push(runWorker())
     }
+    await Promise.all(workers)
+
+    if (this.searchEpoch !== currentEpoch) {
+      return
+    }
+    this.sortCompletedStates()
+    this.notifyStateChange(currentEpoch)
   }
 
-  async searchByPlugin(stateIndex: number, rule: RuleSource, keyword: string): Promise<void> {
-    if (this.isCancelled) {
+  async searchByPlugin(stateIndex: number, rule: RuleSource, keyword: string, epoch: number): Promise<void> {
+    if (this.searchEpoch !== epoch) {
       return
     }
     try {
       const runtime = new RuleRuntimeModel(rule)
       const html = await this.requestHandler.fetchWithRule(runtime, keyword)
-      if (this.isCancelled) {
+      if (this.searchEpoch !== epoch) {
         return
       }
 
       if (runtime.hasAntiCrawler && this.antiCrawlHandler.isCaptchaResponse(html)) {
         logger.warn('Captcha detected for rule %{public}s', rule.name)
-        this.updateState(stateIndex, PluginSearchState.captcha(rule.id, rule.name, '需要验证码验证'))
+        this.updateState(stateIndex, PluginSearchState.captcha(rule.id, rule.name, '需要验证码验证'), epoch)
         return
       }
 
       const results = this.searchExecutor.parseSearchResults(html, runtime)
-      if (this.isCancelled) {
+      if (this.searchEpoch !== epoch) {
         return
       }
       if (results.length === 0) {
-        this.updateState(stateIndex, PluginSearchState.noResult(rule.id, rule.name))
+        this.updateState(stateIndex, PluginSearchState.noResult(rule.id, rule.name), epoch)
         return
       }
 
@@ -97,45 +111,51 @@ export class PluginSearchService {
         ref.sourceName = rule.name
         refs.push(ref)
       }
-      this.updateState(stateIndex, PluginSearchState.success(rule.id, rule.name, refs))
+      this.updateState(stateIndex, PluginSearchState.success(rule.id, rule.name, refs), epoch)
     } catch (err) {
-      if (this.isCancelled) {
+      if (this.searchEpoch !== epoch) {
         return
       }
       const msg = this.normalizeErrorMessage(err instanceof Error ? err.message : String(err))
       logger.error('Search failed for rule %{public}s: %{public}s', rule.name, msg)
-      this.updateState(stateIndex, PluginSearchState.error(rule.id, rule.name, msg))
+      this.updateState(stateIndex, PluginSearchState.error(rule.id, rule.name, msg), epoch)
     }
   }
 
   async querySource(pluginId: number, keyword: string): Promise<void> {
-    this.isCancelled = false
+    const currentEpoch = ++this.searchEpoch
     const stateIndex = this.pluginStates.findIndex((s: PluginSearchState) => s.pluginId === pluginId)
     if (stateIndex === -1) {
       return
     }
     const state = this.pluginStates[stateIndex]
     const rule = await this.ruleStore.getById(pluginId)
-    if (rule === null) {
-      this.updateState(stateIndex, PluginSearchState.error(pluginId, state.pluginName, '规则源不存在'))
+    if (this.searchEpoch !== currentEpoch) {
       return
     }
-    this.updateState(stateIndex, PluginSearchState.pending(pluginId, state.pluginName))
-    await this.searchByPlugin(stateIndex, rule, keyword)
+    if (rule === null) {
+      this.updateState(stateIndex, PluginSearchState.error(pluginId, state.pluginName, '规则源不存在'), currentEpoch)
+      return
+    }
+    this.updateState(stateIndex, PluginSearchState.pending(pluginId, state.pluginName), currentEpoch)
+    await this.searchByPlugin(stateIndex, rule, keyword, currentEpoch)
   }
 
   async retryPlugin(stateIndex: number, keyword: string): Promise<void> {
     if (stateIndex < 0 || stateIndex >= this.pluginStates.length) {
       return
     }
+    const currentEpoch = ++this.searchEpoch
     const state = this.pluginStates[stateIndex]
     const rule = await this.ruleStore.getById(state.pluginId)
+    if (this.searchEpoch !== currentEpoch) {
+      return
+    }
     if (rule === null) {
       return
     }
-    this.isCancelled = false
-    this.updateState(stateIndex, PluginSearchState.pending(rule.id, rule.name))
-    await this.searchByPlugin(stateIndex, rule, keyword)
+    this.updateState(stateIndex, PluginSearchState.pending(rule.id, rule.name), currentEpoch)
+    await this.searchByPlugin(stateIndex, rule, keyword, currentEpoch)
   }
 
   updatePluginError(index: number, message: string): void {
@@ -143,10 +163,12 @@ export class PluginSearchService {
       return
     }
     const state = this.pluginStates[index]
-    this.updateState(index, PluginSearchState.error(state.pluginId, state.pluginName, message))
+    this.pluginStates[index] = PluginSearchState.error(state.pluginId, state.pluginName, message)
+    this.notifyStateChange(this.searchEpoch)
   }
 
   async queryRoads(searchRef: SearchResultRef): Promise<PlaybackSource> {
+    const currentEpoch = this.searchEpoch
     const source = new PlaybackSource()
     source.name = searchRef.sourceName
     source.sourceId = searchRef.sourceId
@@ -154,6 +176,11 @@ export class PluginSearchService {
     source.status = 'pending'
 
     const rule = await this.ruleStore.getById(searchRef.sourceId)
+    if (this.searchEpoch !== currentEpoch) {
+      source.status = 'error'
+      source.message = '请求已取消'
+      return source
+    }
     if (rule === null) {
       source.status = 'error'
       source.message = '规则源不存在'
@@ -163,6 +190,11 @@ export class PluginSearchService {
     try {
       const runtime = new RuleRuntimeModel(rule)
       const html = await this.requestHandler.fetchUrlWithRuleHeaders(runtime, searchRef.url)
+      if (this.searchEpoch !== currentEpoch) {
+        source.status = 'error'
+        source.message = '请求已取消'
+        return source
+      }
       const roads = this.searchExecutor.parseRoads(html, runtime)
 
       if (roads.length === 0) {
@@ -182,6 +214,11 @@ export class PluginSearchService {
       source.roads = roads
       source.status = 'success'
     } catch (err) {
+      if (this.searchEpoch !== currentEpoch) {
+        source.status = 'error'
+        source.message = '请求已取消'
+        return source
+      }
       source.status = 'error'
       source.message = this.normalizeErrorMessage(err instanceof Error ? err.message : '解析失败')
     }
@@ -201,18 +238,18 @@ export class PluginSearchService {
     return message
   }
 
-  private updateState(index: number, state: PluginSearchState): void {
-    if (this.isCancelled) {
+  private updateState(index: number, state: PluginSearchState, epoch: number): void {
+    if (this.searchEpoch !== epoch) {
       return
     }
     if (index >= 0 && index < this.pluginStates.length) {
       this.pluginStates[index] = state
-      this.notifyStateChange()
+      this.notifyStateChange(epoch)
     }
   }
 
-  private notifyStateChange(): void {
-    if (this.isCancelled) {
+  private notifyStateChange(epoch: number): void {
+    if (this.searchEpoch !== epoch) {
       return
     }
     if (this.onStateChange) {

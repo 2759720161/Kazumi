@@ -75,8 +75,9 @@ export struct SettingsPage {
             .height(getTopSpacerHeight(this.topSafeHeight))
             .width('100%')
 
-          this.LibrarySection()
-          this.PlayerAndDanmakuSection()
+          this.AppStatusCard()
+          this.QuickAccessSection()
+          this.PlayerSection()
           this.AppSection()
           this.AdvancedSection()
 
@@ -105,18 +106,171 @@ export struct SettingsPage {
   }
 
   @Builder
-  LibrarySection(): void {
+  AppStatusCard(): void {
     Column() {
-      this.SectionHeader('播放历史与资源')
+      Row() {
+        Column() {
+          Text('Kazumi')
+            .fontSize(22)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text('开源番剧聚合播放器')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .margin({ top: 3 })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 16, bottom: 12 })
+
+      Row() {
+        Row() {
+          Text('规则')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ right: 4 })
+          Text(`${this.enabledRuleCount}/${this.ruleCount}`)
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+        }
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(10)
+        .backgroundColor($r('app.color.button_ghost_bg'))
+
+        Row() {
+          Text('弹幕')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ right: 4 })
+          Text(this.isDanmakuCredentialConfigured ? '已配置' : '未配置')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.isDanmakuCredentialConfigured ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
+        }
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(10)
+        .backgroundColor(this.isDanmakuCredentialConfigured ? $r('app.color.accent_blue_light') : $r('app.color.button_ghost_bg'))
+
+        Row() {
+          Text('播放器')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ right: 4 })
+          Text(this.defaultPlayerEngine === 'mpv' ? 'mpv' : 'AVPlayer')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+        }
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(10)
+        .backgroundColor($r('app.color.button_ghost_bg'))
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, bottom: 14 })
+      .justifyContent(FlexAlign.Start)
+    }
+    .width('100%')
+    .borderRadius(12)
+    .clip(true)
+    .backgroundColor($r('app.color.card_background'))
+    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  QuickAccessSection(): void {
+    Column() {
+      this.SectionHeader('快捷入口')
       Column() {
+        Row() {
+          this.SettingIcon($r('sys.symbol.cart'))
+          this.SettingTitle('规则仓库',
+            this.updatableCount > 0 ? this.updatableCount + ' 条规则可更新' : '浏览、安装和导入规则')
+
+          if (this.updatableCount > 0) {
+            Row() {
+              Text(`${this.updatableCount}`)
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(Color.White)
+            }
+            .width(22)
+            .height(22)
+            .borderRadius(11)
+            .backgroundColor($r('app.color.status_error'))
+            .justifyContent(FlexAlign.Center)
+            .alignItems(VerticalAlign.Center)
+            .margin({ left: 10, right: 6 })
+          }
+
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('sys.color.icon_secondary')])
+        }
+        .width('100%')
+        .height(64)
+        .padding({ left: 16, right: 16 })
+        .borderRadius(12)
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/settings/RuleShopPage' })
+        })
+        .stateStyles({
+          pressed: {
+            .backgroundColor($r('app.color.category_menu_item_selected'))
+          },
+          normal: {
+            .backgroundColor(Color.Transparent)
+          }
+        })
+
+        this.ItemDivider()
+
+        Row() {
+          this.SettingIcon($r('sys.symbol.barrage_setting'))
+          this.SettingTitle('弹幕设置',
+            this.isDanmakuCredentialConfigured ? '来源、样式、屏蔽与缓存' : '配置弹幕来源和显示效果')
+
+          Row() {
+            Text(this.isDanmakuCredentialConfigured ? '已配置' : '未配置')
+              .fontSize(12)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.isDanmakuCredentialConfigured ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
+          }
+          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+          .borderRadius(10)
+          .backgroundColor(this.isDanmakuCredentialConfigured ? $r('app.color.accent_blue_light') : $r('app.color.button_ghost_bg'))
+          .margin({ left: 10, right: 6 })
+
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('sys.color.icon_secondary')])
+        }
+        .width('100%')
+        .height(64)
+        .padding({ left: 16, right: 16 })
+        .borderRadius(12)
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/settings/DanmakuSettingsPage' })
+        })
+        .stateStyles({
+          pressed: {
+            .backgroundColor($r('app.color.category_menu_item_selected'))
+          },
+          normal: {
+            .backgroundColor(Color.Transparent)
+          }
+        })
+
+        this.ItemDivider()
+
         this.NavigationItem($r('sys.symbol.clock'), '历史记录', '查看播放历史', '', () => {
           router.pushUrl({ url: 'pages/history/HistoryPage' })
-        })
-        this.ItemDivider()
-        this.NavigationItem($r('sys.symbol.cart'), '规则仓库',
-          this.updatableCount > 0 ? this.updatableCount + ' 条规则可更新' : '浏览、安装和导入规则',
-          '', () => {
-          router.pushUrl({ url: 'pages/settings/RuleShopPage' })
         })
       }
       .width('100%')
@@ -131,7 +285,7 @@ export struct SettingsPage {
   }
 
   @Builder
-  PlayerAndDanmakuSection(): void {
+  PlayerSection(): void {
     Column() {
       this.SectionHeader('播放器')
       Column() {
@@ -169,13 +323,7 @@ export struct SettingsPage {
           this.ToggleItem($r('sys.symbol.doc_text'), '伪装分片处理', '允许图片扩展名的视频分片', this.mpvSegAllowImg, (isOn: boolean) => {
             this.setMpvSegAllowImg(isOn)
           })
-
-          this.ItemDivider()
-        } else {
-          this.ItemDivider()
         }
-
-        this.DanmakuSettingsItem()
       }
       .width('100%')
       .borderRadius(12)
@@ -215,10 +363,23 @@ export struct SettingsPage {
 
         this.ItemDivider()
 
-        this.ToggleItem($r('sys.symbol.lock_open'), '允许非 HTTPS 请求', '兼容部分旧规则源', this.allowHttpRequests, (isOn: boolean) => {
-          this.allowHttpRequests = isOn
-          SecurityPolicy.getInstance().setAllowHttpRequests(isOn)
-        })
+        Row() {
+          SymbolGlyph($r('sys.symbol.lock_open'))
+            .fontSize(24)
+            .fontColor([$r('app.color.status_warning')])
+            .width(34)
+            .margin({ right: 12 })
+          this.SettingTitle('允许非 HTTPS 请求', '兼容部分旧规则源，可能降低连接安全性')
+
+          Toggle({ type: ToggleType.Switch, isOn: this.allowHttpRequests })
+            .onChange((isOn: boolean) => {
+              this.allowHttpRequests = isOn
+              SecurityPolicy.getInstance().setAllowHttpRequests(isOn)
+            })
+        }
+        .width('100%')
+        .height(64)
+        .padding({ left: 16, right: 16 })
       }
       .width('100%')
       .borderRadius(12)
@@ -370,73 +531,6 @@ export struct SettingsPage {
 
       Toggle({ type: ToggleType.Switch, isOn: isOn })
         .onChange(onChange)
-    }
-    .width('100%')
-    .height(64)
-    .padding({ left: 16, right: 16 })
-  }
-
-  @Builder
-  DanmakuSettingsItem(): void {
-    Row() {
-      this.SettingIcon($r('sys.symbol.gearshape'))
-      Column() {
-        Text('弹幕设置')
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        Text(this.isDanmakuCredentialConfigured ? '来源、样式、屏蔽与缓存' : '配置弹幕来源和显示效果')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-          .margin({ top: 2 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Text(this.isDanmakuCredentialConfigured ? '已配置' : '未配置')
-        .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ left: 10, right: 6 })
-
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(16)
-        .fontColor([$r('sys.color.icon_secondary')])
-    }
-    .width('100%')
-    .height(64)
-    .padding({ left: 16, right: 16 })
-    .borderRadius(12)
-    .onClick(() => {
-      router.pushUrl({ url: 'pages/settings/DanmakuSettingsPage' })
-    })
-    .stateStyles({
-      pressed: {
-        .backgroundColor($r('app.color.category_menu_item_selected'))
-      },
-      normal: {
-        .backgroundColor(Color.Transparent)
-      }
-    })
-  }
-
-  @Builder
-  StaticItem(icon: Resource, title: string, value: string): void {
-    Row() {
-      this.SettingIcon(icon)
-      Text(title)
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-      Text(value)
-        .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
     }
     .width('100%')
     .height(64)

@@ -1200,7 +1200,7 @@ export class BangumiApi {
     const tagList = item['tags'] as Object[];
     if (tagList !== null && tagList !== undefined) {
       const tags: string[] = [];
-      for (let i = 0; i < tagList.length && i < 12; i++) {
+      for (let i = 0; i < tagList.length; i++) {
         const tagObj = tagList[i] as Record<string, Object>;
         const tagName = (tagObj['name'] as string) ?? '';
         if (tagName.length > 0) {

@@ -42,7 +42,7 @@ struct Index {
         TabContent() {
           FavoritePage()
         }
-        .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '追番'))
+        .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '片库'))
 
         TabContent() {
           SettingsPage()

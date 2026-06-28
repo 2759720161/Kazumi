@@ -1,4 +1,5 @@
 import { SnifferResult } from './SnifferResult'
+import { ResolveErrorCode } from './ResolveErrorCode'
 
 export class VideoSourceResult {
   status: string = 'pending'
@@ -8,6 +9,8 @@ export class VideoSourceResult {
   errorMessage: string = ''
   retryCount: number = 0
   sniffDurationMs: number = 0
+  errorCode: ResolveErrorCode | '' = ''
+  retriable: boolean = false
 
   static success(url: string, type: string, candidates: SnifferResult[], durationMs: number): VideoSourceResult {
     const result = new VideoSourceResult()
@@ -25,6 +28,8 @@ export class VideoSourceResult {
     result.errorMessage = message
     result.retryCount = retryCount
     result.sniffDurationMs = durationMs
+    result.errorCode = ResolveErrorCode.NotFound
+    result.retriable = true
     return result
   }
 
@@ -34,6 +39,8 @@ export class VideoSourceResult {
     result.errorMessage = '嗅探超时'
     result.retryCount = retryCount
     result.sniffDurationMs = durationMs
+    result.errorCode = ResolveErrorCode.Timeout
+    result.retriable = true
     return result
   }
 
@@ -42,6 +49,37 @@ export class VideoSourceResult {
     result.status = 'captcha'
     result.errorMessage = '遇到验证码，需要人工处理'
     result.sniffDurationMs = durationMs
+    result.errorCode = ResolveErrorCode.Captcha
+    return result
+  }
+
+  static cancelled(durationMs: number): VideoSourceResult {
+    const result = new VideoSourceResult()
+    result.status = 'error'
+    result.errorMessage = '嗅探已取消'
+    result.sniffDurationMs = durationMs
+    result.errorCode = ResolveErrorCode.Cancelled
+    return result
+  }
+
+  static networkError(message: string, durationMs: number): VideoSourceResult {
+    const result = new VideoSourceResult()
+    result.status = 'error'
+    result.errorMessage = message
+    result.sniffDurationMs = durationMs
+    result.errorCode = ResolveErrorCode.Network
+    result.retriable = true
+    return result
+  }
+
+  static wrapperOnly(candidates: SnifferResult[], durationMs: number): VideoSourceResult {
+    const result = new VideoSourceResult()
+    result.status = 'error'
+    result.errorMessage = '仅找到嵌套播放器链接'
+    result.candidates = candidates
+    result.sniffDurationMs = durationMs
+    result.errorCode = ResolveErrorCode.WrapperOnly
+    result.retriable = true
     return result
   }
 

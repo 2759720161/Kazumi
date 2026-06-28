@@ -247,7 +247,6 @@ export class RecommendViewModel {
     if (target.votes <= 0 && detail.votes > 0) target.votes = detail.votes
     if (target.date.length === 0 && detail.date.length > 0) target.date = detail.date
     if (target.year.length === 0 && detail.year.length > 0) target.year = detail.year
-    if (target.platform.length === 0 && detail.platform.length > 0) target.platform = detail.platform
     if (target.tags.length === 0 && detail.tags.length > 0) target.tags = [...detail.tags]
     if (target.eps <= 0 && detail.eps > 0) target.eps = detail.eps
     if (target.coverFallback.length === 0 && detail.coverFallback.length > 0) target.coverFallback = detail.coverFallback

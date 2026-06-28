@@ -3,8 +3,6 @@ import { BangumiApi } from '../../core/api/BangumiApi'
 import { AnimeSeason, YearQuarterItem, QuarterItem } from '../../core/utils/AnimeSeason'
 import { TimelineAnimeCard } from '../../components/timeline/TimelineAnimeCard'
 import { TIMELINE_WEEKDAY_LABELS } from '../../components/timeline/TimelineWeekdayHdsTabs'
-import { LoadingOverlay } from '../../components/common/LoadingOverlay'
-import { EmptyState } from '../../components/common/EmptyState'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
 import { router } from '@kit.ArkUI'
@@ -78,7 +76,7 @@ export struct TimelinePage {
               .width('100%')
 
             if (this.isLoading && this.calendar.length === 0) {
-              LoadingOverlay({ message: '时间表加载中...' })
+              this.TimelineSkeletonList()
             } else if (this.isError) {
               ErrorRetry({
                 message: 'Bangumi 时间表加载失败',
@@ -87,7 +85,18 @@ export struct TimelinePage {
                 }
               })
             } else if (this.getAnimeListForWeekday(this.selectedWeekdayIndex).length === 0) {
-              EmptyState({ message: `${TIMELINE_WEEKDAY_LABELS[this.selectedWeekdayIndex]}暂无放送条目` })
+              Column() {
+                Text('这一天暂无放送条目')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_secondary'))
+                Text('试试切换到其它星期')
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_hint'))
+                  .margin({ top: 4 })
+              }
+              .width('100%')
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
             } else {
               this.AnimeListContent()
             }
@@ -115,7 +124,7 @@ export struct TimelinePage {
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
 
-      if (!this.isLoading && !this.isError && this.getAnimeListForWeekday(this.selectedWeekdayIndex).length > 0) {
+      if (!this.isError) {
         this.WeekdayTabBar()
       }
 
@@ -140,8 +149,64 @@ export struct TimelinePage {
     Column() {
       ForEach(this.getAnimeListForWeekday(this.selectedWeekdayIndex), (item: AnimeItem, index?: number) => {
         TimelineAnimeCard({ animeItem: item })
-          .margin({ bottom: 8 })
+          .margin({ bottom: 6 })
       }, (item: AnimeItem, index?: number) => `tl_${this.selectedWeekdayIndex}_${index}_${item.name}`)
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+  }
+
+  @Builder
+  private TimelineSkeletonList(): void {
+    Column() {
+      ForEach([0, 1, 2, 3, 4, 5], (index: number) => {
+        Row() {
+          Column()
+            .width(92)
+            .height(132)
+            .borderRadius(10)
+            .backgroundColor($r('app.color.skeleton_background'))
+
+          Column() {
+            Column()
+              .width('70%')
+              .height(16)
+              .borderRadius(4)
+              .backgroundColor($r('app.color.skeleton_background'))
+            Column()
+              .width('50%')
+              .height(14)
+              .borderRadius(4)
+              .margin({ top: 6 })
+              .backgroundColor($r('app.color.skeleton_background'))
+            Column()
+              .width('85%')
+              .height(14)
+              .borderRadius(4)
+              .margin({ top: 4 })
+              .backgroundColor($r('app.color.skeleton_background'))
+            Blank()
+              .layoutWeight(1)
+            Row() {
+              Column()
+                .width(36)
+                .height(14)
+                .borderRadius(4)
+                .backgroundColor($r('app.color.skeleton_background'))
+            }
+          }
+          .layoutWeight(1)
+          .height(132)
+          .margin({ left: 14 })
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+        .borderRadius(12)
+        .backgroundColor($r('app.color.card_background'))
+        .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+        .margin({ bottom: 6 })
+      }, (index: number) => `tl_skeleton_${index}`)
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 4, bottom: 4 })
@@ -165,6 +230,7 @@ export struct TimelinePage {
                 }, () => {
                   this.selectedWeekdayIndex = selectedIndex
                 })
+                this.contentScroller.scrollToIndex(0)
               }
             })
           }
@@ -201,7 +267,7 @@ export struct TimelinePage {
         this.SeasonSideBarHeader()
         this.SeasonSideBarBody()
       }
-      .width('82%')
+      .width(this.getSeasonSideBarWidth())
       .constraintSize({ maxWidth: SEASON_SIDEBAR_MAX_WIDTH })
       .height('100%')
       .backgroundColor($r('app.color.page_background_media'))
@@ -238,7 +304,7 @@ export struct TimelinePage {
     Column() {
       Row() {
         Column() {
-          Text('时间机器')
+          Text('季度选择')
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
@@ -434,6 +500,16 @@ export struct TimelinePage {
       enableComponentSafeArea: false,
       avoidLayoutSafeArea: true
     }
+  }
+
+  private getSeasonSideBarWidth(): Length {
+    if (this.screenWidthVp >= 900) {
+      return 420
+    }
+    if (this.screenWidthVp >= 600) {
+      return 360
+    }
+    return '82%'
   }
 
   private getVisibleWeekdayCount(): number {

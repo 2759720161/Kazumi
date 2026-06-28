@@ -9,19 +9,19 @@ export struct TimelineAnimeCard {
     Row() {
       Stack() {
         Image(this.animeItem.getGridCover())
-          .width(100)
-          .height(143)
+          .width(92)
+          .height(132)
           .objectFit(ImageFit.Cover)
           .borderRadius(10)
           .alt($r('app.media.ic_placeholder'))
       }
-      .width(100)
-      .height(143)
+      .width(92)
+      .height(132)
 
       Column() {
         Text(this.animeItem.name.length > 0 ? this.animeItem.name : '未知番剧')
           .fontSize(16)
-          .fontWeight(FontWeight.Medium)
+          .fontWeight(600)
           .fontColor($r('app.color.text_primary'))
           .maxLines(2)
           .lineHeight(22)
@@ -71,7 +71,7 @@ export struct TimelineAnimeCard {
         .width('100%')
       }
       .layoutWeight(1)
-      .height(143)
+      .height(132)
       .margin({ left: 14 })
       .justifyContent(FlexAlign.SpaceBetween)
       .alignItems(HorizontalAlign.Start)
@@ -81,7 +81,7 @@ export struct TimelineAnimeCard {
     .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    .shadow({ radius: 6, color: $r('app.color.shadow_surface'), offsetY: 2 })
     .onClick(() => {
       router.pushUrl({
         url: 'pages/detail/DetailPage',

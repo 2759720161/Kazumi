@@ -53,7 +53,7 @@ export struct DanmakuBlockRulesPage {
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
-              .padding({ left: 16, right: 16, top: 10 })
+              .padding({ left: 18, right: 18, top: 10 })
           }
 
           Blank()
@@ -61,11 +61,13 @@ export struct DanmakuBlockRulesPage {
             .width('100%')
         }
         .width('100%')
+        .padding({ left: 12, right: 12 })
       }
       .width('100%')
       .height('100%')
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
+      .clip(false)
     }
     .width('100%')
     .height('100%')
@@ -77,128 +79,234 @@ export struct DanmakuBlockRulesPage {
   }
 
   @Builder
+  private SectionHeader(title: string): void {
+    Text(title)
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor($r('app.color.text_secondary'))
+      .width('100%')
+      .padding({ left: 6, right: 6, top: 18, bottom: 6 })
+  }
+
+  @Builder
   private KeywordSection(): void {
     Column() {
-      this.SectionHeader('屏蔽词', this.keywordsEnabled, () => {
-        this.setKeywordsEnabled(!this.keywordsEnabled)
-      })
-      this.InputRow('新增屏蔽词', this.keywordInput, (value: string) => {
-        this.keywordInput = value
-      }, () => {
-        this.addKeyword()
-      })
-      this.RuleList(this.keywords, false)
+      this.SectionHeader('屏蔽词')
+      Column() {
+        Row() {
+          Text('屏蔽词')
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+
+          Row() {
+            Blank()
+              .width(20)
+              .height(20)
+              .borderRadius(10)
+              .backgroundColor(Color.White)
+          }
+          .width(44)
+          .height(24)
+          .borderRadius(12)
+          .padding(2)
+          .justifyContent(this.keywordsEnabled ? FlexAlign.End : FlexAlign.Start)
+          .backgroundColor(this.keywordsEnabled ? $r('app.color.accent_blue') : $r('app.color.divider_blue'))
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 14, bottom: 6 })
+        .onClick(() => {
+          this.setKeywordsEnabled(!this.keywordsEnabled)
+        })
+
+        Row() {
+          TextInput({ placeholder: '新增屏蔽词', text: this.keywordInput })
+            .height(40)
+            .fontSize(14)
+            .backgroundColor($r('app.color.page_background'))
+            .borderRadius(10)
+            .padding({ left: 12, right: 12 })
+            .layoutWeight(1)
+            .onChange((value: string) => {
+              this.keywordInput = value
+            })
+            .onSubmit(() => {
+              this.addKeyword()
+            })
+
+          Button('添加')
+            .height(36)
+            .fontSize(13)
+            .margin({ left: 8 })
+            .onClick(() => {
+              this.addKeyword()
+            })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, bottom: 8 })
+
+        this.KeywordChipList()
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
     .width('100%')
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  private KeywordChipList(): void {
+    if (this.keywords.length === 0) {
+      Text('暂无规则')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 14 })
+    } else {
+      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignContent: FlexAlign.Start }) {
+        ForEach(this.keywords, (item: string, index?: number) => {
+          Row() {
+            Text(item)
+              .fontSize(13)
+              .fontColor($r('app.color.text_primary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .constraintSize({ maxWidth: 120 })
+              .layoutWeight(1)
+
+            SymbolGlyph($r('sys.symbol.multiply'))
+              .fontSize(14)
+              .fontColor([$r('sys.color.icon_secondary')])
+              .margin({ left: 4 })
+              .onClick(() => {
+                this.removeRule(index ?? -1, false)
+              })
+          }
+          .height(30)
+          .padding({ left: 12, right: 8 })
+          .borderRadius(15)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .margin({ right: 6, bottom: 6 })
+        }, (item: string, index?: number) => `keyword_${index}_${item}`)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 8, bottom: 14 })
+    }
   }
 
   @Builder
   private RegexSection(): void {
     Column() {
-      this.SectionHeader('正则规则', this.regexEnabled, () => {
-        this.setRegexEnabled(!this.regexEnabled)
-      })
-      this.InputRow('新增正则表达式', this.regexInput, (value: string) => {
-        this.regexInput = value
-      }, () => {
-        this.addRegexRule()
-      })
-      this.RuleList(this.regexRules, true)
-    }
-    .width('100%')
-  }
+      this.SectionHeader('正则规则')
+      Column() {
+        Row() {
+          Text('正则规则')
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
 
-  @Builder
-  private SectionHeader(title: string, enabled: boolean, onToggle: () => void): void {
-    Row() {
-      Text(title)
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-
-      Row() {
-        Blank()
-          .width(20)
-          .height(20)
-          .borderRadius(10)
-          .backgroundColor(Color.White)
-      }
-      .width(44)
-      .height(24)
-      .borderRadius(12)
-      .padding(2)
-      .justifyContent(enabled ? FlexAlign.End : FlexAlign.Start)
-      .backgroundColor(enabled ? $r('app.color.accent_blue') : $r('app.color.divider_blue'))
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 6 })
-    .onClick(() => {
-      onToggle()
-    })
-  }
-
-  @Builder
-  private InputRow(placeholder: string, text: string, onChanged: (value: string) => void, onSubmit: () => void): void {
-    Row() {
-      TextInput({ placeholder: placeholder, text: text })
-        .height(40)
-        .fontSize(14)
-        .backgroundColor($r('app.color.card_background'))
-        .borderRadius(10)
-        .padding({ left: 12, right: 12 })
-        .layoutWeight(1)
-        .onChange((value: string) => {
-          onChanged(value)
-        })
-        .onSubmit(() => {
-          onSubmit()
-        })
-
-      Button('添加')
-        .height(36)
-        .fontSize(13)
-        .margin({ left: 8 })
+          Row() {
+            Blank()
+              .width(20)
+              .height(20)
+              .borderRadius(10)
+              .backgroundColor(Color.White)
+          }
+          .width(44)
+          .height(24)
+          .borderRadius(12)
+          .padding(2)
+          .justifyContent(this.regexEnabled ? FlexAlign.End : FlexAlign.Start)
+          .backgroundColor(this.regexEnabled ? $r('app.color.accent_blue') : $r('app.color.divider_blue'))
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 14, bottom: 6 })
         .onClick(() => {
-          onSubmit()
+          this.setRegexEnabled(!this.regexEnabled)
         })
+
+        Row() {
+          TextInput({ placeholder: '新增正则表达式', text: this.regexInput })
+            .height(40)
+            .fontSize(14)
+            .backgroundColor($r('app.color.page_background'))
+            .borderRadius(10)
+            .padding({ left: 12, right: 12 })
+            .layoutWeight(1)
+            .onChange((value: string) => {
+              this.regexInput = value
+            })
+            .onSubmit(() => {
+              this.addRegexRule()
+            })
+
+          Button('添加')
+            .height(36)
+            .fontSize(13)
+            .margin({ left: 8 })
+            .onClick(() => {
+              this.addRegexRule()
+            })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, bottom: 8 })
+
+        this.RegexChipList()
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, bottom: 8 })
+    .margin({ bottom: 8 })
   }
 
   @Builder
-  private RuleList(items: string[], isRegex: boolean): void {
-    if (items.length === 0) {
+  private RegexChipList(): void {
+    if (this.regexRules.length === 0) {
       Text('暂无规则')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
-        .padding({ left: 16, right: 16, top: 8, bottom: 12 })
+        .padding({ left: 16, right: 16, top: 8, bottom: 14 })
     } else {
-      Column() {
-        ForEach(items, (item: string, index?: number) => {
+      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignContent: FlexAlign.Start }) {
+        ForEach(this.regexRules, (item: string, index?: number) => {
           Row() {
             Text(item)
-              .fontSize(14)
+              .fontSize(13)
               .fontColor($r('app.color.text_primary'))
-              .maxLines(2)
+              .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .constraintSize({ maxWidth: 120 })
               .layoutWeight(1)
 
-            Text('删除')
-              .fontSize(13)
-              .fontColor($r('app.color.status_error'))
-              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            SymbolGlyph($r('sys.symbol.multiply'))
+              .fontSize(14)
+              .fontColor([$r('sys.color.icon_secondary')])
+              .margin({ left: 4 })
               .onClick(() => {
-                this.removeRule(index ?? -1, isRegex)
+                this.removeRule(index ?? -1, true)
               })
           }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 9, bottom: 9 })
-        }, (item: string, index?: number) => `${isRegex ? 'regex' : 'keyword'}_${index}_${item}`)
+          .height(30)
+          .padding({ left: 12, right: 8 })
+          .borderRadius(15)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .margin({ right: 6, bottom: 6 })
+        }, (item: string, index?: number) => `regex_${index}_${item}`)
       }
       .width('100%')
+      .padding({ left: 16, right: 16, top: 8, bottom: 14 })
     }
   }
 

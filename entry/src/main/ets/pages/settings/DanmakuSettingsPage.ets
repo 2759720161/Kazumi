@@ -112,6 +112,9 @@ export struct DanmakuSettingsPage {
   @State cacheExpiredCount: number = 0
   @State cacheSizeText: string = '0 B'
   @State isClearingCache: boolean = false
+  @State isEditingCredentials: boolean = false
+  @State keywordCount: number = 0
+  @State regexCount: number = 0
   private scroller: Scroller = new Scroller()
 
   aboutToAppear(): void {
@@ -130,9 +133,11 @@ export struct DanmakuSettingsPage {
             .height(getTopSpacerHeight(this.topSafeHeight))
             .width('100%')
 
+          this.DanmakuStatusCard()
           this.SourceSection()
           this.SourceFilterSection()
-          this.DisplaySection()
+          this.DisplayBasicSection()
+          this.DisplayAdvancedSection()
           this.StyleSection()
           this.FilterSection()
           this.CacheSection()
@@ -161,20 +166,161 @@ export struct DanmakuSettingsPage {
   }
 
   @Builder
-  private SourceSectionTitle(): void {
-    Row() {
-      Text('弹幕源')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
-        .layoutWeight(1)
+  DanmakuStatusCard(): void {
+    Column() {
+      Row() {
+        Text('弹幕配置')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 14, bottom: 10 })
 
-      Text(this.isDanmakuCredentialConfigured ? '已配置' : '未配置')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
+      Row() {
+        Row() {
+          Text('来源')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ right: 4 })
+          Text(this.getActiveSourceNames())
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+        }
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(10)
+        .backgroundColor($r('app.color.button_ghost_bg'))
+
+        Row() {
+          Text('缓存')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ right: 4 })
+          Text(`${this.cacheFileCount} 文件`)
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+        }
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(10)
+        .backgroundColor($r('app.color.button_ghost_bg'))
+
+        Row() {
+          Text('屏蔽')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ right: 4 })
+          Text(`${this.keywordCount + this.regexCount} 条`)
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+        }
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(10)
+        .backgroundColor($r('app.color.button_ghost_bg'))
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, bottom: 14 })
+      .justifyContent(FlexAlign.Start)
     }
     .width('100%')
-    .padding({ left: 6, right: 6, top: 18, bottom: 6 })
+    .borderRadius(12)
+    .clip(true)
+    .backgroundColor($r('app.color.card_background'))
+    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  DanmakuPreviewCard(): void {
+    Column() {
+      Row() {
+        Text('弹幕预览')
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_secondary'))
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .padding({ left: 6, right: 6, top: 0, bottom: 6 })
+
+      Column() {
+        if (this.danmakuBorder) {
+          Text('2333 太棒了吧')
+            .fontSize(this.danmakuFontSize)
+            .fontWeight(this.mapFontWeight(this.danmakuFontWeight))
+            .fontColor(this.danmakuColor ? Color.White : $r('app.color.text_primary'))
+            .opacity(this.danmakuOpacity)
+            .border({
+              width: this.danmakuBorderSize,
+              color: Color.Black
+            })
+            .borderStyle(BorderStyle.Solid)
+            .padding(2)
+            .margin({ bottom: 6 })
+
+          Text('这个角色好可爱啊')
+            .fontSize(this.danmakuFontSize)
+            .fontWeight(this.mapFontWeight(this.danmakuFontWeight))
+            .fontColor(this.danmakuColor ? '#FFE53B' : $r('app.color.text_primary'))
+            .opacity(this.danmakuOpacity)
+            .border({
+              width: this.danmakuBorderSize,
+              color: Color.Black
+            })
+            .borderStyle(BorderStyle.Solid)
+            .padding(2)
+            .margin({ bottom: 6 })
+
+          Text('前方高能注意')
+            .fontSize(this.danmakuFontSize)
+            .fontWeight(this.mapFontWeight(this.danmakuFontWeight))
+            .fontColor(this.danmakuColor ? '#FF6B6B' : $r('app.color.text_primary'))
+            .opacity(this.danmakuOpacity)
+            .border({
+              width: this.danmakuBorderSize,
+              color: Color.Black
+            })
+            .borderStyle(BorderStyle.Solid)
+            .padding(2)
+        } else {
+          Text('2333 太棒了吧')
+            .fontSize(this.danmakuFontSize)
+            .fontWeight(this.mapFontWeight(this.danmakuFontWeight))
+            .fontColor(this.danmakuColor ? Color.White : $r('app.color.text_primary'))
+            .opacity(this.danmakuOpacity)
+            .padding(2)
+            .margin({ bottom: 6 })
+
+          Text('这个角色好可爱啊')
+            .fontSize(this.danmakuFontSize)
+            .fontWeight(this.mapFontWeight(this.danmakuFontWeight))
+            .fontColor(this.danmakuColor ? '#FFE53B' : $r('app.color.text_primary'))
+            .opacity(this.danmakuOpacity)
+            .padding(2)
+            .margin({ bottom: 6 })
+
+          Text('前方高能注意')
+            .fontSize(this.danmakuFontSize)
+            .fontWeight(this.mapFontWeight(this.danmakuFontWeight))
+            .fontColor(this.danmakuColor ? '#FF6B6B' : $r('app.color.text_primary'))
+            .opacity(this.danmakuOpacity)
+            .padding(2)
+        }
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .padding({ left: 16, right: 16, top: 12, bottom: 14 })
+    }
+    .width('100%')
+    .borderRadius(12)
+    .clip(true)
+    .backgroundColor($r('app.color.card_background'))
+    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
   }
 
   @Builder
@@ -213,52 +359,118 @@ export struct DanmakuSettingsPage {
   @Builder
   private SourceSection(): void {
     Column() {
-      this.SourceSectionTitle()
+      this.SectionTitle('弹幕源')
 
       Column() {
-        Text('DanDanPlay API 凭据')
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 14, bottom: 4 })
+        if (this.isDanmakuCredentialConfigured && !this.isEditingCredentials) {
+          Text('DanDanPlay API 凭据')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 4 })
 
-        Text('用于弹弹Play弹幕搜索与匹配；不配置也可以使用其他来源。')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .padding({ left: 16, right: 16, bottom: 10 })
+          Text('AppId: ' + this.maskedAppId())
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ left: 16, right: 16, bottom: 10 })
 
-        TextInput({ placeholder: 'AppId', text: this.dandanAppId })
-          .width('100%')
-          .height(44)
-          .fontSize(14)
-          .backgroundColor($r('app.color.page_background'))
-          .borderRadius(12)
-          .padding({ left: 12, right: 12 })
-          .margin({ left: 16, right: 16, bottom: 8 })
-          .onChange((value: string) => {
-            this.dandanAppId = value
-          })
-          .onBlur(() => {
-            this.saveDanmakuCredentials()
-          })
+          if (this.testConnectionMessage.length > 0) {
+            Text(this.testConnectionMessage)
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ left: 16, right: 16, bottom: 8 })
+          }
 
-        TextInput({ placeholder: 'AppSecret', text: this.dandanAppSecret })
+          Row() {
+            Button('测试连接')
+              .height(36)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .enabled(!this.isTestingConnection)
+              .backgroundColor($r('app.color.button_ghost_bg'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(18)
+              .layoutWeight(1)
+              .margin({ right: 8 })
+              .onClick(() => {
+                this.testDanmakuConnection()
+              })
+
+            Button('重新配置')
+              .height(36)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .backgroundColor($r('app.color.button_ghost_bg'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(18)
+              .layoutWeight(1)
+              .margin({ left: 8, right: 8 })
+              .onClick(() => {
+                this.isEditingCredentials = true
+              })
+
+            Button('清除')
+              .height(36)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .backgroundColor($r('app.color.button_ghost_bg'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(18)
+              .layoutWeight(1)
+              .margin({ left: 8 })
+              .onClick(() => {
+                this.clearDanmakuCredentials()
+              })
+          }
           .width('100%')
-          .height(44)
-          .fontSize(14)
-          .type(InputType.Password)
-          .backgroundColor($r('app.color.page_background'))
-          .borderRadius(12)
-          .padding({ left: 12, right: 12 })
-          .margin({ left: 16, right: 16, bottom: 12 })
-          .onChange((value: string) => {
-            this.dandanAppSecret = value
-          })
-          .onBlur(() => {
-            this.saveDanmakuCredentials()
-          })
+          .padding({ left: 16, right: 16, bottom: 14 })
+        } else {
+          Text('DanDanPlay API 凭据')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 4 })
+
+          Text('用于弹弹Play弹幕搜索与匹配；不配置也可以使用其他来源。')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ left: 16, right: 16, bottom: 10 })
+
+          TextInput({ placeholder: 'AppId', text: this.dandanAppId })
+            .width('100%')
+            .height(44)
+            .fontSize(14)
+            .backgroundColor($r('app.color.page_background'))
+            .borderRadius(12)
+            .padding({ left: 12, right: 12 })
+            .margin({ left: 16, right: 16, bottom: 8 })
+            .onChange((value: string) => {
+              this.dandanAppId = value
+            })
+            .onBlur(() => {
+              this.saveDanmakuCredentials()
+            })
+
+          TextInput({ placeholder: 'AppSecret', text: this.dandanAppSecret })
+            .width('100%')
+            .height(44)
+            .fontSize(14)
+            .type(InputType.Password)
+            .backgroundColor($r('app.color.page_background'))
+            .borderRadius(12)
+            .padding({ left: 12, right: 12 })
+            .margin({ left: 16, right: 16, bottom: 12 })
+            .onChange((value: string) => {
+              this.dandanAppSecret = value
+            })
+            .onBlur(() => {
+              this.saveDanmakuCredentials()
+            })
 
           Row() {
             Button('保存')
@@ -289,28 +501,34 @@ export struct DanmakuSettingsPage {
                 this.testDanmakuConnection()
               })
 
-            Button('清除')
-              .height(36)
-              .fontSize(14)
-              .fontWeight(FontWeight.Medium)
-              .backgroundColor($r('app.color.button_ghost_bg'))
-              .fontColor($r('app.color.text_primary'))
-              .borderRadius(18)
-              .layoutWeight(1)
-              .margin({ left: 8 })
-              .onClick(() => {
-                this.clearDanmakuCredentials()
-              })
+            if (this.isDanmakuCredentialConfigured) {
+              Button('取消')
+                .height(36)
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .backgroundColor($r('app.color.button_ghost_bg'))
+                .fontColor($r('app.color.text_primary'))
+                .borderRadius(18)
+                .layoutWeight(1)
+                .margin({ left: 8 })
+                .onClick(() => {
+                  this.isEditingCredentials = false
+                  const credStore = DandanCredentialStore.getInstance()
+                  this.dandanAppId = credStore.getAppId()
+                  this.dandanAppSecret = credStore.getAppSecret()
+                })
+            }
           }
-        .width('100%')
-        .padding({ left: 16, right: 16, bottom: 12 })
+          .width('100%')
+          .padding({ left: 16, right: 16, bottom: 12 })
 
-        if (this.testConnectionMessage.length > 0) {
-          Text(this.testConnectionMessage)
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-            .padding({ left: 16, right: 16, bottom: 12 })
+          if (this.testConnectionMessage.length > 0) {
+            Text(this.testConnectionMessage)
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ left: 16, right: 16, bottom: 12 })
+          }
         }
       }
       .width('100%')
@@ -325,9 +543,49 @@ export struct DanmakuSettingsPage {
   }
 
   @Builder
-  private DisplaySection(): void {
+  private SourceFilterSection(): void {
     Column() {
-      this.SectionTitle('弹幕显示')
+      this.SectionTitle('弹幕来源过滤')
+      Column() {
+        DanmakuSettingsSwitchRow({
+          title: 'BiliBili',
+          value: $danmakuBiliBiliSource,
+          onToggle: (value: boolean) => {
+            this.setDanmakuBiliBiliSource(value)
+          }
+        })
+        this.ItemDivider()
+        DanmakuSettingsSwitchRow({
+          title: 'Gamer',
+          value: $danmakuGamerSource,
+          onToggle: (value: boolean) => {
+            this.setDanmakuGamerSource(value)
+          }
+        })
+        this.ItemDivider()
+        DanmakuSettingsSwitchRow({
+          title: '弹弹Play',
+          value: $danmakuDanDanSource,
+          onToggle: (value: boolean) => {
+            this.setDanmakuDanDanSource(value)
+          }
+        })
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  private DisplayBasicSection(): void {
+    Column() {
+      this.SectionTitle('弹幕显示 · 基础')
       Column() {
         this.SliderRow('显示区域', 'danmakuDisplayArea', 0.25, 1, 0.25, true, (value: number) => {
           this.setDanmakuDisplayArea(value)
@@ -335,14 +593,6 @@ export struct DanmakuSettingsPage {
         this.ItemDivider()
         this.SliderRow('滚动时长', 'danmakuScrollDuration', 4, 12, 0.5, true, (value: number) => {
           this.setDanmakuScrollDuration(value)
-        })
-        this.ItemDivider()
-        this.SliderRow('弹幕行高', 'danmakuLineHeight', 1.0, 2.5, 0.1, true, (value: number) => {
-          this.setDanmakuLineHeight(value)
-        })
-        this.ItemDivider()
-        this.SliderRow('时间轴偏移', 'danmakuTimeOffset', -60, 60, 0.25, true, (value: number) => {
-          this.setDanmakuTimeOffset(value)
         })
         this.ItemDivider()
         DanmakuSettingsSwitchRow({
@@ -359,6 +609,30 @@ export struct DanmakuSettingsPage {
           onToggle: (value: boolean) => {
             this.setDanmakuDeduplication(value)
           }
+        })
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  private DisplayAdvancedSection(): void {
+    Column() {
+      this.SectionTitle('弹幕显示 · 高级')
+      Column() {
+        this.SliderRow('行高', 'danmakuLineHeight', 1.0, 2.5, 0.1, true, (value: number) => {
+          this.setDanmakuLineHeight(value)
+        })
+        this.ItemDivider()
+        this.SliderRow('时间轴偏移', 'danmakuTimeOffset', -60, 60, 0.25, true, (value: number) => {
+          this.setDanmakuTimeOffset(value)
         })
         this.ItemDivider()
         DanmakuSettingsSwitchRow({
@@ -413,46 +687,6 @@ export struct DanmakuSettingsPage {
   }
 
   @Builder
-  private SourceFilterSection(): void {
-    Column() {
-      this.SectionTitle('弹幕来源过滤')
-      Column() {
-        DanmakuSettingsSwitchRow({
-          title: 'BiliBili',
-          value: $danmakuBiliBiliSource,
-          onToggle: (value: boolean) => {
-            this.setDanmakuBiliBiliSource(value)
-          }
-        })
-        this.ItemDivider()
-        DanmakuSettingsSwitchRow({
-          title: 'Gamer',
-          value: $danmakuGamerSource,
-          onToggle: (value: boolean) => {
-            this.setDanmakuGamerSource(value)
-          }
-        })
-        this.ItemDivider()
-        DanmakuSettingsSwitchRow({
-          title: '弹弹Play',
-          value: $danmakuDanDanSource,
-          onToggle: (value: boolean) => {
-            this.setDanmakuDanDanSource(value)
-          }
-        })
-      }
-      .width('100%')
-      .borderRadius(12)
-      .clip(true)
-      .backgroundColor($r('app.color.card_background'))
-      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-    }
-    .width('100%')
-    .margin({ bottom: 8 })
-  }
-
-  @Builder
   private StyleSection(): void {
     Column() {
       Row() {
@@ -474,6 +708,8 @@ export struct DanmakuSettingsPage {
       }
       .width('100%')
       .padding({ left: 6, right: 6, top: 18, bottom: 6 })
+
+      this.DanmakuPreviewCard()
 
       Column() {
         DanmakuSettingsSwitchRow({
@@ -528,46 +764,112 @@ export struct DanmakuSettingsPage {
     Column() {
       this.SectionTitle('弹幕屏蔽')
       Column() {
-        DanmakuSettingsSwitchRow({
-          title: '屏蔽词',
-          value: $danmakuBlockKeywordsEnabled,
-          onToggle: (value: boolean) => {
-            this.setDanmakuBlockKeywordsEnabled(value)
+        Row() {
+          Column() {
+            Text('屏蔽词')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .layoutWeight(1)
+            Text(this.danmakuBlockKeywordsEnabled ? `${this.keywordCount} 条规则已启用` : '已禁用')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ top: 2 })
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+
+          if (this.keywordCount > 0) {
+            Row() {
+              Text(`${this.keywordCount}`)
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(Color.White)
+            }
+            .width(22)
+            .height(22)
+            .borderRadius(11)
+            .backgroundColor($r('app.color.accent_blue'))
+            .justifyContent(FlexAlign.Center)
+            .alignItems(VerticalAlign.Center)
+            .margin({ right: 8 })
+          }
+
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('sys.color.icon_secondary')])
+        }
+        .width('100%')
+        .height(64)
+        .padding({ left: 16, right: 16 })
+        .borderRadius(12)
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/settings/DanmakuBlockRulesPage' })
+        })
+        .stateStyles({
+          pressed: {
+            .backgroundColor($r('app.color.category_menu_item_selected'))
+          },
+          normal: {
+            .backgroundColor(Color.Transparent)
           }
         })
-        TextInput({ placeholder: '用空格、逗号或分号分隔', text: this.danmakuBlockKeywords })
-          .height(44)
-          .fontSize(13)
-          .enabled(this.danmakuBlockKeywordsEnabled)
-          .backgroundColor($r('app.color.page_background'))
-          .borderRadius(12)
-          .padding({ left: 12, right: 12 })
-          .margin({ left: 16, right: 16, bottom: 12 })
-          .onChange((value: string) => {
-            this.setDanmakuBlockKeywords(value)
-          })
 
         this.ItemDivider()
-        DanmakuSettingsSwitchRow({
-          title: '正则屏蔽',
-          value: $danmakuBlockRegexEnabled,
-          onToggle: (value: boolean) => {
-            this.setDanmakuBlockRegexEnabled(value)
+
+        Row() {
+          Column() {
+            Text('正则屏蔽')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .layoutWeight(1)
+            Text(this.danmakuBlockRegexEnabled ? `${this.regexCount} 条规则已启用` : '已禁用')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ top: 2 })
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+
+          if (this.regexCount > 0) {
+            Row() {
+              Text(`${this.regexCount}`)
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(Color.White)
+            }
+            .width(22)
+            .height(22)
+            .borderRadius(11)
+            .backgroundColor($r('app.color.accent_blue'))
+            .justifyContent(FlexAlign.Center)
+            .alignItems(VerticalAlign.Center)
+            .margin({ right: 8 })
+          }
+
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('sys.color.icon_secondary')])
+        }
+        .width('100%')
+        .height(64)
+        .padding({ left: 16, right: 16 })
+        .borderRadius(12)
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/settings/DanmakuBlockRulesPage' })
+        })
+        .stateStyles({
+          pressed: {
+            .backgroundColor($r('app.color.category_menu_item_selected'))
+          },
+          normal: {
+            .backgroundColor(Color.Transparent)
           }
         })
-        TextInput({ placeholder: '输入一个正则表达式', text: this.danmakuBlockRegex })
-          .height(44)
-          .fontSize(13)
-          .enabled(this.danmakuBlockRegexEnabled)
-          .backgroundColor($r('app.color.page_background'))
-          .borderRadius(12)
-          .padding({ left: 12, right: 12 })
-          .margin({ left: 16, right: 16, bottom: 12 })
-          .onChange((value: string) => {
-            this.setDanmakuBlockRegex(value)
-          })
 
         this.ItemDivider()
+
         Row() {
           Text('高级屏蔽管理')
             .fontSize(16)
@@ -720,6 +1022,40 @@ export struct DanmakuSettingsPage {
     .constraintSize({ minHeight: 64 })
   }
 
+  private getActiveSourceNames(): string {
+    const names: string[] = []
+    if (this.danmakuBiliBiliSource) {
+      names.push('B站')
+    }
+    if (this.danmakuGamerSource) {
+      names.push('Gamer')
+    }
+    if (this.danmakuDanDanSource) {
+      names.push('弹弹')
+    }
+    if (names.length === 0) {
+      return '无'
+    }
+    return names.join('/')
+  }
+
+  private maskedAppId(): string {
+    const id = this.dandanAppId
+    if (id.length <= 4) {
+      return id
+    }
+    return '****' + id.substring(id.length - 4)
+  }
+
+  private mapFontWeight(weight: number): FontWeight {
+    if (weight <= 1) return FontWeight.Lighter
+    if (weight <= 3) return FontWeight.Lighter
+    if (weight <= 5) return FontWeight.Normal
+    if (weight <= 7) return FontWeight.Bold
+    if (weight <= 8) return FontWeight.Bolder
+    return FontWeight.Bolder
+  }
+
   private getSliderValue(stateKey: string): number {
     if (stateKey === 'danmakuDisplayArea') return this.danmakuDisplayArea
     if (stateKey === 'danmakuScrollDuration') return this.danmakuScrollDuration
@@ -770,10 +1106,39 @@ export struct DanmakuSettingsPage {
       this.isDanmakuCredentialConfigured = credStore.hasCredentials()
       this.dandanAppId = credStore.getAppId()
       this.dandanAppSecret = credStore.getAppSecret()
+      this.isEditingCredentials = !this.isDanmakuCredentialConfigured
       await this.refreshCacheSummary()
+      this.updateFilterCounts()
     } catch (err) {
       logger.error('Load danmaku settings failed: %{public}s', JSON.stringify(err))
     }
+  }
+
+  private updateFilterCounts(): void {
+    this.keywordCount = this.parseKeywordCount(this.danmakuBlockKeywords)
+    this.regexCount = this.parseRegexCount(this.danmakuBlockRegex)
+  }
+
+  private parseKeywordCount(text: string): number {
+    const parts = text.split(/[\s,，;；、]+/)
+    let count = 0
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].trim().length > 0) {
+        count++
+      }
+    }
+    return count
+  }
+
+  private parseRegexCount(text: string): number {
+    const parts = text.split('|')
+    let count = 0
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].trim().length > 0) {
+        count++
+      }
+    }
+    return count
   }
 
   private async loadDanmakuStyleSettings(): Promise<void> {
@@ -816,6 +1181,9 @@ export struct DanmakuSettingsPage {
       this.dandanAppId = store.getAppId()
       this.dandanAppSecret = store.getAppSecret()
       this.testConnectionMessage = this.isDanmakuCredentialConfigured ? '凭据已保存' : '请输入完整凭据'
+      if (this.isDanmakuCredentialConfigured) {
+        this.isEditingCredentials = false
+      }
     } catch (_err) {
       this.testConnectionMessage = '凭据保存失败'
       logger.error('保存弹幕凭据失败')
@@ -853,11 +1221,13 @@ export struct DanmakuSettingsPage {
       this.dandanAppId = ''
       this.dandanAppSecret = ''
       this.isDanmakuCredentialConfigured = false
+      this.isEditingCredentials = true
       this.testConnectionMessage = '凭据已清除'
     } catch (_err) {
       this.dandanAppId = ''
       this.dandanAppSecret = ''
       this.isDanmakuCredentialConfigured = false
+      this.isEditingCredentials = true
       this.testConnectionMessage = '清除可能不完整'
     }
   }
@@ -1001,6 +1371,7 @@ export struct DanmakuSettingsPage {
     this.danmakuBlockKeywords = nextValue
     this.message = ''
     await PreferencesStore.getInstance().setString(DANMAKU_PREFS_KEY_BLOCK_KEYWORDS, nextValue)
+    this.updateFilterCounts()
   }
 
   private async setDanmakuBlockRegexEnabled(enabled: boolean): Promise<void> {
@@ -1014,6 +1385,7 @@ export struct DanmakuSettingsPage {
     this.danmakuBlockRegex = nextValue
     this.message = this.isValidDanmakuRegex(nextValue) ? '' : '正则表达式无效，将在播放时忽略'
     await PreferencesStore.getInstance().setString(DANMAKU_PREFS_KEY_BLOCK_REGEX, nextValue)
+    this.updateFilterCounts()
   }
 
   private async setDanmakuTimeOffset(value: number): Promise<void> {
@@ -1042,6 +1414,7 @@ export struct DanmakuSettingsPage {
     try {
       await DanmakuStyleSettings.reset()
       await this.loadDanmakuStyleSettings()
+      this.updateFilterCounts()
       this.message = '弹幕设置已恢复默认'
     } catch (err) {
       this.message = '恢复默认失败'

@@ -13,10 +13,8 @@ export class RecommendCardModel {
   votes: number = 0
   date: string = ''
   year: string = ''
-  platform: string = ''
   tags: string[] = []
   eps: number = 0
-  heat: number = 0
 
   bangumiId: number = -1
   sourceId: number = -1
@@ -44,7 +42,7 @@ export class RecommendCardModel {
     model.votes = item.votes
     model.date = item.airDate
     model.year = item.airDate.length >= 4 ? item.airDate.substring(0, 4) : ''
-    model.tags = item.tags.length > 3 ? item.tags.slice(0, 3) : [...item.tags]
+    model.tags = [...item.tags]
     model.eps = item.eps
     model.bangumiId = item.bangumiId
     model.sourceId = item.sourceId

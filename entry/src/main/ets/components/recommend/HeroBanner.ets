@@ -1,4 +1,5 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
+import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
 import { router } from '@kit.ArkUI'
 
 @Component
@@ -214,26 +215,7 @@ export struct HeroBanner {
   private navigateToDetail(item: RecommendCardModel): void {
     router.pushUrl({
       url: 'pages/detail/DetailPage',
-      params: {
-        animeName: item.title,
-        animeCover: item.cover,
-        animeCoverFallback: item.coverFallback,
-        animeBangumiCover: item.bangumiCover,
-        animeDesc: item.summary,
-        animeOriginalName: item.originalTitle,
-        animeAirDate: item.date,
-        animeRatingScore: item.score,
-        animeRank: item.rank,
-        animeTags: JSON.stringify(item.tags),
-        animeVotes: item.votes,
-        animeVotesCount: JSON.stringify(item.votesCount),
-        animeAirWeekday: item.airWeekday,
-        animeEps: item.eps,
-        animeUrl: item.url,
-        sourceName: item.sourceName,
-        sourceId: item.sourceId,
-        bangumiId: item.bangumiId
-      }
+      params: buildRecommendDetailParams(item)
     })
   }
 }

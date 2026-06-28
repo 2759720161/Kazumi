@@ -88,7 +88,7 @@ export struct FavoritePage {
               .justifyContent(FlexAlign.Center)
             } else if (this.collectedList.length === 0) {
               Column() {
-                EmptyState({ message: '啊嘞, 没有追番的说 (´;ω;`)' })
+                EmptyState({ message: '你的片库还是空的' })
               }
               .width('100%')
               .layoutWeight(1)
@@ -308,7 +308,7 @@ export struct FavoritePage {
           .width('100%')
           .margin({ bottom: 12 })
 
-        Text('点击卡片可以修改追番状态或取消收藏')
+        Text('点击卡片可以修改收藏状态或取消收藏')
           .fontSize(14)
           .fontColor($r('app.color.text_secondary'))
           .width('100%')
@@ -447,7 +447,7 @@ export struct FavoritePage {
 
   private buildTitle(): HdsNavigationTitle {
     return {
-      mainTitle: '追番',
+      mainTitle: '片库',
       subTitle: this.isEditMode ? '编辑模式' : ''
     }
   }

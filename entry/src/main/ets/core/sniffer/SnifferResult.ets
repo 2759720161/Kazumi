@@ -1,9 +1,12 @@
+import { CapturedRequestContext } from './CapturedRequestContext'
+
 export class SnifferResult {
   url: string = ''
   type: string = ''
   quality: string = ''
   source: string = ''
   timestamp: number = 0
+  context: CapturedRequestContext | null = null
 
   constructor(url: string, type: string, quality: string, source: string) {
     this.url = url

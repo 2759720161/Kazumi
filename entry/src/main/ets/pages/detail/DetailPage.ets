@@ -174,7 +174,7 @@ export struct DetailPage {
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
       .bindToScrollable([this.contentScroller])
       .bindSheet($$this.showSourceSheet, this.SourceSheetContent, {
-        height: '75%',
+        height: '84%',
         dragBar: true,
         showClose: false,
         radius: LengthMetrics.vp(24),
@@ -263,7 +263,7 @@ export struct DetailPage {
     Column() {
       Column() {
         Text('简介')
-          .fontSize(22)
+          .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_title'))
           .width('100%')
@@ -274,10 +274,10 @@ export struct DetailPage {
             this.SynopsisSkeleton()
           } else {
             Text(this.animeDesc.length > 0 ? this.animeDesc : '暂无简介')
-              .fontSize(18)
-              .fontWeight(FontWeight.Medium)
+              .fontSize(15)
+              .fontWeight(FontWeight.Regular)
               .fontColor(this.animeDesc.length > 0 ? $r('app.color.text_body') : $r('app.color.text_placeholder'))
-              .lineHeight(30)
+              .lineHeight(24)
               .width('100%')
               .maxLines(this.descExpanded ? 50 : 5)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -322,7 +322,7 @@ export struct DetailPage {
     Column() {
       Column() {
         Text('标签')
-          .fontSize(22)
+          .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_title'))
           .width('100%')
@@ -334,19 +334,19 @@ export struct DetailPage {
           } else {
             ForEach(this.tagsExpanded ? this.animeTags : this.animeTags.slice(0, 12), (tag: string) => {
               Row() {
-                Text(tag)
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_title'))
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-              }
-              .height(40)
-              .padding({ left: 16, right: 16 })
-              .border({ width: 0.5, color: $r('app.color.border_tag') })
-              .borderRadius(20)
-              .backgroundColor($r('app.color.tag_chip_bg'))
-              .margin({ right: 10, bottom: 12 })
+                 Text(tag)
+                   .fontSize(13)
+                   .fontWeight(FontWeight.Medium)
+                   .fontColor($r('app.color.text_title'))
+                   .maxLines(1)
+                   .textOverflow({ overflow: TextOverflow.Ellipsis })
+               }
+               .height(30)
+               .padding({ left: 10, right: 10 })
+               .border({ width: 0.5, color: $r('app.color.border_tag') })
+               .borderRadius(15)
+               .backgroundColor($r('app.color.tag_chip_bg'))
+               .margin({ right: 10, bottom: 12 })
             }, (tag: string) => tag)
 
             if (this.animeTags.length > 12) {
@@ -635,7 +635,7 @@ export struct DetailPage {
         if (this.animeRatingScore <= 0 && subject.ratingScore > 0) this.animeRatingScore = subject.ratingScore
         if (this.animeRank <= 0 && subject.rank > 0) this.animeRank = subject.rank
         if (this.animeEps <= 0 && subject.eps > 0) this.animeEps = subject.eps
-        if (this.animeTags.length === 0 && subject.tags.length > 0) this.animeTags = subject.tags
+        if (subject.tags.length > this.animeTags.length) this.animeTags = subject.tags
         if (this.animeVotes <= 0 && subject.votes > 0) this.animeVotes = subject.votes
         if (this.animeVotesCount.length === 0 && subject.votesCount.length > 0) this.animeVotesCount = subject.votesCount
         logger.info('Detail subject applied: %{public}s eps=%{public}d airDate=%{public}s',
@@ -684,7 +684,7 @@ export struct DetailPage {
       icon: this.currentCollectType > CollectType.none ?
         CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart'),
       label: this.currentCollectType > CollectType.none ?
-        CollectType.getLabel(this.currentCollectType) : '追番',
+        CollectType.getLabel(this.currentCollectType) : '收藏',
       action: () => {
         this.showCollectMenu = true
       }

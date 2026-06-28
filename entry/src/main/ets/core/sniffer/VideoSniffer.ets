@@ -1,5 +1,6 @@
 import { webview } from '@kit.ArkWeb'
 import { SnifferResult } from './SnifferResult'
+import { CapturedRequestContext } from './CapturedRequestContext'
 import { RequestInterceptor } from './RequestInterceptor'
 import { JSInjector } from './JSInjector'
 import { CandidateUrlFilter } from './CandidateUrlFilter'
@@ -13,6 +14,7 @@ export class VideoSniffer {
   private urlFilter: CandidateUrlFilter = new CandidateUrlFilter()
   private timeoutController: TimeoutController = new TimeoutController(15000, 2)
   private results: SnifferResult[] = []
+  private sniffSessionId: number = 0
   private isSniffing: boolean = false
   private webController: webview.WebviewController | null = null
   private onResult: ((result: SnifferResult) => void) | null = null
@@ -24,6 +26,7 @@ export class VideoSniffer {
   private delayedFinishTimer: number = -1
   private fallbackExecuted: boolean = false
   private promotedPlayerPageUrls: Set<string> = new Set()
+  private currentReferer: string = ''
   private readonly weakCandidateDelayMs: number = 1200
   private readonly fallbackWaitMs: number = 1000
 
@@ -59,11 +62,13 @@ export class VideoSniffer {
     if (this.isSniffing) {
       return
     }
+    const mySession = ++this.sniffSessionId
     this.isSniffing = true
     this.results = []
     this.jsInjected = false
     this.fallbackExecuted = false
     this.promotedPlayerPageUrls = new Set()
+    this.currentReferer = url
     this.clearDelayedFinish()
     this.requestInterceptor.reset()
     this.urlFilter.reset()
@@ -73,21 +78,33 @@ export class VideoSniffer {
     }
 
     this.requestInterceptor.setOnIntercept((interceptedUrl: string, type: string) => {
+      if (this.sniffSessionId !== mySession) {
+        return
+      }
       this.handleInterceptedUrl(interceptedUrl, type, 'request_intercept')
     })
 
     this.timeoutController.setOnRetry(() => {
+      if (this.sniffSessionId !== mySession) {
+        return
+      }
       if (this.onStatusChange) {
         this.onStatusChange('retrying (attempt ' + this.timeoutController.getAttemptCount() + ')')
       }
     })
 
     this.timeoutController.setOnTimeout(() => {
+      if (this.sniffSessionId !== mySession) {
+        return
+      }
       if (!this.fallbackExecuted && this.isSniffing) {
         this.fallbackExecuted = true
         logger.info('Timeout: executing video element fallback before finalizing')
         this.executeVideoElementFallback()
         setTimeout(() => {
+          if (this.sniffSessionId !== mySession) {
+            return
+          }
           if (this.isSniffing) {
             if (this.results.length === 0) {
               this.stopAndClearWebView()
@@ -107,6 +124,9 @@ export class VideoSniffer {
       try {
         this.webController.loadUrl(url)
       } catch (e) {
+        if (this.sniffSessionId !== mySession) {
+          return
+        }
         if (this.onError) {
           this.onError('Failed to load URL: ' + e)
         }
@@ -116,13 +136,16 @@ export class VideoSniffer {
   }
 
   onPageBegin(): void {
-    if (!this.webController) {
+    if (!this.webController || !this.isSniffing) {
       return
     }
     logger.info('onPageBegin: injecting sniffer script')
     let script = JSInjector.getSnifferScript(this.useLegacyParser)
     try {
       this.webController.runJavaScript(script, (err, result) => {
+        if (!this.isSniffing) {
+          return
+        }
         if (!err) {
           this.jsInjected = true
           logger.info('onPageBegin: script injected OK')
@@ -136,13 +159,16 @@ export class VideoSniffer {
   }
 
   onPageEnd(): void {
-    if (!this.webController) {
+    if (!this.webController || !this.isSniffing) {
       return
     }
     logger.info('onPageEnd fallback: injecting sniffer script')
     let script = JSInjector.getSnifferScript(this.useLegacyParser)
     try {
       this.webController.runJavaScript(script, (err, result) => {
+        if (!this.isSniffing) {
+          return
+        }
         if (!err) {
           this.jsInjected = true
           logger.info('onPageEnd: script injected OK')
@@ -160,6 +186,9 @@ export class VideoSniffer {
     let script = JSInjector.getVideoElementFallbackScript()
     try {
       this.webController.runJavaScript(script, (err, result) => {
+        if (!this.isSniffing) {
+          return
+        }
         if (err) {
           logger.warn('Fallback scan failed: %{public}s', String(err))
         } else {
@@ -172,13 +201,25 @@ export class VideoSniffer {
   }
 
   handleInterceptedUrl(url: string, type: string, source: string): void {
+    if (!this.isSniffing) {
+      return
+    }
     logger.debug('interceptUrl: [%{public}s] %{public}s from %{public}s', type, url.substring(0, 80), source)
     this.promotePlayerPageIfNeeded(url)
     let result = this.urlFilter.filter(url, source)
+    if (result !== null) {
+      const ctx = new CapturedRequestContext()
+      ctx.url = result.url
+      ctx.referer = this.currentReferer
+      result.context = ctx
+    }
     this.recordResult(result)
   }
 
   handleJsBridgeMessage(message: string): void {
+    if (!this.isSniffing) {
+      return
+    }
     try {
       logger.debug('JSBridge raw: %{public}s', message.substring(0, 120))
       let data = JSON.parse(message) as Record<string, string>
@@ -204,6 +245,12 @@ export class VideoSniffer {
         result = this.urlFilter.filterVideoElementUrl(url, source)
       } else {
         result = this.urlFilter.filter(url, source)
+      }
+      if (result !== null) {
+        const ctx = new CapturedRequestContext()
+        ctx.url = result.url
+        ctx.referer = this.currentReferer
+        result.context = ctx
       }
       this.recordResult(result)
     } catch (e) {
@@ -252,6 +299,7 @@ export class VideoSniffer {
       return
     }
     this.promotedPlayerPageUrls.add(url)
+    this.currentReferer = url
     logger.info('Promoting player frame to main WebView for sniffing: %{public}s', url.substring(0, 100))
     try {
       this.webController.loadUrl(url)
@@ -300,6 +348,7 @@ export class VideoSniffer {
   }
 
   cancel(): void {
+    this.sniffSessionId++
     this.isSniffing = false
     this.clearDelayedFinish()
     this.timeoutController.cancel()
@@ -307,6 +356,16 @@ export class VideoSniffer {
     if (this.onStatusChange) {
       this.onStatusChange('cancelled')
     }
+  }
+
+  reset(): void {
+    this.results = []
+    this.promotedPlayerPageUrls = new Set()
+    this.clearDelayedFinish()
+    this.fallbackExecuted = false
+    this.jsInjected = false
+    this.requestInterceptor.reset()
+    this.urlFilter.reset()
   }
 
   private stopAndClearWebView(): void {

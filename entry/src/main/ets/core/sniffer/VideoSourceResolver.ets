@@ -3,6 +3,9 @@ import { VideoSniffer } from './VideoSniffer'
 import { SnifferResult } from './SnifferResult'
 import { VideoSourceRequest } from './VideoSourceRequest'
 import { VideoSourceResult } from './VideoSourceResult'
+import { ResolveErrorCode } from './ResolveErrorCode'
+import { ResolveLogEvent } from './ResolveLogEvent'
+import { CapturedRequestContext } from './CapturedRequestContext'
 import { PlaybackOptions } from '../player/IPlayerEngine'
 import { RuleSource } from '../../models/RuleSource'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
@@ -17,27 +20,62 @@ export class VideoSourceResolver {
   private sniffer: VideoSniffer = new VideoSniffer()
   private ruleStore: RuleSourceStore = new RuleSourceStore()
   private webController: webview.WebviewController | null = null
+  private sessionId: number = 0
+  private activeSessionId: number = 0
   private isResolving: boolean = false
   private currentRetryCount: number = 0
   private resolveStartTime: number = 0
+  private logListeners: ((event: ResolveLogEvent) => void)[] = []
 
   setWebController(controller: webview.WebviewController): void {
     this.webController = controller
     this.sniffer.setWebController(controller)
   }
 
-  async resolve(request: VideoSourceRequest): Promise<VideoSourceResult> {
-    if (this.isResolving) {
-      return VideoSourceResult.fail('正在嗅探中，请勿重复调用', 0, 0)
-    }
+  addLogListener(listener: (event: ResolveLogEvent) => void): void {
+    this.logListeners.push(listener)
+  }
 
+  removeLogListener(listener: (event: ResolveLogEvent) => void): void {
+    const idx = this.logListeners.indexOf(listener)
+    if (idx >= 0) {
+      this.logListeners.splice(idx, 1)
+    }
+  }
+
+  private emitLog(requestId: number, phase: string, detail: string): void {
+    const event: ResolveLogEvent = {
+      requestId: requestId,
+      phase: phase,
+      ts: Date.now(),
+      detail: detail
+    }
+    for (let i = 0; i < this.logListeners.length; i++) {
+      this.logListeners[i](event)
+    }
+  }
+
+  async resolve(request: VideoSourceRequest): Promise<VideoSourceResult> {
+    const mySession = ++this.sessionId
+    this.activeSessionId = mySession
     this.isResolving = true
     this.resolveStartTime = Date.now()
     this.currentRetryCount = 0
 
+    this.emitLog(mySession, 'start', 'episodeUrl=' + request.episodeUrl.substring(0, 80))
+
+    if (this.sniffer.getIsSniffing()) {
+      this.sniffer.cancel()
+    }
+
     let ruleSource: RuleSource | null = null
     if (request.ruleSourceId >= 0) {
       ruleSource = await this.ruleStore.getById(request.ruleSourceId)
+    }
+
+    if (this.activeSessionId !== mySession) {
+      this.isResolving = false
+      return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
     }
 
     let useLegacy = request.useLegacyParser
@@ -49,16 +87,32 @@ export class VideoSourceResolver {
     this.sniffer.setTimeout(request.sniffTimeoutMs, request.maxRetryCount)
 
     const sniffUrl = await this.normalizeSniffUrlForRule(request.episodeUrl, ruleSource)
+    if (this.activeSessionId !== mySession) {
+      this.isResolving = false
+      return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
+    }
+
     const direct7sefunResult = this.tryBuild7sefunDirectResult(sniffUrl, ruleSource)
     if (direct7sefunResult !== null) {
       this.isResolving = false
       return direct7sefunResult
     }
-    let result = await this.doSniff(sniffUrl, request.maxRetryCount)
+
+    this.emitLog(mySession, 'loadUrl', sniffUrl.substring(0, 100))
+
+    let result = await this.doSniff(sniffUrl, request.maxRetryCount, mySession)
+
+    if (this.activeSessionId !== mySession) {
+      this.isResolving = false
+      return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
+    }
 
     if (result.isPlayable() && ruleSource !== null) {
       result = this.applyRuleSourceToResult(result, ruleSource)
     }
+
+    this.emitLog(mySession, result.isPlayable() ? 'finish' : 'error',
+      result.isPlayable() ? 'url=' + result.videoUrl.substring(0, 80) : result.errorMessage)
 
     this.isResolving = false
     return result
@@ -158,14 +212,21 @@ export class VideoSourceResolver {
     return output
   }
 
-  private doSniff(url: string, maxRetry: number): Promise<VideoSourceResult> {
+  private doSniff(url: string, maxRetry: number, mySession: number): Promise<VideoSourceResult> {
     return new Promise<VideoSourceResult>((resolve) => {
       this.sniffer.setResultCallback((result: SnifferResult) => {
+        if (this.activeSessionId !== mySession) {
+          return
+        }
         logger.info('Sniffed: %{public}s [%{public}s/%{public}s] from %{public}s',
           result.url.substring(0, 80), result.type, result.quality, result.source)
+        this.emitLog(mySession, 'candidate', result.type + ' ' + result.url.substring(0, 80))
       })
 
       this.sniffer.setCompleteCallback((results: SnifferResult[]) => {
+        if (this.activeSessionId !== mySession) {
+          return
+        }
         const elapsed = Date.now() - this.resolveStartTime
         const bestResult = this.selectBestResult(results)
         if (bestResult !== null) {
@@ -178,12 +239,18 @@ export class VideoSourceResolver {
       })
 
       this.sniffer.setErrorCallback((error: string) => {
+        if (this.activeSessionId !== mySession) {
+          return
+        }
         const elapsed = Date.now() - this.resolveStartTime
         logger.warn('Sniff error: %{public}s', error)
         if (this.currentRetryCount < maxRetry) {
           this.currentRetryCount++
           let delayMs = this.currentRetryCount * 2000
           setTimeout(() => {
+            if (this.activeSessionId !== mySession) {
+              return
+            }
             this.sniffer.sniff(url)
           }, delayMs)
         } else {
@@ -192,6 +259,9 @@ export class VideoSourceResolver {
       })
 
       this.sniffer.setStatusCallback((status: string) => {
+        if (this.activeSessionId !== mySession) {
+          return
+        }
         if (status === 'timeout') {
           const elapsed = Date.now() - this.resolveStartTime
           if (this.currentRetryCount < maxRetry) {
@@ -200,13 +270,14 @@ export class VideoSourceResolver {
             logger.info('Sniff timeout, retry %{public}d/%{public}d after %{public}dms',
               this.currentRetryCount, maxRetry, delayMs)
             setTimeout(() => {
+              if (this.activeSessionId !== mySession) {
+                return
+              }
               this.sniffer.sniff(url)
             }, delayMs)
           } else {
             resolve(VideoSourceResult.timeout(this.currentRetryCount, elapsed))
           }
-        } else if (status === 'found') {
-          // onComplete will handle this
         }
       })
 
@@ -297,6 +368,30 @@ export class VideoSourceResolver {
       options.headers[key] = request.headers[key]
     }
 
+    if (options.referer.length === 0 || options.userAgent.length === 0) {
+      let capturedContext: CapturedRequestContext | null = null
+      for (let i = 0; i < result.candidates.length; i++) {
+        const candidate = result.candidates[i]
+        if (candidate.url === result.videoUrl && candidate.context !== null) {
+          capturedContext = candidate.context
+          break
+        }
+      }
+      if (capturedContext !== null) {
+        if (options.referer.length === 0 && capturedContext.referer.length > 0) {
+          options.referer = capturedContext.referer
+        }
+        if (options.userAgent.length === 0 && capturedContext.userAgent.length > 0) {
+          options.userAgent = capturedContext.userAgent
+        }
+        let ctxHeaderKeys = Object.keys(capturedContext.headers)
+        for (let i = 0; i < ctxHeaderKeys.length; i++) {
+          let key = ctxHeaderKeys[i]
+          options.headers[key] = capturedContext.headers[key]
+        }
+      }
+    }
+
     return options
   }
 
@@ -350,6 +445,7 @@ export class VideoSourceResolver {
   }
 
   cancel(): void {
+    this.activeSessionId = ++this.sessionId
     this.isResolving = false
     this.sniffer.cancel()
   }

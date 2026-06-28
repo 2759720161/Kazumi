@@ -12,7 +12,7 @@ export class CollectType {
     if (type === CollectType.onHold) return '搁置'
     if (type === CollectType.watched) return '看过'
     if (type === CollectType.abandoned) return '抛弃'
-    return '未追'
+    return '未收藏'
   }
 
   static getIcon(type: number): Resource {

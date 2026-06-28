@@ -82,6 +82,6 @@ export struct PosterRailSection {
   }
 
   private getCardHeight(): number {
-    return Math.round(this.getCardWidth() * 4 / 3) + 44
+    return Math.round(this.getCardWidth() * 4 / 3)
   }
 }

@@ -1,5 +1,6 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
 import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
+import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
 import { router } from '@kit.ArkUI'
 
 @Component
@@ -89,21 +90,11 @@ export struct TagTopicSection {
     Grid() {
       ForEach([0, 1, 2, 3, 4, 5], (i: number, index?: number) => {
         GridItem() {
-          Column() {
-            Column()
-              .width('100%')
-              .aspectRatio(3 / 4)
-              .borderRadius({ topLeft: 10, topRight: 10 })
-              .backgroundColor($r('app.color.card_background'))
-
-            Column()
-              .width('70%')
-              .height(12)
-              .borderRadius(4)
-              .backgroundColor($r('app.color.card_background'))
-              .margin({ top: 4 })
-          }
-          .borderRadius(10)
+          Column()
+            .width('100%')
+            .aspectRatio(3 / 4)
+            .borderRadius(12)
+            .backgroundColor($r('app.color.card_background'))
         }
       }, (i: number, index?: number) => 'skeleton_' + i.toString())
     }
@@ -116,72 +107,63 @@ export struct TagTopicSection {
 
   @Builder
   private TagResultCard(item: RecommendCardModel) {
-    Column() {
-      Stack({ alignContent: Alignment.TopEnd }) {
-        Image(item.getGridCover().length > 0 ? item.getGridCover() : $r('app.media.ic_placeholder'))
-          .width('100%')
-          .aspectRatio(3 / 4)
-          .objectFit(ImageFit.Cover)
-          .borderRadius({ topLeft: 10, topRight: 10 })
-          .alt($r('app.media.ic_placeholder'))
+    Stack({ alignContent: Alignment.BottomStart }) {
+      Image(item.getGridCover().length > 0 ? item.getGridCover() : $r('app.media.ic_placeholder'))
+        .width('100%')
+        .height('100%')
+        .objectFit(ImageFit.Cover)
+        .borderRadius(12)
+        .alt($r('app.media.ic_placeholder'))
 
-        if (item.score > 0) {
-          Row({ space: 2 }) {
-            Text('\u2605')
-              .fontSize(9)
-              .fontColor('#FFD700')
-            Text(item.getScoreText())
-              .fontSize(11)
-              .fontColor(Color.White)
-              .fontWeight(FontWeight.Medium)
-          }
-          .padding({ left: 4, right: 4, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor('#B3000000')
-          .margin({ top: 4, right: 4 })
-        }
-      }
-      .width('100%')
-      .clip(true)
-      .borderRadius({ topLeft: 10, topRight: 10 })
+      this.CardBottomGradient()
 
       Text(item.title)
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
+        .fontSize(14)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(Color.White)
+        .lineHeight(18)
+        .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Start)
         .width('100%')
-        .padding({ left: 4, right: 4, top: 4 })
+        .padding({ left: 9, right: 9, bottom: 10 })
+        .textShadow({
+          radius: 6,
+          color: '#99000000',
+          offsetX: 0,
+          offsetY: 1
+        })
+        .hitTestBehavior(HitTestMode.None)
     }
-    .borderRadius(10)
+    .width('100%')
+    .aspectRatio(3 / 4)
+    .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
     .clip(true)
     .onClick(() => {
       router.pushUrl({
         url: 'pages/detail/DetailPage',
-        params: {
-          animeName: item.title,
-          animeCover: item.cover,
-          animeCoverFallback: item.coverFallback,
-          animeBangumiCover: item.bangumiCover,
-          animeDesc: item.summary,
-          animeOriginalName: item.originalTitle,
-          animeAirDate: item.date,
-          animeRatingScore: item.score,
-          animeRank: item.rank,
-          animeTags: JSON.stringify(item.tags),
-          animeVotes: item.votes,
-          animeVotesCount: JSON.stringify(item.votesCount),
-          animeAirWeekday: item.airWeekday,
-          animeEps: item.eps,
-          animeUrl: item.url,
-          sourceName: item.sourceName,
-          sourceId: item.sourceId,
-          bangumiId: item.bangumiId
-        }
+        params: buildRecommendDetailParams(item)
       })
     })
+  }
+
+  @Builder
+  private CardBottomGradient() {
+    Column()
+      .width('100%')
+      .height('48%')
+      .linearGradient({
+        direction: GradientDirection.Bottom,
+        colors: [
+          ['#00000000', 0],
+          ['#88000000', 0.55],
+          ['#D9000000', 1]
+        ]
+      })
+      .hitTestBehavior(HitTestMode.None)
   }
 
   private getTitleText(): string {

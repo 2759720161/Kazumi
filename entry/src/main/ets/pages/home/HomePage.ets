@@ -30,7 +30,6 @@ export struct HomePage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
-  @State scrollOffset: number = 0
   @State isLoading: boolean = true
   @State hasLoadError: boolean = false
   @State heroList: RecommendCardModel[] = []
@@ -53,25 +52,6 @@ export struct HomePage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       this.HomeNavigationContent()
-
-      if (this.scrollOffset > 800) {
-        Button() {
-          SymbolGlyph($r('sys.symbol.arrow_up'))
-            .fontSize(16)
-            .fontColor([$r('sys.color.icon_primary')])
-        }
-        .width(40)
-        .height(40)
-        .borderRadius(20)
-        .backgroundColor($r('sys.color.comp_background_tertiary'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
-        .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
-        .position({ x: '87%', y: '90%' })
-        .onClick(() => {
-          this.scroller.scrollEdge(Edge.Top)
-        })
-      }
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -163,10 +143,6 @@ export struct HomePage {
       .scrollBar(BarState.Off)
       .clip(false)
       .id('homeScrollContainer')
-      .onScrollFrameBegin((offset: number) => {
-        this.scrollOffset = this.scroller.currentOffset().yOffset
-        return { offsetRemain: offset }
-      })
     }
     .width('100%')
     .height('100%')

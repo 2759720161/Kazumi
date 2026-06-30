@@ -75,7 +75,6 @@ export struct SettingsPage {
             .height(getTopSpacerHeight(this.topSafeHeight))
             .width('100%')
 
-          this.AppStatusCard()
           this.QuickAccessSection()
           this.PlayerSection()
           this.AppSection()

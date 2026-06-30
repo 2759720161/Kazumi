@@ -1,5 +1,6 @@
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
+import { BUILTIN_DANDAN_APP_ID, BUILTIN_DANDAN_APP_SECRET } from './DandanBuiltinCredentials'
 
 const logger = new Logger('DandanCredentialStore')
 
@@ -42,15 +43,19 @@ export class DandanCredentialStore {
   }
 
   hasCredentials(): boolean {
-    return this.appId.length > 0 && this.appSecret.length > 0
+    return this.getEffectiveAppId().length > 0 && this.getEffectiveAppSecret().length > 0
   }
 
   getAppId(): string {
-    return this.appId
+    return this.getEffectiveAppId()
   }
 
   getAppSecret(): string {
-    return this.appSecret
+    return this.getEffectiveAppSecret()
+  }
+
+  hasUserCredentials(): boolean {
+    return this.appId.length > 0 && this.appSecret.length > 0
   }
 
   async setCredentials(appId: string, appSecret: string): Promise<void> {
@@ -79,5 +84,13 @@ export class DandanCredentialStore {
     } catch (_err) {
       logger.error('凭据清除失败')
     }
+  }
+
+  private getEffectiveAppId(): string {
+    return this.appId.length > 0 ? this.appId : BUILTIN_DANDAN_APP_ID
+  }
+
+  private getEffectiveAppSecret(): string {
+    return this.appSecret.length > 0 ? this.appSecret : BUILTIN_DANDAN_APP_SECRET
   }
 }

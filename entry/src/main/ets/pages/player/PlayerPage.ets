@@ -202,6 +202,9 @@ export struct PlayerPage {
     if (this.episodeUrl.length > 0 && this.videoUrl.length === 0) {
       this.pendingSniff = true
     }
+    logger.info('PlayerPage aboutToAppear episodeUrl=%{public}s videoUrl=%{public}s ruleSourceId=%{public}d pendingSniff=%{public}s',
+      this.episodeUrl.length > 0 ? 'ok' : 'empty', this.videoUrl.length > 0 ? 'ok' : 'empty',
+      this.ruleSourceId, String(this.pendingSniff))
 
     this.startAutoHideTimer()
     this.loadAspectModePreference()
@@ -1798,6 +1801,9 @@ export struct PlayerPage {
       this.sniffMessage = '无效的剧集地址'
       return
     }
+    logger.info('startSniffing episodeUrl=%{public}s ruleSourceId=%{public}d snifferWebVisible=%{public}s webviewReady=%{public}s',
+      this.episodeUrl.length > 40 ? this.episodeUrl.substring(0, 40) + '...' : this.episodeUrl,
+      this.ruleSourceId, String(this.snifferWebVisible), String(this.webviewReady))
 
     if (!this.snifferWebVisible) {
       this.webviewReady = false

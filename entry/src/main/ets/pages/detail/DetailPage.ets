@@ -8,7 +8,6 @@ import { DetailInfoPanel } from '../../components/detail/DetailInfoPanel'
 import { DetailFloatingPlayButton } from '../../components/detail/DetailFloatingPlayButton'
 import { SourceSheet } from '../../components/detail/SourceSheet'
 import { BangumiApi } from '../../core/api/BangumiApi'
-import { BangumiConfig } from '../../core/api/BangumiConfig'
 import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { EpisodeData } from '../../models/EpisodeData'
 import { HistoryStore } from '../../store/HistoryStore'
@@ -86,6 +85,7 @@ export struct DetailPage {
   private collectController: CollectController = new CollectController()
   private historyStore: HistoryStore = new HistoryStore()
   private contentScroller: Scroller = new Scroller()
+  private pendingPlaybackSource: PlaybackSource | null = null
 
 
   aboutToAppear(): void {
@@ -182,6 +182,12 @@ export struct DetailPage {
         onDisappear: () => {
           this.sourceSheetCloseSignal++
           this.showSourceSheet = false
+          const pending = this.pendingPlaybackSource
+          this.pendingPlaybackSource = null
+          if (pending !== null) {
+            logger.info('SourceSheet dismissed, continue router push')
+            this.openPlayerWithHistory(pending)
+          }
         }
       })
 
@@ -230,10 +236,7 @@ export struct DetailPage {
       closeSignal: this.sourceSheetCloseSignal,
       onRoadsReady: (source: PlaybackSource) => {
         this.onRoadsReady(source)
-      },
-      onOpenExternal: this.bangumiId > 0 ? () => {
-        this.openBangumiPage()
-      } : undefined
+      }
     })
   }
 
@@ -439,12 +442,14 @@ export struct DetailPage {
 
   private onRoadsReady(source: PlaybackSource): void {
     if (source.status === 'success' && source.roads.length > 0) {
+      logger.info('onRoadsReady accepted, wait sheet disappear before push')
+      this.pendingPlaybackSource = source
       this.showSourceSheet = false
-      this.openPlayerWithHistory(source)
     }
   }
 
   private async openPlayerWithHistory(source: PlaybackSource): Promise<void> {
+    logger.info('openPlayerWithHistory source=%{public}s roads=%{public}d', source.name, source.roads.length)
     const selected = await this.resolveInitialEpisode(source)
     if (selected === null) {
       logger.warn('No playable episode found for source %{public}s', source.name)
@@ -463,6 +468,8 @@ export struct DetailPage {
       }
     } catch (_err) { /* ignore */ }
 
+    logger.info('router.pushUrl to PlayerPage episodeUrl=%{public}s ruleSourceId=%{public}d',
+      selected.episode.url.length > 0 ? 'ok' : 'empty', selectedSourceId)
     router.pushUrl({
       url: 'pages/player/PlayerPage',
       params: {
@@ -662,23 +669,6 @@ export struct DetailPage {
     return trimmed.length === 0 || trimmed === '-' || trimmed === '未知' || trimmed === 'null' || trimmed === 'undefined'
   }
 
-  private openBangumiPage(): void {
-    if (this.bangumiId > 0) {
-      const url = BangumiConfig.getSubjectWebUrl(this.bangumiId)
-      logger.info('Open Bangumi page: %{public}s', url)
-    }
-  }
-
-  private buildShareIcon(): HdsNavigationIconOptions {
-    return {
-      icon: $r('sys.symbol.share'),
-      label: 'share',
-      action: () => {
-        this.openBangumiPage()
-      }
-    }
-  }
-
   private buildCollectIcon(): HdsNavigationIconOptions {
     return {
       icon: this.currentCollectType > CollectType.none ?
@@ -692,14 +682,6 @@ export struct DetailPage {
   }
 
   private buildDetailMenu(): HdsNavigationMenuContentOptions {
-    if (this.bangumiId > 0) {
-      return {
-        value: [
-          { content: this.buildCollectIcon() },
-          { content: this.buildShareIcon() }
-        ]
-      }
-    }
     return {
       value: [{ content: this.buildCollectIcon() }]
     }

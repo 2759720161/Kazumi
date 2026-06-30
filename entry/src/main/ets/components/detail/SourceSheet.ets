@@ -38,8 +38,8 @@ export struct SourceSheet {
   private isClosed: boolean = false
   private captchaRetrying: boolean = false
   private hasUserSelectedPlugin: boolean = false
+  private roadsRequestToken: number = 0
   onRoadsReady?: ((source: PlaybackSource) => void)
-  onOpenExternal?: () => void
 
   aboutToAppear(): void {
     this.isClosed = false
@@ -148,26 +148,6 @@ export struct SourceSheet {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
 
-        if (this.onOpenExternal !== undefined) {
-          Button() {
-            SymbolGlyph($r('sys.symbol.share'))
-              .fontSize(22)
-              .fontColor([$r('app.color.text_primary')])
-          }
-          .width(44)
-          .height(44)
-          .borderRadius(22)
-          .backgroundColor($r('app.color.surface_button_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .border({ width: 0.5, color: $r('app.color.border_specular') })
-          .shadow({ radius: 12, color: $r('app.color.shadow_surface'), offsetY: 4 })
-          .margin({ left: 10 })
-          .onClick(() => {
-            if (this.onOpenExternal) {
-              this.onOpenExternal()
-            }
-          })
-        }
       }
       .width('100%')
 
@@ -1080,14 +1060,30 @@ export struct SourceSheet {
     if (this.isClosed) {
       return
     }
+    const requestToken = ++this.roadsRequestToken
+    const requestPluginId = result.sourceId
     const currentResult = result
     this.selectedResult = result
     this.isQueryingRoads = true
     this.queryRoadsError = ''
+    logger.info('queryRoads start token=%{public}d pluginId=%{public}d name=%{public}s',
+      requestToken, requestPluginId, result.name)
     try {
       const source = await this.searchService.queryRoads(result)
-      if (this.isClosed || this.selectedResult !== currentResult) {
+      logger.info('queryRoads done token=%{public}d pluginId=%{public}d status=%{public}s roads=%{public}d',
+        requestToken, requestPluginId, source.status, source.roads.length)
+      if (this.isClosed || requestToken !== this.roadsRequestToken) {
+        logger.warn('queryRoads result stale token=%{public}d currentToken=%{public}d, discarding',
+          requestToken, this.roadsRequestToken)
         return
+      }
+      if (this.selectedResult !== currentResult && this.hasUserSelectedPlugin) {
+        const currentSelectedId = this.getSelectedPluginId()
+        if (currentSelectedId !== requestPluginId) {
+          logger.warn('queryRoads plugin mismatch requestPluginId=%{public}d currentSelectedId=%{public}d, discarding',
+            requestPluginId, currentSelectedId)
+          return
+        }
       }
       if (source.status === 'error') {
         this.queryRoadsError = source.message.length > 0 ? source.message : '获取线路失败'
@@ -1095,16 +1091,17 @@ export struct SourceSheet {
       } else if (source.status === 'empty') {
         this.queryRoadsError = '该源无可用剧集'
       } else if (this.onRoadsReady) {
+        logger.info('onRoadsReady emit pluginId=%{public}d roads=%{public}d', requestPluginId, source.roads.length)
         this.onRoadsReady(source)
       }
     } catch (err) {
-      if (this.isClosed || this.selectedResult !== currentResult) {
+      if (this.isClosed || requestToken !== this.roadsRequestToken) {
         return
       }
       this.queryRoadsError = err instanceof Error ? err.message : '获取线路异常'
       logger.error('Query roads exception: %{public}s', this.queryRoadsError)
     } finally {
-      if (!this.isClosed && this.selectedResult === currentResult) {
+      if (!this.isClosed && (requestToken === this.roadsRequestToken || this.selectedResult === currentResult)) {
         this.isQueryingRoads = false
       }
     }

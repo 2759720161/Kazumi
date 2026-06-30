@@ -14,8 +14,8 @@ const MAX_ACTIVE_PER_TRACK_MASSIVE = 8
 const MIN_ACTIVE_CAPACITY = 32
 const MAX_ACTIVE_CAPACITY = 180
 const MAX_ACTIVE_CAPACITY_MASSIVE = 300
-const MIN_STROKE_WIDTH = 0.8
-const MAX_STROKE_WIDTH = 1.8
+const MIN_STROKE_WIDTH = 0.1
+const MAX_STROKE_WIDTH = 3.0
 const EDGE_CLEAR_PADDING = 16
 const SPAWN_X_PADDING = 12
 const FIXED_DANMAKU_DURATION_MS = 4000
@@ -392,7 +392,7 @@ export class DanmakuRenderer {
   private getFont(): string {
     const fontSize = this.style.fontSize
     const fontWeight = Math.max(1, Math.min(9, this.style.fontWeight)) * 100
-    return `${fontWeight} ${fontSize}px sans-serif`
+    return `${fontWeight} ${fontSize}vp sans-serif`
   }
 
   private isFixedDanmaku(item: DanmakuItem): boolean {

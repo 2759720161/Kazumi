@@ -597,11 +597,27 @@ struct RuleShopPage {
   private getSortedItems(): RuleCatalogItem[] {
     const items = [...this.catalogItems]
     if (this.sortByTime) {
-      items.sort((a: RuleCatalogItem, b: RuleCatalogItem) => b.lastUpdate - a.lastUpdate)
+      items.sort((a: RuleCatalogItem, b: RuleCatalogItem) => {
+        const priorityDiff = this.getRuleSortPriority(a) - this.getRuleSortPriority(b)
+        if (priorityDiff !== 0) {
+          return priorityDiff
+        }
+        return b.lastUpdate - a.lastUpdate
+      })
     } else {
-      items.sort((a: RuleCatalogItem, b: RuleCatalogItem) => a.name.localeCompare(b.name))
+      items.sort((a: RuleCatalogItem, b: RuleCatalogItem) => {
+        const priorityDiff = this.getRuleSortPriority(a) - this.getRuleSortPriority(b)
+        if (priorityDiff !== 0) {
+          return priorityDiff
+        }
+        return a.name.localeCompare(b.name)
+      })
     }
     return items
+  }
+
+  private getRuleSortPriority(item: RuleCatalogItem): number {
+    return this.findLocalRule(item.name) !== null ? 0 : 1
   }
 
   private getEnabledCount(): number {
@@ -648,25 +664,88 @@ struct RuleShopPage {
   }
 
   private async loadCatalog(): Promise<void> {
-    this.loading = true
     this.errorMessage = ''
+    this.loading = true
     try {
       this.localRules = await this.ruleSourceStore.getAll()
+      this.catalogItems = this.mergeCatalogItems([], this.localRules)
       const repositoryUrl = await this.getSavedRepositoryUrl()
       this.repositoryUrl = repositoryUrl
       this.canRefreshRepository = repositoryUrl.length > 0
       if (repositoryUrl.length === 0) {
-        this.catalogItems = []
+        this.loading = false
         return
       }
-      this.catalogItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
+      this.refreshCatalogInBackground(repositoryUrl)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.errorMessage = `加载失败: ${msg}`
       logger.error('Load catalog failed: %{public}s', msg)
+      this.loading = false
+    }
+  }
+
+  private async refreshCatalogInBackground(repositoryUrl: string): Promise<void> {
+    this.loading = true
+    try {
+      const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
+      this.localRules = await this.ruleSourceStore.getAll()
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+      this.errorMessage = ''
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (this.catalogItems.length === 0) {
+        this.errorMessage = `更新仓库失败: ${msg}`
+      }
+      logger.error('Refresh catalog failed: %{public}s', msg)
     } finally {
       this.loading = false
     }
+  }
+
+  private mergeCatalogItems(remoteItems: RuleCatalogItem[], localRules: RuleSource[]): RuleCatalogItem[] {
+    const result: RuleCatalogItem[] = []
+    const names: string[] = []
+    for (let i = 0; i < localRules.length; i++) {
+      const remote = this.findCatalogItem(remoteItems, localRules[i].name)
+      result.push(remote !== null ? remote : this.buildCatalogItemFromLocalRule(localRules[i]))
+      names.push(localRules[i].name)
+    }
+    for (let i = 0; i < remoteItems.length; i++) {
+      if (!this.containsName(names, remoteItems[i].name)) {
+        result.push(remoteItems[i])
+      }
+    }
+    return result
+  }
+
+  private buildCatalogItemFromLocalRule(rule: RuleSource): RuleCatalogItem {
+    const item = new RuleCatalogItem()
+    item.name = rule.name
+    item.version = rule.version
+    item.useNativePlayer = rule.useNativePlayer
+    item.author = '本地已安装'
+    item.lastUpdate = rule.updatedAt > 0 ? rule.updatedAt : rule.createdAt
+    item.antiCrawlerEnabled = rule.antiCrawlerConfig.enabled
+    return item
+  }
+
+  private findCatalogItem(items: RuleCatalogItem[], name: string): RuleCatalogItem | null {
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].name === name) {
+        return items[i]
+      }
+    }
+    return null
+  }
+
+  private containsName(names: string[], name: string): boolean {
+    for (let i = 0; i < names.length; i++) {
+      if (names[i] === name) {
+        return true
+      }
+    }
+    return false
   }
 
   private async onInstallRule(name: string): Promise<void> {
@@ -677,6 +756,7 @@ struct RuleShopPage {
       if (result === 0) {
         promptAction.showToast({ message: `规则 ${name} 安装/更新成功` })
         this.localRules = await this.ruleSourceStore.getAll()
+        this.catalogItems = this.mergeCatalogItems(this.catalogItems, this.localRules)
       } else if (result === 1) {
         promptAction.showToast({ message: '应用版本过低，此规则不兼容' })
       } else {

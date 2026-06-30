@@ -72,7 +72,6 @@ export class PluginSearchService {
     if (this.searchEpoch !== currentEpoch) {
       return
     }
-    this.sortCompletedStates()
     this.notifyStateChange(currentEpoch)
   }
 

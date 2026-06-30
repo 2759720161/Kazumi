@@ -1,4 +1,20 @@
 import { CapturedRequestContext } from './CapturedRequestContext'
+import { SniffRuleEvaluator } from './SniffRuleEvaluator'
+
+const TYPE_BASE_SCORES: Record<string, number> = {
+  'm3u8': 80, 'mp4': 70, 'flv': 50, 'ts': 30, 'unknown': 10
+}
+
+const SOURCE_SCORE_DELTAS: Record<string, number> = {
+  'request_intercept': 15, 'hls_load_source': 15, 'video_tag': 10,
+  'player_config': 10, 'media_current_src': 8, 'mui_player_ctor': 5,
+  'media_poll': 5, 'iframe_scan': -5, 'video_src_setter': 10,
+  'initial_media_scan': 3, 'mutation_observer': 3
+}
+
+const QUALITY_SCORE_DELTAS: Record<string, number> = {
+  '1080P': 5, '720P': 3
+}
 
 export class SnifferResult {
   url: string = ''
@@ -7,6 +23,8 @@ export class SnifferResult {
   source: string = ''
   timestamp: number = 0
   context: CapturedRequestContext | null = null
+  ruleSource: string = ''
+  score: number = 0
 
   constructor(url: string, type: string, quality: string, source: string) {
     this.url = url
@@ -86,6 +104,41 @@ export class SnifferResult {
   }
 
   toString(): string {
-    return `[${this.type}] ${this.url} (${this.quality}) from ${this.source}`
+    return `[${this.type}] ${this.url} (${this.quality}) score=${this.score} from ${this.source}`
+  }
+
+  static calculateScore(type: string, source: string, url: string, quality: string,
+    ruleEvaluator: SniffRuleEvaluator): number {
+    let score = TYPE_BASE_SCORES[type] || 10
+
+    const sourceDelta = SOURCE_SCORE_DELTAS[source]
+    if (sourceDelta !== undefined) {
+      score += sourceDelta
+    }
+
+    if (quality.length > 0) {
+      const qualityDelta = QUALITY_SCORE_DELTAS[quality]
+      if (qualityDelta !== undefined) {
+        score += qualityDelta
+      }
+    }
+
+    const _lowerUrl = url.toLowerCase()
+    if (type === 'm3u8' || type === 'mp4' || type === 'flv' || type === 'ts') {
+      if (!ruleEvaluator.isWeakWrapperUrl(url)) {
+        score += 10
+      }
+    }
+
+    if (ruleEvaluator.isWeakWrapperUrl(url)) {
+      score -= 30
+    }
+
+    const modifiers = ruleEvaluator.getScoringModifiers(url, type)
+    for (let i = 0; i < modifiers.length; i++) {
+      score += modifiers[i].scoreDelta
+    }
+
+    return score
   }
 }

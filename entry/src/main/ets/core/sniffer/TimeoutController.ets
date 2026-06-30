@@ -1,6 +1,8 @@
+import { NetworkPolicy } from './NetworkPolicy'
+
 export class TimeoutController {
-  private timeoutMs: number = 15000
-  private maxRetries: number = 2
+  private timeoutMs: number = NetworkPolicy.DEFAULT_SNIFF_TIMEOUT_MS
+  private maxRetries: number = NetworkPolicy.DEFAULT_MAX_RETRY
   private attemptCount: number = 0
   private timerId: number = -1
   private onTimeout: (() => void) | null = null

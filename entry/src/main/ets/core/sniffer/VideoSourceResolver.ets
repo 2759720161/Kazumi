@@ -10,6 +10,7 @@ import { PlaybackOptions } from '../player/IPlayerEngine'
 import { RuleSource } from '../../models/RuleSource'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { HttpClient } from '../../network/HttpClient'
+import { NetworkPolicy } from './NetworkPolicy'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('VideoSourceResolver')
@@ -22,8 +23,10 @@ export class VideoSourceResolver {
   private webController: webview.WebviewController | null = null
   private sessionId: number = 0
   private activeSessionId: number = 0
+  private resolveEpoch: number = 0
   private isResolving: boolean = false
   private currentRetryCount: number = 0
+  private policy: NetworkPolicy = new NetworkPolicy()
   private resolveStartTime: number = 0
   private logListeners: ((event: ResolveLogEvent) => void)[] = []
 
@@ -57,6 +60,7 @@ export class VideoSourceResolver {
 
   async resolve(request: VideoSourceRequest): Promise<VideoSourceResult> {
     const mySession = ++this.sessionId
+    const myEpoch = this.resolveEpoch
     this.activeSessionId = mySession
     this.isResolving = true
     this.resolveStartTime = Date.now()
@@ -73,7 +77,7 @@ export class VideoSourceResolver {
       ruleSource = await this.ruleStore.getById(request.ruleSourceId)
     }
 
-    if (this.activeSessionId !== mySession) {
+    if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
       this.isResolving = false
       return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
     }
@@ -87,7 +91,7 @@ export class VideoSourceResolver {
     this.sniffer.setTimeout(request.sniffTimeoutMs, request.maxRetryCount)
 
     const sniffUrl = await this.normalizeSniffUrlForRule(request.episodeUrl, ruleSource)
-    if (this.activeSessionId !== mySession) {
+    if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
       this.isResolving = false
       return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
     }
@@ -100,9 +104,9 @@ export class VideoSourceResolver {
 
     this.emitLog(mySession, 'loadUrl', sniffUrl.substring(0, 100))
 
-    let result = await this.doSniff(sniffUrl, request.maxRetryCount, mySession)
+    let result = await this.doSniff(sniffUrl, request.maxRetryCount, mySession, myEpoch)
 
-    if (this.activeSessionId !== mySession) {
+    if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
       this.isResolving = false
       return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
     }
@@ -212,10 +216,10 @@ export class VideoSourceResolver {
     return output
   }
 
-  private doSniff(url: string, maxRetry: number, mySession: number): Promise<VideoSourceResult> {
+  private doSniff(url: string, maxRetry: number, mySession: number, myEpoch: number): Promise<VideoSourceResult> {
     return new Promise<VideoSourceResult>((resolve) => {
       this.sniffer.setResultCallback((result: SnifferResult) => {
-        if (this.activeSessionId !== mySession) {
+        if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
           return
         }
         logger.info('Sniffed: %{public}s [%{public}s/%{public}s] from %{public}s',
@@ -224,7 +228,7 @@ export class VideoSourceResolver {
       })
 
       this.sniffer.setCompleteCallback((results: SnifferResult[]) => {
-        if (this.activeSessionId !== mySession) {
+        if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
           return
         }
         const elapsed = Date.now() - this.resolveStartTime
@@ -239,16 +243,16 @@ export class VideoSourceResolver {
       })
 
       this.sniffer.setErrorCallback((error: string) => {
-        if (this.activeSessionId !== mySession) {
+        if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
           return
         }
         const elapsed = Date.now() - this.resolveStartTime
         logger.warn('Sniff error: %{public}s', error)
         if (this.currentRetryCount < maxRetry) {
           this.currentRetryCount++
-          let delayMs = this.currentRetryCount * 2000
+          let delayMs = this.policy.calculateRetryDelay(this.currentRetryCount)
           setTimeout(() => {
-            if (this.activeSessionId !== mySession) {
+            if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
               return
             }
             this.sniffer.sniff(url)
@@ -259,18 +263,18 @@ export class VideoSourceResolver {
       })
 
       this.sniffer.setStatusCallback((status: string) => {
-        if (this.activeSessionId !== mySession) {
+        if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
           return
         }
         if (status === 'timeout') {
           const elapsed = Date.now() - this.resolveStartTime
           if (this.currentRetryCount < maxRetry) {
             this.currentRetryCount++
-            let delayMs = this.currentRetryCount * 2000
+            let delayMs = this.policy.calculateRetryDelay(this.currentRetryCount)
             logger.info('Sniff timeout, retry %{public}d/%{public}d after %{public}dms',
               this.currentRetryCount, maxRetry, delayMs)
             setTimeout(() => {
-              if (this.activeSessionId !== mySession) {
+              if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
                 return
               }
               this.sniffer.sniff(url)
@@ -289,29 +293,23 @@ export class VideoSourceResolver {
     let best: SnifferResult | null = null
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
-      if (r.type === 'm3u8' || r.type === 'mp4') {
-        if (best === null) {
-          best = r
-        } else if (r.type === 'm3u8' && best.type === 'mp4') {
-          best = r
-        } else if (this.isWeakWrapperCandidate(best) && !this.isWeakWrapperCandidate(r)) {
-          best = r
-        } else if (r.type === 'm3u8' && best.type === 'm3u8' &&
-          best.quality === 'unknown' && r.quality !== 'unknown') {
+      if (r.type === 'm3u8' || r.type === 'mp4' || r.type === 'flv' || r.type === 'ts') {
+        if (best === null || r.score > best.score) {
           best = r
         }
       }
     }
+    if (best === null) {
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]
+        if (r.type === 'blob') {
+          if (best === null || r.score > best.score) {
+            best = r
+          }
+        }
+      }
+    }
     return best
-  }
-
-  private isWeakWrapperCandidate(result: SnifferResult): boolean {
-    const lowerUrl = result.url.toLowerCase()
-    return lowerUrl.indexOf('/m3u8/?url=') !== -1 ||
-      lowerUrl.indexOf('/m3u8?url=') !== -1 ||
-      lowerUrl.indexOf('player.moedot.net/player/') !== -1 ||
-      lowerUrl.indexOf('://jx.') !== -1 ||
-      lowerUrl.indexOf('//jx.') !== -1
   }
 
   private applyRuleSourceToResult(result: VideoSourceResult, rule: RuleSource): VideoSourceResult {
@@ -446,6 +444,7 @@ export class VideoSourceResolver {
 
   cancel(): void {
     this.activeSessionId = ++this.sessionId
+    this.resolveEpoch++
     this.isResolving = false
     this.sniffer.cancel()
   }

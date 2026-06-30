@@ -5,6 +5,8 @@ import { RequestInterceptor } from './RequestInterceptor'
 import { JSInjector } from './JSInjector'
 import { CandidateUrlFilter } from './CandidateUrlFilter'
 import { TimeoutController } from './TimeoutController'
+import { NetworkPolicy } from './NetworkPolicy'
+import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('VideoSniffer')
@@ -12,7 +14,9 @@ const logger = new Logger('VideoSniffer')
 export class VideoSniffer {
   private requestInterceptor: RequestInterceptor = new RequestInterceptor()
   private urlFilter: CandidateUrlFilter = new CandidateUrlFilter()
-  private timeoutController: TimeoutController = new TimeoutController(15000, 2)
+  private timeoutController: TimeoutController = new TimeoutController(
+    NetworkPolicy.DEFAULT_SNIFF_TIMEOUT_MS, NetworkPolicy.DEFAULT_MAX_RETRY)
+  private ruleEvaluator: SniffRuleEvaluator = new SniffRuleEvaluator()
   private results: SnifferResult[] = []
   private sniffSessionId: number = 0
   private isSniffing: boolean = false
@@ -24,11 +28,13 @@ export class VideoSniffer {
   private useLegacyParser: boolean = false
   private jsInjected: boolean = false
   private delayedFinishTimer: number = -1
+  private collectWindowTimer: number = -1
+  private hasPlayableResult: boolean = false
   private fallbackExecuted: boolean = false
   private promotedPlayerPageUrls: Set<string> = new Set()
   private currentReferer: string = ''
-  private readonly weakCandidateDelayMs: number = 1200
-  private readonly fallbackWaitMs: number = 1000
+  private readonly weakCandidateDelayMs: number = NetworkPolicy.WEAK_CANDIDATE_DELAY_MS
+  private readonly fallbackWaitMs: number = NetworkPolicy.FALLBACK_WAIT_MS
 
   setResultCallback(callback: (result: SnifferResult) => void): void {
     this.onResult = callback
@@ -54,6 +60,11 @@ export class VideoSniffer {
     this.useLegacyParser = useLegacy
   }
 
+  setRuleEvaluator(evaluator: SniffRuleEvaluator): void {
+    this.ruleEvaluator = evaluator
+    this.urlFilter.setRuleEvaluator(evaluator)
+  }
+
   setTimeout(timeoutMs: number, maxRetry: number): void {
     this.timeoutController = new TimeoutController(timeoutMs, maxRetry)
   }
@@ -70,6 +81,8 @@ export class VideoSniffer {
     this.promotedPlayerPageUrls = new Set()
     this.currentReferer = url
     this.clearDelayedFinish()
+    this.clearCollectWindow()
+    this.hasPlayableResult = false
     this.requestInterceptor.reset()
     this.urlFilter.reset()
 
@@ -262,37 +275,55 @@ export class VideoSniffer {
     if (result === null || !this.isSniffing) {
       return
     }
-    logger.info('recordResult: [%{public}s/%{public}s] %{public}s from %{public}s',
-      result.type, result.quality, result.url.substring(0, 80), result.source)
+    logger.info('recordResult: [%{public}s/%{public}s] score=%{public}d %{public}s from %{public}s',
+      result.type, result.quality, result.score, result.url.substring(0, 80), result.source)
     this.results.push(result)
     if (this.onResult) {
       this.onResult(result)
     }
-    if (result.type !== 'm3u8' && result.type !== 'mp4') {
+    if (result.type !== 'm3u8' && result.type !== 'mp4' && result.type !== 'flv' && result.type !== 'ts') {
       return
     }
     if (this.isWeakWrapperCandidate(result)) {
       this.scheduleDelayedFinish()
       return
     }
-    this.finishSniffing('found')
+    if (!this.hasPlayableResult) {
+      this.hasPlayableResult = true
+      this.startCollectWindow()
+    }
+  }
+
+  private startCollectWindow(): void {
+    if (this.collectWindowTimer >= 0) {
+      return
+    }
+    this.collectWindowTimer = setTimeout(() => {
+      this.collectWindowTimer = -1
+      if (this.isSniffing) {
+        this.finishSniffing('found')
+      }
+    }, NetworkPolicy.COLLECT_WINDOW_MS)
+  }
+
+  private clearCollectWindow(): void {
+    if (this.collectWindowTimer >= 0) {
+      clearTimeout(this.collectWindowTimer)
+      this.collectWindowTimer = -1
+    }
   }
 
   private isWeakWrapperCandidate(result: SnifferResult): boolean {
-    const lowerUrl = result.url.toLowerCase()
-    return lowerUrl.indexOf('/m3u8/?url=') !== -1 ||
-      lowerUrl.indexOf('/m3u8?url=') !== -1 ||
-      lowerUrl.indexOf('player.moedot.net/player/') !== -1 ||
-      lowerUrl.indexOf('://jx.') !== -1 ||
-      lowerUrl.indexOf('//jx.') !== -1
+    const verdict = this.ruleEvaluator.evaluateWeakCandidate(result.url)
+    return verdict.isWeak
   }
 
   private promotePlayerPageIfNeeded(url: string): void {
     if (!this.webController || !this.isSniffing) {
       return
     }
-    const lowerUrl = url.toLowerCase()
-    if (!this.isPromotablePlayerPage(lowerUrl)) {
+    const verdict = this.ruleEvaluator.evaluatePromotePage(url)
+    if (!verdict.shouldPromote) {
       return
     }
     if (this.promotedPlayerPageUrls.has(url)) {
@@ -300,17 +331,13 @@ export class VideoSniffer {
     }
     this.promotedPlayerPageUrls.add(url)
     this.currentReferer = url
-    logger.info('Promoting player frame to main WebView for sniffing: %{public}s', url.substring(0, 100))
+    logger.info('Promoting player frame to main WebView for sniffing (rule=%{public}s): %{public}s',
+      verdict.matchedRuleName, url.substring(0, 100))
     try {
       this.webController.loadUrl(url)
     } catch (e) {
       logger.warn('Promote player page failed: %{public}s', String(e))
     }
-  }
-
-  private isPromotablePlayerPage(lowerUrl: string): boolean {
-    return lowerUrl.indexOf('://player.cycanime.com/') !== -1 &&
-      lowerUrl.indexOf('?url=') !== -1
   }
 
   private scheduleDelayedFinish(): void {
@@ -334,6 +361,7 @@ export class VideoSniffer {
 
   private finishSniffing(reason: string): void {
     this.clearDelayedFinish()
+    this.clearCollectWindow()
     this.isSniffing = false
     this.timeoutController.cancel()
     if (reason === 'found') {
@@ -351,6 +379,7 @@ export class VideoSniffer {
     this.sniffSessionId++
     this.isSniffing = false
     this.clearDelayedFinish()
+    this.clearCollectWindow()
     this.timeoutController.cancel()
     this.stopAndClearWebView()
     if (this.onStatusChange) {
@@ -362,6 +391,8 @@ export class VideoSniffer {
     this.results = []
     this.promotedPlayerPageUrls = new Set()
     this.clearDelayedFinish()
+    this.clearCollectWindow()
+    this.hasPlayableResult = false
     this.fallbackExecuted = false
     this.jsInjected = false
     this.requestInterceptor.reset()

@@ -1,4 +1,5 @@
 import { SnifferResult } from './SnifferResult'
+import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('UrlFilter')
@@ -47,6 +48,11 @@ const MEDIA_URL_HINTS: string[] = [
 
 export class CandidateUrlFilter {
   private seenUrls: Set<string> = new Set()
+  private ruleEvaluator: SniffRuleEvaluator = new SniffRuleEvaluator()
+
+  setRuleEvaluator(evaluator: SniffRuleEvaluator): void {
+    this.ruleEvaluator = evaluator
+  }
 
   isVideoUrl(url: string): boolean {
     let lowerUrl = url.toLowerCase()
@@ -72,9 +78,6 @@ export class CandidateUrlFilter {
     if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
       return false
     }
-    if (lowerUrl.indexOf('blob:') !== -1) {
-      return false
-    }
     if (this.isAdUrl(url)) {
       return false
     }
@@ -87,7 +90,15 @@ export class CandidateUrlFilter {
     return true
   }
 
+  isBlobUrl(url: string): boolean {
+    return url.indexOf('blob:') === 0
+  }
+
   isAdUrl(url: string): boolean {
+    const ruleVerdict = this.ruleEvaluator.evaluateUrlFilter(url, 'ad')
+    if (ruleVerdict.shouldReject) {
+      return true
+    }
     let lowerUrl = url.toLowerCase()
     for (let i = 0; i < AD_DOMAINS.length; i++) {
       if (lowerUrl.indexOf(AD_DOMAINS[i]) !== -1) {
@@ -97,14 +108,28 @@ export class CandidateUrlFilter {
     return false
   }
 
-  isDataOrBlobUrl(url: string): boolean {
-    return url.indexOf('data:') === 0 || url.indexOf('blob:') === 0
+  isDataUrl(url: string): boolean {
+    return url.indexOf('data:') === 0
   }
 
   filter(url: string, source: string): SnifferResult | null {
-    if (this.isDataOrBlobUrl(url)) {
-      logger.debug('filter REJECT blob/data: %{public}s', url.substring(0, 80))
+    if (this.isDataUrl(url)) {
+      logger.debug('filter REJECT data: %{public}s', url.substring(0, 80))
       return null
+    }
+    if (this.isBlobUrl(url)) {
+      logger.info('filter BLOB accepted with penalty: %{public}s', url.substring(0, 80))
+      if (this.seenUrls.has(url)) {
+        logger.debug('filter REJECT dup blob: %{public}s', url.substring(0, 80))
+        return null
+      }
+      this.seenUrls.add(url)
+      let type = 'blob'
+      let quality = 'unknown'
+      let result = new SnifferResult(url, type, quality, source)
+      result.ruleSource = 'blob_score_penalty'
+      result.score = SnifferResult.calculateScore(type, source, url, quality, this.ruleEvaluator)
+      return result
     }
     const candidateUrl = this.extractNestedMediaUrl(url)
     if (candidateUrl !== url) {
@@ -129,8 +154,14 @@ export class CandidateUrlFilter {
       type = 'mp4'
     }
     let quality = this.guessQuality(candidateUrl)
-    logger.info('filter ACCEPT [%{public}s] %{public}s from %{public}s', type, candidateUrl.substring(0, 80), source)
-    return new SnifferResult(candidateUrl, type, quality, source)
+    let result = new SnifferResult(candidateUrl, type, quality, source)
+    if (this.ruleEvaluator.isWeakWrapperUrl(candidateUrl)) {
+      result.ruleSource = 'weak_wrapper'
+    }
+    result.score = SnifferResult.calculateScore(type, source, candidateUrl, quality, this.ruleEvaluator)
+    logger.info('filter ACCEPT [%{public}s] score=%{public}d %{public}s from %{public}s',
+      type, result.score, candidateUrl.substring(0, 80), source)
+    return result
   }
 
   filterVideoElementUrl(url: string, source: string): SnifferResult | null {
@@ -138,6 +169,19 @@ export class CandidateUrlFilter {
     if (candidateUrl !== url) {
       logger.info('videoElement UNWRAP nested media: %{public}s -> %{public}s',
         url.substring(0, 80), candidateUrl.substring(0, 80))
+    }
+    if (this.isBlobUrl(candidateUrl)) {
+      if (this.seenUrls.has(candidateUrl)) {
+        return null
+      }
+      this.seenUrls.add(candidateUrl)
+      let result = new SnifferResult(candidateUrl, 'blob', 'unknown', source)
+      result.ruleSource = 'blob_score_penalty'
+      result.score = SnifferResult.calculateScore('blob', source, candidateUrl, 'unknown', this.ruleEvaluator)
+      return result
+    }
+    if (this.isDataUrl(candidateUrl)) {
+      return null
     }
     if (!this.isHttpVideoUrl(candidateUrl)) {
       logger.debug('videoElement REJECT not-http/ad: %{public}s', candidateUrl.substring(0, 80))
@@ -153,8 +197,14 @@ export class CandidateUrlFilter {
       type = 'mp4'
     }
     let quality = this.guessQuality(candidateUrl)
-    logger.info('videoElement ACCEPT [%{public}s] %{public}s from %{public}s', type, candidateUrl.substring(0, 80), source)
-    return new SnifferResult(candidateUrl, type, quality, source)
+    let result = new SnifferResult(candidateUrl, type, quality, source)
+    if (this.ruleEvaluator.isWeakWrapperUrl(candidateUrl)) {
+      result.ruleSource = 'weak_wrapper'
+    }
+    result.score = SnifferResult.calculateScore(type, source, candidateUrl, quality, this.ruleEvaluator)
+    logger.info('videoElement ACCEPT [%{public}s] score=%{public}d %{public}s from %{public}s',
+      type, result.score, candidateUrl.substring(0, 80), source)
+    return result
   }
 
   private extractNestedMediaUrl(url: string): string {

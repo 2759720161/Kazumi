@@ -1,15 +1,25 @@
 import { CandidateUrlFilter } from './CandidateUrlFilter'
+import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 
 export class RequestInterceptor {
   private interceptedUrls: string[] = []
-  private onIntercept: ((url: string, type: string) => void) | null = null
+  private onIntercept: ((url: string, type: string, headers: Record<string, string>) => void) | null = null
   private urlFilter: CandidateUrlFilter = new CandidateUrlFilter()
+  private ruleEvaluator: SniffRuleEvaluator = new SniffRuleEvaluator()
 
-  setOnIntercept(callback: (url: string, type: string) => void): void {
+  setOnIntercept(callback: (url: string, type: string, headers: Record<string, string>) => void): void {
     this.onIntercept = callback
   }
 
-  shouldIntercept(url: string): boolean {
+  setRuleEvaluator(evaluator: SniffRuleEvaluator): void {
+    this.ruleEvaluator = evaluator
+    this.urlFilter.setRuleEvaluator(evaluator)
+  }
+
+  shouldIntercept(url: string, headers: Record<string, string> = {}): boolean {
+    if (this.ruleEvaluator.evaluateRangeRequest(url, headers).isRangeVideo) {
+      return true
+    }
     let lowerUrl = url.toLowerCase()
     if (lowerUrl.indexOf('.m3u8') !== -1) {
       return true
@@ -26,22 +36,25 @@ export class RequestInterceptor {
     return this.urlFilter.isVideoUrl(url)
   }
 
-  interceptRequest(url: string): boolean {
-    if (this.shouldIntercept(url)) {
+  interceptRequest(url: string, headers: Record<string, string> = {}): boolean {
+    if (this.shouldIntercept(url, headers)) {
       if (this.interceptedUrls.indexOf(url) !== -1) {
         return false
       }
       this.interceptedUrls.push(url)
       if (this.onIntercept) {
-        let type = this.detectType(url)
-        this.onIntercept(url, type)
+        let type = this.detectType(url, headers)
+        this.onIntercept(url, type, headers)
       }
       return true
     }
     return false
   }
 
-  private detectType(url: string): string {
+  detectType(url: string, headers: Record<string, string> = {}): string {
+    if (this.ruleEvaluator.evaluateRangeRequest(url, headers).isRangeVideo) {
+      return 'range_video'
+    }
     let lowerUrl = url.toLowerCase()
     if (lowerUrl.indexOf('.m3u8') !== -1 || lowerUrl.indexOf('m3u8') !== -1) {
       return 'm3u8'

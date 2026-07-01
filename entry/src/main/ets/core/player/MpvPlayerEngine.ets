@@ -485,6 +485,15 @@ export class MpvPlayerEngine implements IPlayerEngine {
       if (options.proxy.length > 0) {
         napi.nativeSetProperty(this.ctxId, 'http-proxy', options.proxy)
       }
+      if (options.streamMetadata !== null && !options.streamMetadata.isEmpty()) {
+        logger.info('mpv stream metadata: %{public}s', options.streamMetadata.summary())
+        if (options.streamMetadata.hasDolbyVision || options.streamMetadata.hasHdrCodecHint) {
+          logger.warn('mpv stream has HDR/Dolby codec hints; hardware capability depends on device decoder/display')
+        }
+        if (options.streamMetadata.hasAacAudio) {
+          logger.info('mpv stream includes AAC audio')
+        }
+      }
       const headerKeys = Object.keys(options.headers)
       if (headerKeys.length > 0) {
         const headerParts: string[] = []

@@ -22,10 +22,13 @@ export struct GestureLayer {
   private readonly GESTURE_SEEK: number = 1
   private readonly GESTURE_VOLUME: number = 2
   private readonly GESTURE_BRIGHTNESS: number = 3
+  private readonly MIN_BRIGHTNESS: number = 0.05
+  private readonly VERTICAL_GESTURE_RANGE_RATIO: number = 0.72
   @State private layerWidth: number = 360
   @State private layerHeight: number = 640
   private panStartX: number = 0
   private panStartY: number = 0
+  private gestureStartValue: number = 0
   private isLongPressActive: boolean = false
 
   build() {
@@ -137,10 +140,12 @@ export struct GestureLayer {
             this.panStartY = event.fingerList[0].globalY
             if (this.panStartX < this.layerWidth / 2) {
               this.gestureType = this.GESTURE_BRIGHTNESS
-              this.gestureValue = this.screenBrightness
+              this.gestureStartValue = this.clampBrightness(this.screenBrightness)
+              this.gestureValue = this.gestureStartValue
             } else {
               this.gestureType = this.GESTURE_VOLUME
-              this.gestureValue = this.volume
+              this.gestureStartValue = this.clamp01(this.volume)
+              this.gestureValue = this.gestureStartValue
             }
           })
           .onActionUpdate((event: GestureEvent) => {
@@ -194,6 +199,7 @@ export struct GestureLayer {
   private resetGestureState(): void {
     this.gestureType = this.GESTURE_NONE
     this.seekDeltaMs = 0
+    this.gestureStartValue = 0
   }
 
   private updateSeekDelta(dx: number): void {
@@ -205,13 +211,10 @@ export struct GestureLayer {
   }
 
   private updateVolumeDelta(dy: number): void {
-    const delta = -dy / Math.max(this.layerHeight, 1)
-    let newVolume = this.volume + delta
-    if (newVolume < 0) {
-      newVolume = 0
-    }
-    if (newVolume > 1) {
-      newVolume = 1
+    const delta = -dy / this.getVerticalGestureRange()
+    const newVolume = this.normalizePercent(this.clamp01(this.gestureStartValue + delta))
+    if (Math.abs(newVolume - this.gestureValue) < 0.001) {
+      return
     }
     this.gestureValue = newVolume
     if (this.onVolumeChange) {
@@ -220,18 +223,43 @@ export struct GestureLayer {
   }
 
   private updateBrightnessDelta(dy: number): void {
-    const delta = -dy / Math.max(this.layerHeight, 1)
-    let newBrightness = this.screenBrightness + delta
-    if (newBrightness < 0.01) {
-      newBrightness = 0.01
-    }
-    if (newBrightness > 1) {
-      newBrightness = 1
+    const delta = -dy / this.getVerticalGestureRange()
+    const newBrightness = this.normalizePercent(this.clampBrightness(this.gestureStartValue + delta))
+    if (Math.abs(newBrightness - this.gestureValue) < 0.001) {
+      return
     }
     this.gestureValue = newBrightness
     if (this.onBrightnessChange) {
       this.onBrightnessChange(newBrightness)
     }
+  }
+
+  private getVerticalGestureRange(): number {
+    return Math.max(this.layerHeight * this.VERTICAL_GESTURE_RANGE_RATIO, 1)
+  }
+
+  private clamp01(value: number): number {
+    if (value < 0) {
+      return 0
+    }
+    if (value > 1) {
+      return 1
+    }
+    return value
+  }
+
+  private clampBrightness(value: number): number {
+    if (value < this.MIN_BRIGHTNESS) {
+      return this.MIN_BRIGHTNESS
+    }
+    if (value > 1) {
+      return 1
+    }
+    return value
+  }
+
+  private normalizePercent(value: number): number {
+    return Math.round(value * 100) / 100
   }
 
   private formatTime(ms: number): string {

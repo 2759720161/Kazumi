@@ -38,6 +38,7 @@ export class AVPlayerEngine implements IPlayerEngine {
     this.notifyStateChange()
 
     this.logIgnoredRequestHeaders(options)
+    this.logStreamMetadata(options)
     this.prepareWithUrl(options)
   }
 
@@ -74,6 +75,16 @@ export class AVPlayerEngine implements IPlayerEngine {
     }
     if (headerKeys.length > 0) {
       logger.info('  Custom headers (not applied): %{public}d', headerKeys.length)
+    }
+  }
+
+  private logStreamMetadata(options: PlaybackOptions): void {
+    if (options.streamMetadata === null || options.streamMetadata.isEmpty()) {
+      return
+    }
+    logger.info('AVPlayer stream metadata: %{public}s', options.streamMetadata.summary())
+    if (options.streamMetadata.hasDolbyVision || options.streamMetadata.hasHdrCodecHint) {
+      logger.warn('AVPlayer stream has HDR/Dolby codec hints; playback depends on device decoder/display')
     }
   }
 
@@ -307,7 +318,10 @@ export class AVPlayerEngine implements IPlayerEngine {
 
   setVolume(volume: number): void {
     if (this.avPlayer) {
-      this.avPlayer.setVolume(volume)
+      const normalizedVolume = Math.max(0, Math.min(1, volume))
+      this.avPlayer.setVolume(normalizedVolume)
+      this.state.volume = normalizedVolume
+      this.notifyStateChange()
     }
   }
 

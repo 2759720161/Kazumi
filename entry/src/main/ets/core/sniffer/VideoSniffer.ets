@@ -63,6 +63,7 @@ export class VideoSniffer {
   setRuleEvaluator(evaluator: SniffRuleEvaluator): void {
     this.ruleEvaluator = evaluator
     this.urlFilter.setRuleEvaluator(evaluator)
+    this.requestInterceptor.setRuleEvaluator(evaluator)
   }
 
   setTimeout(timeoutMs: number, maxRetry: number): void {
@@ -90,11 +91,11 @@ export class VideoSniffer {
       this.onStatusChange('loading')
     }
 
-    this.requestInterceptor.setOnIntercept((interceptedUrl: string, type: string) => {
+    this.requestInterceptor.setOnIntercept((interceptedUrl: string, type: string, headers: Record<string, string>) => {
       if (this.sniffSessionId !== mySession) {
         return
       }
-      this.handleInterceptedUrl(interceptedUrl, type, 'request_intercept')
+      this.handleInterceptedUrlWithHeaders(interceptedUrl, type, 'request_intercept', headers)
     })
 
     this.timeoutController.setOnRetry(() => {
@@ -214,16 +215,49 @@ export class VideoSniffer {
   }
 
   handleInterceptedUrl(url: string, type: string, source: string): void {
+    this.handleInterceptedUrlWithHeaders(url, type, source, {})
+  }
+
+  handleInterceptedRequest(url: string, headers: Record<string, string>): void {
+    if (!this.isSniffing) {
+      return
+    }
+    this.requestInterceptor.interceptRequest(url, headers)
+  }
+
+  private handleInterceptedUrlWithHeaders(url: string, type: string, source: string,
+    headers: Record<string, string>): void {
     if (!this.isSniffing) {
       return
     }
     logger.debug('interceptUrl: [%{public}s] %{public}s from %{public}s', type, url.substring(0, 80), source)
     this.promotePlayerPageIfNeeded(url)
     let result = this.urlFilter.filter(url, source)
+    const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url, headers)
+    if (result === null && rangeVerdict.isRangeVideo) {
+      result = new SnifferResult(url, 'range_video', 'unknown', source)
+      result.ruleSource = rangeVerdict.matchedRuleName.length > 0 ? rangeVerdict.matchedRuleName : 'range_request'
+      result.score = SnifferResult.calculateScore('range_video', source, url, 'unknown', this.ruleEvaluator)
+    }
     if (result !== null) {
       const ctx = new CapturedRequestContext()
       ctx.url = result.url
       ctx.referer = this.currentReferer
+      ctx.headers = headers
+      ctx.hasRangeHeader = rangeVerdict.isRangeVideo
+      ctx.contentType = rangeVerdict.detectedContentType
+      const referer = this.getHeaderIgnoreCase(headers, 'referer')
+      if (referer.length > 0) {
+        ctx.referer = referer
+      }
+      const cookie = this.getHeaderIgnoreCase(headers, 'cookie')
+      if (cookie.length > 0) {
+        ctx.cookies = cookie
+      }
+      const contentType = this.getHeaderIgnoreCase(headers, 'content-type')
+      if (contentType.length > 0) {
+        ctx.contentType = contentType
+      }
       result.context = ctx
     }
     this.recordResult(result)
@@ -242,7 +276,11 @@ export class VideoSniffer {
       let referer = data['referer'] || ''
       let cookie = data['cookie'] || ''
       let contentType = data['contentType'] || ''
+      let headers = JSInjector.extractHeadersFromJson(data['headers'] || '')
       let hasRange = data['hasRange'] === 'true'
+      if (this.getHeaderIgnoreCase(headers, 'range').length > 0) {
+        hasRange = true
+      }
       if (!url) {
         return
       }
@@ -267,8 +305,13 @@ export class VideoSniffer {
         result = this.urlFilter.filter(url, source)
       }
       if (hasRange && result === null) {
-        const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url,
-          contentType.length > 0 ? { 'Content-Type': contentType } : {})
+        if (this.getHeaderIgnoreCase(headers, 'range').length === 0) {
+          headers['Range'] = 'bytes=0-'
+        }
+        if (contentType.length > 0 && this.getHeaderIgnoreCase(headers, 'content-type').length === 0) {
+          headers['Content-Type'] = contentType
+        }
+        const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url, headers)
         if (rangeVerdict.isRangeVideo) {
           result = new SnifferResult(url, 'range_video', 'unknown', source)
           result.ruleSource = 'range_request'
@@ -289,6 +332,23 @@ export class VideoSniffer {
           ctx.contentType = contentType
         }
         ctx.hasRangeHeader = hasRange
+        let headerKeys = Object.keys(headers)
+        for (let i = 0; i < headerKeys.length; i++) {
+          const key = headerKeys[i]
+          ctx.headers[key] = headers[key]
+        }
+        if (hasRange && this.getHeaderIgnoreCase(ctx.headers, 'range').length === 0) {
+          ctx.headers['Range'] = 'bytes=0-'
+        }
+        if (referer.length > 0 && this.getHeaderIgnoreCase(ctx.headers, 'referer').length === 0) {
+          ctx.headers['Referer'] = referer
+        }
+        if (cookie.length > 0 && this.getHeaderIgnoreCase(ctx.headers, 'cookie').length === 0) {
+          ctx.headers['Cookie'] = cookie
+        }
+        if (contentType.length > 0 && this.getHeaderIgnoreCase(ctx.headers, 'content-type').length === 0) {
+          ctx.headers['Content-Type'] = contentType
+        }
         result.context = ctx
       }
       this.recordResult(result)
@@ -307,7 +367,8 @@ export class VideoSniffer {
     if (this.onResult) {
       this.onResult(result)
     }
-    if (result.type !== 'm3u8' && result.type !== 'mp4' && result.type !== 'flv' && result.type !== 'ts') {
+    if (result.type !== 'm3u8' && result.type !== 'mp4' && result.type !== 'flv' &&
+      result.type !== 'ts' && result.type !== 'range_video') {
       return
     }
     if (this.isWeakWrapperCandidate(result)) {
@@ -383,6 +444,17 @@ export class VideoSniffer {
       clearTimeout(this.delayedFinishTimer)
       this.delayedFinishTimer = -1
     }
+  }
+
+  private getHeaderIgnoreCase(headers: Record<string, string>, name: string): string {
+    const keys = Object.keys(headers)
+    const lowerName = name.toLowerCase()
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i].toLowerCase() === lowerName) {
+        return headers[keys[i]]
+      }
+    }
+    return ''
   }
 
   private finishSniffing(reason: string): void {

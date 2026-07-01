@@ -22,6 +22,7 @@ export class JSInjector {
       if (extra.cookie) msg.cookie = extra.cookie;
       if (extra.contentType) msg.contentType = extra.contentType;
       if (extra.hasRange) msg.hasRange = 'true';
+      if (extra.headers) msg.headers = JSON.stringify(extra.headers);
     }
     window.__kazumi_sniffed_results.push({url: url, type: type, source: source, ts: Date.now()});
     console.log('[KazumiSniffer] postResult: ' + type + ' ' + source + ' ' + url.substring(0, 80));
@@ -178,6 +179,7 @@ export class JSInjector {
       if (extra.cookie) msg.cookie = extra.cookie;
       if (extra.contentType) msg.contentType = extra.contentType;
       if (extra.hasRange) msg.hasRange = 'true';
+      if (extra.headers) msg.headers = JSON.stringify(extra.headers);
     }
     window.__kazumi_sniffed_results.push({url: url, type: type, source: source, ts: Date.now()});
     console.log('[KazumiSniffer] postResult: ' + type + ' ' + source + ' ' + url.substring(0, 80));
@@ -244,6 +246,87 @@ export class JSInjector {
     }
     return false;
   }
+
+  function headersToObject(headers) {
+    var out = {};
+    if (!headers) return out;
+    try {
+      if (headers.forEach && typeof headers.forEach === 'function') {
+        headers.forEach(function(value, key) {
+          out[String(key)] = String(value);
+        });
+        return out;
+      }
+      if (headers.length && typeof headers !== 'string') {
+        for (var i = 0; i < headers.length; i++) {
+          if (headers[i] && headers[i].length >= 2) out[String(headers[i][0])] = String(headers[i][1]);
+        }
+        return out;
+      }
+      if (typeof headers === 'object') {
+        var keys = Object.keys(headers);
+        for (var k = 0; k < keys.length; k++) {
+          out[String(keys[k])] = String(headers[keys[k]]);
+        }
+      }
+    } catch(e) {}
+    return out;
+  }
+
+  function mergeHeaders(target, source) {
+    if (!source) return target || {};
+    target = target || {};
+    try {
+      var keys = Object.keys(source);
+      for (var i = 0; i < keys.length; i++) {
+        target[keys[i]] = source[keys[i]];
+      }
+    } catch(e) {}
+    return target;
+  }
+
+  function hasHeader(headers, name) {
+    if (!headers) return false;
+    var target = name.toLowerCase();
+    try {
+      var keys = Object.keys(headers);
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).toLowerCase() === target) return true;
+      }
+    } catch(e) {}
+    return false;
+  }
+
+  function inspectM3u8Text(url, text, contentType, source) {
+    try {
+      if (url && typeof text === 'string' && isM3u8Content(text)) {
+        var extra = getSnifferExtra();
+        if (contentType) extra.contentType = contentType;
+        postResult(url, 'm3u8_content', source, extra);
+        return true;
+      }
+    } catch(e) {}
+    return false;
+  }
+
+  try {
+    if (window.Response && window.Response.prototype && window.Response.prototype.text &&
+        !window.Response.prototype.text.__kazumi_wrapped) {
+      var origResponseText = window.Response.prototype.text;
+      window.Response.prototype.text = function() {
+        var response = this;
+        return origResponseText.apply(this, arguments).then(function(text) {
+          try {
+            var url = response && response.url ? response.url : '';
+            var ct = response && response.headers ? (response.headers.get('content-type') || '') : '';
+            inspectM3u8Text(url, text, ct, 'response_text');
+          } catch(e) {}
+          return text;
+        });
+      };
+      window.Response.prototype.text.__kazumi_wrapped = true;
+    }
+  } catch(e) {}
 
   function processVideoElement(video) {
     var src = video.getAttribute('src');
@@ -649,17 +732,29 @@ export class JSInjector {
   }, 500);
 
   var origXhrOpen = XMLHttpRequest.prototype.open;
+  var origXhrSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
   var origXhrSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open = function(method, url) {
     this.__kazumi_url = url;
     this.__kazumi_method = method;
+    this.__kazumi_headers = {};
     return origXhrOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+    try {
+      this.__kazumi_headers = this.__kazumi_headers || {};
+      this.__kazumi_headers[String(name)] = String(value);
+    } catch(e) {}
+    return origXhrSetRequestHeader.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function() {
     var self = this;
     var url = self.__kazumi_url;
+    var xhrHeaders = self.__kazumi_headers || {};
     if (url && isVideoUrl(url)) {
       var extra = getSnifferExtra();
+      extra.headers = xhrHeaders;
+      if (hasHeader(xhrHeaders, 'range')) extra.hasRange = true;
       postResult(url, 'xhr', 'xhr_intercept', extra);
     }
     self.addEventListener('load', function() {
@@ -668,6 +763,8 @@ export class JSInjector {
         if (ct && isVideoMimeType(ct)) {
           var extra = getSnifferExtra();
           extra.contentType = ct;
+          extra.headers = xhrHeaders;
+          if (hasHeader(xhrHeaders, 'range')) extra.hasRange = true;
           postResult(url, 'video_content_type', 'xhr_content_type', extra);
           return;
         }
@@ -675,6 +772,8 @@ export class JSInjector {
         if (typeof resp === 'string' && isM3u8Content(resp)) {
           var extra2 = getSnifferExtra();
           extra2.contentType = ct;
+          extra2.headers = xhrHeaders;
+          if (hasHeader(xhrHeaders, 'range')) extra2.hasRange = true;
           postResult(url, 'm3u8_content', 'xhr_content_detect', extra2);
         }
       } catch(e) {}
@@ -685,7 +784,16 @@ export class JSInjector {
   var origFetch = window.fetch;
   window.fetch = function(input, init) {
     var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-    var hasRange = false;
+    var requestHeaders = {};
+    try {
+      if (input && typeof input === 'object' && input.headers) {
+        requestHeaders = mergeHeaders(requestHeaders, headersToObject(input.headers));
+      }
+      if (init && init.headers) {
+        requestHeaders = mergeHeaders(requestHeaders, headersToObject(init.headers));
+      }
+    } catch(e) {}
+    var hasRange = hasHeader(requestHeaders, 'range');
     if (init && init.headers) {
       try {
         if (typeof init.headers === 'object') {
@@ -699,6 +807,7 @@ export class JSInjector {
     if (url && isVideoUrl(url)) {
       var extra = getSnifferExtra();
       if (hasRange) extra.hasRange = true;
+      extra.headers = requestHeaders;
       postResult(url, 'fetch', 'fetch_intercept', extra);
     }
     return origFetch.apply(this, arguments).then(function(response) {
@@ -708,11 +817,22 @@ export class JSInjector {
           var extra = getSnifferExtra();
           extra.contentType = ct;
           if (hasRange) extra.hasRange = true;
+          extra.headers = requestHeaders;
           postResult(url, 'video_content_type', 'fetch_content_type', extra);
         } else if (ct.indexOf('mpegurl') !== -1 || ct.indexOf('mpegURL') !== -1) {
           var extra2 = getSnifferExtra();
           extra2.contentType = ct;
+          if (hasRange) extra2.hasRange = true;
+          extra2.headers = requestHeaders;
           postResult(url, 'm3u8_content', 'fetch_content_type', extra2);
+        }
+        if (response.clone && (isVideoUrl(url) || ct.indexOf('text/plain') !== -1 ||
+            ct.indexOf('application/json') !== -1 || ct.indexOf('application/octet-stream') !== -1)) {
+          try {
+            response.clone().text().then(function(text) {
+              inspectM3u8Text(url, text, ct, 'fetch_response_text');
+            }).catch(function() {});
+          } catch(e3) {}
         }
       }
       return response;

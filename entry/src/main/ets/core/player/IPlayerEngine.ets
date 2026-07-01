@@ -1,3 +1,5 @@
+import { StreamMetadata } from './StreamMetadata'
+
 export enum VideoAspectMode {
   contain = 0,
   cover = 1,
@@ -44,6 +46,7 @@ export class PlaybackOptions {
   referer: string = ''
   userAgent: string = ''
   proxy: string = ''
+  streamMetadata: StreamMetadata | null = null
 }
 
 export class PlayerState {

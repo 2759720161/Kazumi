@@ -1,5 +1,6 @@
 import { SnifferResult } from './SnifferResult'
 import { ResolveErrorCode } from './ResolveErrorCode'
+import { StreamMetadata } from '../player/StreamMetadata'
 
 export class VideoSourceResult {
   status: string = 'pending'
@@ -11,6 +12,7 @@ export class VideoSourceResult {
   sniffDurationMs: number = 0
   errorCode: ResolveErrorCode | '' = ''
   retriable: boolean = false
+  streamMetadata: StreamMetadata | null = null
 
   static success(url: string, type: string, candidates: SnifferResult[], durationMs: number): VideoSourceResult {
     const result = new VideoSourceResult()

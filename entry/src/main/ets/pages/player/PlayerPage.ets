@@ -27,6 +27,7 @@ import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 
 import { Logger } from '../../utils/Logger'
 import { router, window } from '@kit.ArkUI'
+import { audio } from '@kit.AudioKit'
 
 import { webview } from '@kit.ArkWeb'
 import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
@@ -35,14 +36,22 @@ const logger = new Logger('PlayerPage')
 
 class JsBridgeProxy {
   private resolver: VideoSourceResolver
+  private workerId: number
 
-  constructor(resolver: VideoSourceResolver) {
+  constructor(resolver: VideoSourceResolver, workerId: number = 1) {
     this.resolver = resolver
+    this.workerId = workerId
   }
 
   postMessage(message: string): void {
-    this.resolver.handleJsBridgeMessage(message)
+    this.resolver.handleJsBridgeMessage(message, this.workerId)
   }
+}
+
+class PreparedVideoSource {
+  key: string = ''
+  result: VideoSourceResult = new VideoSourceResult()
+  createdAtMs: number = 0
 }
 
 @Entry
@@ -76,6 +85,7 @@ export struct PlayerPage {
   @State sniffRetryCount: number = 0
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
   @State webviewReady: boolean = false
+  @State backgroundWebviewReady: boolean = false
   @State snifferWebVisible: boolean = true
   @State screenBrightness: number = 0.5
   @State isFullScreen: boolean = false
@@ -112,6 +122,7 @@ export struct PlayerPage {
   private sourceResolver: VideoSourceResolver = new VideoSourceResolver()
   private logListener: ((event: ResolveLogEvent) => void) | null = null
   private webController: webview.WebviewController = new webview.WebviewController()
+  private backgroundWebController: webview.WebviewController = new webview.WebviewController()
   private animeId: string = ''
   private animeCover: string = ''
   private animeUrl: string = ''
@@ -120,6 +131,7 @@ export struct PlayerPage {
   private episodeUrl: string = ''
   private ruleSourceId: number = -1
   private pendingSniff: boolean = false
+  private preparedVideoResults: PreparedVideoSource[] = []
   private lastSeekRequestAtMs: number = 0
   private pendingSeekMs: number = -1
   private pendingSeekTimer: number = -1
@@ -129,10 +141,13 @@ export struct PlayerPage {
   private controlHideTimer: number = -1
   private hudTimer: number = -1
   private brightnessApplyTimer: number = -1
+  private volumeApplyTimer: number = -1
   private danmakuSettingsReloadTimer: number = -1
   private danmakuLoadingPollTimer: number = -1
   private lastBrightnessApplyMs: number = 0
   private pendingBrightnessValue: number = -1
+  private lastVolumeApplyMs: number = 0
+  private pendingVolumeValue: number = -1
   private keepScreenOnRequestToken: number = 0
   private keepScreenOnEnabled: boolean = false
   private wasPlayingBeforeDrag: boolean = false
@@ -143,6 +158,9 @@ export struct PlayerPage {
   private sourceName: string = ''
   private historySeekMs: number = -1
   private temporarySpeedBeforeLongPress: number = -1
+  private audioManager: audio.AudioManager | null = null
+  private mediaVolumeMinLevel: number = -1
+  private mediaVolumeMaxLevel: number = -1
 
   aboutToAppear(): void {
     this.danmakuManager = new DanmakuManager()
@@ -191,7 +209,8 @@ export struct PlayerPage {
       this.playbackOptions = options
     }
 
-    this.sourceResolver.setWebController(this.webController)
+    this.sourceResolver.setWorkerWebController(1, this.webController)
+    this.sourceResolver.setWorkerWebController(2, this.backgroundWebController)
 
     if (this.animeId.length > 0) {
       this.collectController.getCollectType(this.animeId).then((type: number) => {
@@ -226,6 +245,7 @@ export struct PlayerPage {
     this.pauseAutoHideTimer()
     this.clearHudTimer()
     this.clearBrightnessApplyTimer()
+    this.clearVolumeApplyTimer()
     this.clearDanmakuSettingsReloadTimer()
     this.stopDanmakuLoadingPoll()
     if (this.danmakuManager !== null) {
@@ -266,65 +286,8 @@ export struct PlayerPage {
       .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
 
       if (this.snifferWebVisible) {
-        Web({ src: '', controller: this.webController })
-          .width(1)
-          .height(1)
-          .visibility(Visibility.None)
-          .javaScriptAccess(true)
-          .domStorageAccess(true)
-          .javaScriptProxy({
-            object: new JsBridgeProxy(this.sourceResolver),
-            name: 'jsBridge',
-            methodList: ['postMessage'],
-            controller: this.webController
-          })
-          .javaScriptProxy({
-            object: new JsBridgeProxy(this.sourceResolver),
-            name: 'JSBridgeDebug',
-            methodList: ['postMessage'],
-            controller: this.webController
-          })
-          .javaScriptProxy({
-            object: new JsBridgeProxy(this.sourceResolver),
-            name: 'VideoBridgeDebug',
-            methodList: ['postMessage'],
-            controller: this.webController
-          })
-
-          .onInterceptRequest((event) => {
-            if (event && event.request && event.request.getRequestUrl()) {
-              let url = event.request.getRequestUrl()
-              this.sourceResolver.handleInterceptedRequest(url)
-            }
-            return null
-          })
-          .onPageBegin(() => {
-            this.sourceResolver.onWebViewPageBegin()
-          })
-          .onPageEnd(() => {
-            this.sourceResolver.onWebViewPageEnd()
-          })
-          .onErrorReceive((event: OnErrorReceiveEvent) => {
-            if (event && event.error && this.shouldLogWebViewError()) {
-              logger.warn('WebView error: %{public}s', event.error.getErrorInfo())
-            }
-          })
-          .onControllerAttached(() => {
-            this.webviewReady = true
-    this.sourceResolver.setWebController(this.webController)
-
-    this.logListener = (event: ResolveLogEvent) => {
-      if (this.resolveLogs.length >= 50) {
-        this.resolveLogs.splice(0, 1)
-      }
-      this.resolveLogs.push(event)
-    }
-    this.sourceResolver.addLogListener(this.logListener)
-            if (this.pendingSniff) {
-              this.pendingSniff = false
-              this.startSniffing()
-            }
-          })
+        this.ForegroundSnifferWeb()
+        this.BackgroundSnifferWeb()
       }
     }
     .width('100%')
@@ -354,6 +317,140 @@ export struct PlayerPage {
         this.startAutoHideTimer()
       }
     })
+  }
+
+  @Builder
+  private ForegroundSnifferWeb() {
+    Web({ src: '', controller: this.webController })
+      .width(1)
+      .height(1)
+      .visibility(Visibility.None)
+      .javaScriptAccess(true)
+      .domStorageAccess(true)
+      .javaScriptProxy({
+        object: new JsBridgeProxy(this.sourceResolver, 1),
+        name: 'jsBridge',
+        methodList: ['postMessage'],
+        controller: this.webController
+      })
+      .javaScriptProxy({
+        object: new JsBridgeProxy(this.sourceResolver, 1),
+        name: 'JSBridgeDebug',
+        methodList: ['postMessage'],
+        controller: this.webController
+      })
+      .javaScriptProxy({
+        object: new JsBridgeProxy(this.sourceResolver, 1),
+        name: 'VideoBridgeDebug',
+        methodList: ['postMessage'],
+        controller: this.webController
+      })
+      .onInterceptRequest((event) => {
+        if (event && event.request && event.request.getRequestUrl()) {
+          let url = event.request.getRequestUrl()
+          let headers: Record<string, string> = {}
+          const requestHeaders = event.request.getRequestHeader()
+          for (let i = 0; i < requestHeaders.length; i++) {
+            const header = requestHeaders[i]
+            if (header.headerKey.length > 0) {
+              headers[header.headerKey] = header.headerValue
+            }
+          }
+          this.sourceResolver.handleInterceptedRequest(url, headers, 1)
+        }
+        return null
+      })
+      .onPageBegin(() => {
+        this.sourceResolver.onWebViewPageBegin(1)
+      })
+      .onPageEnd(() => {
+        this.sourceResolver.onWebViewPageEnd(1)
+      })
+      .onErrorReceive((event: OnErrorReceiveEvent) => {
+        if (event && event.error && this.shouldLogWebViewError()) {
+          logger.warn('WebView error worker=1: %{public}s', event.error.getErrorInfo())
+        }
+      })
+      .onControllerAttached(() => {
+        this.webviewReady = true
+        this.sourceResolver.setWorkerWebController(1, this.webController)
+        this.ensureResolveLogListener()
+        if (this.pendingSniff) {
+          this.pendingSniff = false
+          this.startSniffing()
+        }
+      })
+  }
+
+  @Builder
+  private BackgroundSnifferWeb() {
+    Web({ src: '', controller: this.backgroundWebController })
+      .width(1)
+      .height(1)
+      .visibility(Visibility.None)
+      .javaScriptAccess(true)
+      .domStorageAccess(true)
+      .javaScriptProxy({
+        object: new JsBridgeProxy(this.sourceResolver, 2),
+        name: 'jsBridge',
+        methodList: ['postMessage'],
+        controller: this.backgroundWebController
+      })
+      .javaScriptProxy({
+        object: new JsBridgeProxy(this.sourceResolver, 2),
+        name: 'JSBridgeDebug',
+        methodList: ['postMessage'],
+        controller: this.backgroundWebController
+      })
+      .javaScriptProxy({
+        object: new JsBridgeProxy(this.sourceResolver, 2),
+        name: 'VideoBridgeDebug',
+        methodList: ['postMessage'],
+        controller: this.backgroundWebController
+      })
+      .onInterceptRequest((event) => {
+        if (event && event.request && event.request.getRequestUrl()) {
+          let url = event.request.getRequestUrl()
+          let headers: Record<string, string> = {}
+          const requestHeaders = event.request.getRequestHeader()
+          for (let i = 0; i < requestHeaders.length; i++) {
+            const header = requestHeaders[i]
+            if (header.headerKey.length > 0) {
+              headers[header.headerKey] = header.headerValue
+            }
+          }
+          this.sourceResolver.handleInterceptedRequest(url, headers, 2)
+        }
+        return null
+      })
+      .onPageBegin(() => {
+        this.sourceResolver.onWebViewPageBegin(2)
+      })
+      .onPageEnd(() => {
+        this.sourceResolver.onWebViewPageEnd(2)
+      })
+      .onErrorReceive((event: OnErrorReceiveEvent) => {
+        if (event && event.error && this.shouldLogWebViewError()) {
+          logger.warn('WebView error worker=2: %{public}s', event.error.getErrorInfo())
+        }
+      })
+      .onControllerAttached(() => {
+        this.backgroundWebviewReady = true
+        this.sourceResolver.setWorkerWebController(2, this.backgroundWebController)
+      })
+  }
+
+  private ensureResolveLogListener(): void {
+    if (this.logListener !== null) {
+      return
+    }
+    this.logListener = (event: ResolveLogEvent) => {
+      if (this.resolveLogs.length >= 50) {
+        this.resolveLogs.splice(0, 1)
+      }
+      this.resolveLogs.push(event)
+    }
+    this.sourceResolver.addLogListener(this.logListener)
   }
 
   @Builder
@@ -483,9 +580,9 @@ export struct PlayerPage {
             this.showControlsWithAutoHide()
           },
           onVolumeChange: (volume: number) => {
+            this.requestSystemMediaVolume(volume)
             if (this.hasEngine && this.playerEngine !== null) {
               this.playerEngine.setVolume(volume)
-              this.volume = volume
             }
           },
           onBrightnessChange: (brightness: number) => {
@@ -645,10 +742,6 @@ export struct PlayerPage {
         Blank()
           .layoutWeight(1)
       }
-
-      this.TopSymbolButton($r('sys.symbol.forward_end_fill'), '快进', () => {
-        this.seekForward(10000)
-      })
 
       if (!this.isFullScreen) {
         if (this.isDanmakuLoading) {
@@ -1695,17 +1788,6 @@ export struct PlayerPage {
     return `${title} [${this.episodeName}]`
   }
 
-  private seekForward(deltaMs: number): void {
-    const target = this.positionMs + deltaMs
-    if (this.durationMs > 0 && target > this.durationMs) {
-      this.seekTo(this.durationMs)
-      this.showHudText(`快进到 ${this.formatTime(this.durationMs)}`)
-      return
-    }
-    this.seekTo(target)
-    this.showHudText(`快进 ${Math.floor(deltaMs / 1000)} 秒`)
-  }
-
   private toggleDanmaku(): void {
     if (this.danmakuManager === null) {
       this.isDanmakuEnabled = !this.isDanmakuEnabled
@@ -1830,6 +1912,13 @@ export struct PlayerPage {
     request.ruleSourceId = this.ruleSourceId
 
     try {
+      const preparedResult = this.takePreparedResult(this.episodeUrl, this.ruleSourceId)
+      if (preparedResult !== null && preparedResult.isPlayable()) {
+        logger.info('Use prepared video source for episodeUrl=%{public}s',
+          this.episodeUrl.length > 40 ? this.episodeUrl.substring(0, 40) + '...' : this.episodeUrl)
+        await this.handleSniffResult(preparedResult)
+        return
+      }
       const result = await this.sourceResolver.resolve(request)
       await this.handleSniffResult(result)
     } catch (err) {
@@ -1853,7 +1942,7 @@ export struct PlayerPage {
       const options = await this.sourceResolver.buildPlaybackOptionsWithRule(result, request)
 
       // [REQ-TSX-001] PlayerSurface reacts to videoUrl changes, so options must be ready first.
-      this.removeSnifferWebView()
+      this.keepSnifferWebViewForPool()
       if (this.historySeekMs > 0) {
         options.startPositionMs = this.historySeekMs
         this.historySeekMs = -1
@@ -1863,6 +1952,7 @@ export struct PlayerPage {
       this.sniffStatus = 'success'
       logger.info('Sniff success: %{public}s [%{public}s] in %{public}dms',
         result.videoUrl.substring(0, 80), result.videoType, result.sniffDurationMs)
+      this.prepareNextEpisode()
     } else if (result.errorCode === ResolveErrorCode.Captcha) {
       this.sniffStatus = 'captcha'
       this.sniffMessage = result.errorMessage
@@ -1883,7 +1973,100 @@ export struct PlayerPage {
     this.sourceResolver.cancel()
     this.pendingSniff = false
     this.webviewReady = false
+    this.backgroundWebviewReady = false
     this.snifferWebVisible = false
+  }
+
+  private keepSnifferWebViewForPool(): void {
+    this.pendingSniff = false
+    if (!this.snifferWebVisible) {
+      this.webviewReady = false
+      this.backgroundWebviewReady = false
+      this.snifferWebVisible = true
+    }
+  }
+
+  private prepareNextEpisode(): void {
+    if (!this.backgroundWebviewReady) {
+      logger.info('prepareNext skipped: background WebView not ready')
+      return
+    }
+    const nextEpisode = this.findNextEpisodeForPrepare()
+    if (nextEpisode === null) {
+      return
+    }
+    const request = new VideoSourceRequest()
+    request.episodeUrl = nextEpisode.url
+    request.ruleSourceId = this.ruleSourceId
+    this.sourceResolver.prepareNext(request).then((result: VideoSourceResult) => {
+      if (result.isPlayable()) {
+        this.storePreparedResult(nextEpisode.url, this.ruleSourceId, result)
+        logger.info('prepareNext success: %{public}s', result.videoUrl.substring(0, 80))
+      } else if (result.errorCode !== ResolveErrorCode.Cancelled) {
+        logger.info('prepareNext skipped/failed: %{public}s', result.errorMessage)
+      }
+    }).catch((err: Error) => {
+      logger.warn('prepareNext failed: %{public}s', err.message)
+    })
+  }
+
+  private findNextEpisodeForPrepare(): EpisodePanelItem | null {
+    if (this.selectedRoadIndex < 0 || this.selectedRoadIndex >= this.roads.length) {
+      return null
+    }
+    const road = this.roads[this.selectedRoadIndex]
+    if (this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < road.episodes.length - 1) {
+      const item = this.toEpisodePanelItems(road)[this.currentEpisodeIndex + 1]
+      return item === undefined ? null : item
+    }
+    for (let i = this.selectedRoadIndex + 1; i < this.roads.length; i++) {
+      if (this.roads[i].episodes.length > 0) {
+        const item = this.toEpisodePanelItems(this.roads[i])[0]
+        return item === undefined ? null : item
+      }
+    }
+    return null
+  }
+
+  private buildPreparedResultKey(episodeUrl: string, ruleSourceId: number): string {
+    return String(ruleSourceId) + '|' + episodeUrl
+  }
+
+  private readonly preparedResultTtlMs: number = 600000
+
+  private takePreparedResult(episodeUrl: string, ruleSourceId: number): VideoSourceResult | null {
+    const key = this.buildPreparedResultKey(episodeUrl, ruleSourceId)
+    const now = Date.now()
+    for (let i = this.preparedVideoResults.length - 1; i >= 0; i--) {
+      if (now - this.preparedVideoResults[i].createdAtMs > this.preparedResultTtlMs) {
+        this.preparedVideoResults.splice(i, 1)
+      }
+    }
+    for (let i = 0; i < this.preparedVideoResults.length; i++) {
+      if (this.preparedVideoResults[i].key === key) {
+        const result = this.preparedVideoResults[i].result
+        this.preparedVideoResults.splice(i, 1)
+        return result
+      }
+    }
+    return null
+  }
+
+  private storePreparedResult(episodeUrl: string, ruleSourceId: number, result: VideoSourceResult): void {
+    const key = this.buildPreparedResultKey(episodeUrl, ruleSourceId)
+    for (let i = this.preparedVideoResults.length - 1; i >= 0; i--) {
+      if (this.preparedVideoResults[i].key === key) {
+        this.preparedVideoResults.splice(i, 1)
+      }
+    }
+    const item = new PreparedVideoSource()
+    item.key = key
+    item.result = result
+    item.createdAtMs = Date.now()
+    this.preparedVideoResults.push(item)
+    while (this.preparedVideoResults.length > 4) {
+      this.preparedVideoResults.splice(0, 1)
+    }
   }
 
   private handlePlayerState(state: PlayerState): void {
@@ -1927,6 +2110,12 @@ export struct PlayerPage {
     if (state.completed && this.hasNextEpisode()) {
       logger.info('Playback completed, auto play next episode')
       this.playNextEpisode()
+    }
+
+    if (state.playing && this.durationMs > 0 &&
+      this.positionMs / this.durationMs > 0.8 &&
+      !this.sourceResolver.getIsPreparingNext()) {
+      this.prepareNextEpisode()
     }
 
     const now = Date.now()
@@ -2013,6 +2202,74 @@ export struct PlayerPage {
     }
   }
 
+  private requestSystemMediaVolume(volume: number): void {
+    const normalizedVolume = this.clampUnitValue(volume)
+    this.volume = normalizedVolume
+    this.pendingVolumeValue = normalizedVolume
+    const now = Date.now()
+    const elapsed = now - this.lastVolumeApplyMs
+    if (elapsed >= 80) {
+      this.applySystemMediaVolume(normalizedVolume)
+      return
+    }
+    if (this.volumeApplyTimer >= 0) {
+      return
+    }
+    this.volumeApplyTimer = setTimeout(() => {
+      this.volumeApplyTimer = -1
+      if (this.pendingVolumeValue >= 0) {
+        this.applySystemMediaVolume(this.pendingVolumeValue)
+      }
+    }, 80 - elapsed)
+  }
+
+  private async applySystemMediaVolume(volume: number): Promise<void> {
+    this.lastVolumeApplyMs = Date.now()
+    const normalizedVolume = this.clampUnitValue(volume)
+    try {
+      const manager = this.getAudioManager()
+      const minLevel = await this.getMediaVolumeMinLevel(manager)
+      const maxLevel = await this.getMediaVolumeMaxLevel(manager)
+      const targetLevel = Math.round(minLevel + normalizedVolume * (maxLevel - minLevel))
+      await manager.setVolume(audio.AudioVolumeType.MEDIA, targetLevel)
+      logger.info('Apply system media volume: level=%{public}d range=%{public}d-%{public}d',
+        targetLevel, minLevel, maxLevel)
+    } catch (err) {
+      logger.warn('Failed to apply system media volume: %{public}s', String(err))
+    }
+  }
+
+  private getAudioManager(): audio.AudioManager {
+    if (this.audioManager === null) {
+      this.audioManager = audio.getAudioManager()
+    }
+    return this.audioManager
+  }
+
+  private async getMediaVolumeMinLevel(manager: audio.AudioManager): Promise<number> {
+    if (this.mediaVolumeMinLevel < 0) {
+      this.mediaVolumeMinLevel = await manager.getMinVolume(audio.AudioVolumeType.MEDIA)
+    }
+    return this.mediaVolumeMinLevel
+  }
+
+  private async getMediaVolumeMaxLevel(manager: audio.AudioManager): Promise<number> {
+    if (this.mediaVolumeMaxLevel < 0) {
+      this.mediaVolumeMaxLevel = await manager.getMaxVolume(audio.AudioVolumeType.MEDIA)
+    }
+    return this.mediaVolumeMaxLevel
+  }
+
+  private clampUnitValue(value: number): number {
+    if (value < 0) {
+      return 0
+    }
+    if (value > 1) {
+      return 1
+    }
+    return value
+  }
+
   private requestWindowBrightness(brightness: number): void {
     this.screenBrightness = brightness
     this.pendingBrightnessValue = brightness
@@ -2070,6 +2327,13 @@ export struct PlayerPage {
     if (this.brightnessApplyTimer >= 0) {
       clearTimeout(this.brightnessApplyTimer)
       this.brightnessApplyTimer = -1
+    }
+  }
+
+  private clearVolumeApplyTimer(): void {
+    if (this.volumeApplyTimer >= 0) {
+      clearTimeout(this.volumeApplyTimer)
+      this.volumeApplyTimer = -1
     }
   }
 

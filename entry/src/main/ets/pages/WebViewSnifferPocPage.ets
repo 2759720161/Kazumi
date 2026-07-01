@@ -201,7 +201,15 @@ struct WebViewSnifferPocPage {
               if (event && event.request && event.request.getRequestUrl()) {
                 let url = event.request.getRequestUrl()
                 if (this.sniffer.getIsSniffing()) {
-                  this.sniffer.handleInterceptedUrl(url, SnifferResult.detectType(url), 'request_intercept')
+                  let headers: Record<string, string> = {}
+                  const requestHeaders = event.request.getRequestHeader()
+                  for (let i = 0; i < requestHeaders.length; i++) {
+                    const header = requestHeaders[i]
+                    if (header.headerKey.length > 0) {
+                      headers[header.headerKey] = header.headerValue
+                    }
+                  }
+                  this.sniffer.handleInterceptedRequest(url, headers)
                 }
               }
               return null

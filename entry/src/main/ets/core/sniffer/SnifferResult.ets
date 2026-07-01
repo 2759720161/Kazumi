@@ -2,14 +2,17 @@ import { CapturedRequestContext } from './CapturedRequestContext'
 import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 
 const TYPE_BASE_SCORES: Record<string, number> = {
-  'm3u8': 80, 'mp4': 70, 'flv': 50, 'ts': 30, 'unknown': 10
+  'm3u8': 80, 'mp4': 70, 'flv': 50, 'ts': 30, 'range_video': 45, 'blob': 15, 'unknown': 10
 }
 
 const SOURCE_SCORE_DELTAS: Record<string, number> = {
   'request_intercept': 15, 'hls_load_source': 15, 'video_tag': 10,
   'player_config': 10, 'media_current_src': 8, 'mui_player_ctor': 5,
-  'media_poll': 5, 'iframe_scan': -5, 'video_src_setter': 10,
-  'initial_media_scan': 3, 'mutation_observer': 3
+  'media_poll': 5, 'iframe_scan': -5, 'iframe_postmessage': -3,
+  'video_src_setter': 10, 'initial_media_scan': 3, 'mutation_observer': 3,
+  'xhr_intercept': 8, 'fetch_intercept': 8, 'xhr_content_type': 12,
+  'fetch_content_type': 12, 'xhr_content_detect': 10,
+  'video_content_type': 12, 'range_request': 5
 }
 
 const QUALITY_SCORE_DELTAS: Record<string, number> = {
@@ -123,8 +126,7 @@ export class SnifferResult {
       }
     }
 
-    const _lowerUrl = url.toLowerCase()
-    if (type === 'm3u8' || type === 'mp4' || type === 'flv' || type === 'ts') {
+    if (type === 'm3u8' || type === 'mp4' || type === 'flv' || type === 'ts' || type === 'range_video') {
       if (!ruleEvaluator.isWeakWrapperUrl(url)) {
         score += 10
       }

@@ -3,4 +3,7 @@ export class CapturedRequestContext {
   referer: string = ''
   userAgent: string = ''
   headers: Record<string, string> = {}
+  cookies: string = ''
+  contentType: string = ''
+  hasRangeHeader: boolean = false
 }

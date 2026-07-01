@@ -133,6 +133,8 @@ export struct PlayerPage {
   private danmakuLoadingPollTimer: number = -1
   private lastBrightnessApplyMs: number = 0
   private pendingBrightnessValue: number = -1
+  private keepScreenOnRequestToken: number = 0
+  private keepScreenOnEnabled: boolean = false
   private wasPlayingBeforeDrag: boolean = false
   private episodePanelPanStartOffsetX: number = 0
   private bangumiCover: string = ''
@@ -207,11 +209,13 @@ export struct PlayerPage {
       this.ruleSourceId, String(this.pendingSniff))
 
     this.startAutoHideTimer()
+    this.setKeepScreenOn(true)
     this.loadAspectModePreference()
     this.episodeGridColumns = this.getEpisodeGridColumns()
   }
 
   aboutToDisappear(): void {
+    this.setKeepScreenOn(false)
     this.saveHistory()
     this.sourceResolver.cancel()
     if (this.logListener !== null) {
@@ -2038,6 +2042,27 @@ export struct PlayerPage {
       await mainWindow.setWindowBrightness(brightness)
     } catch (_err) {
       logger.warn('Failed to apply window brightness')
+    }
+  }
+
+  private async setKeepScreenOn(keepScreenOn: boolean): Promise<void> {
+    const requestToken = ++this.keepScreenOnRequestToken
+    if (this.keepScreenOnEnabled === keepScreenOn) {
+      return
+    }
+
+    try {
+      const context = getContext(this)
+      const mainWindow = await window.getLastWindow(context)
+      if (requestToken !== this.keepScreenOnRequestToken) {
+        return
+      }
+      await mainWindow.setWindowKeepScreenOn(keepScreenOn)
+      if (requestToken === this.keepScreenOnRequestToken) {
+        this.keepScreenOnEnabled = keepScreenOn
+      }
+    } catch (_err) {
+      logger.warn('Failed to set screen keep-on: %{public}s', String(keepScreenOn))
     }
   }
 

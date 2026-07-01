@@ -15,14 +15,28 @@ export class JSInjector {
   window.__kazumi_sniffer_injected = true;
   window.__kazumi_sniffed_results = [];
 
-  function postResult(url, type, source) {
+  function postResult(url, type, source, extra) {
+    var msg = {url: url, type: type, source: source};
+    if (extra) {
+      if (extra.referer) msg.referer = extra.referer;
+      if (extra.cookie) msg.cookie = extra.cookie;
+      if (extra.contentType) msg.contentType = extra.contentType;
+      if (extra.hasRange) msg.hasRange = 'true';
+    }
     window.__kazumi_sniffed_results.push({url: url, type: type, source: source, ts: Date.now()});
     console.log('[KazumiSniffer] postResult: ' + type + ' ' + source + ' ' + url.substring(0, 80));
     if (window.JSBridgeDebug && window.JSBridgeDebug.postMessage) {
-      window.JSBridgeDebug.postMessage(JSON.stringify({url: url, type: type, source: source}));
+      window.JSBridgeDebug.postMessage(JSON.stringify(msg));
     } else if (window.jsBridge && window.jsBridge.postMessage) {
-      window.jsBridge.postMessage(JSON.stringify({url: url, type: type, source: source}));
+      window.jsBridge.postMessage(JSON.stringify(msg));
     }
+  }
+
+  function getSnifferExtra() {
+    var extra = {};
+    try { extra.referer = document.referrer || ''; } catch(e) { extra.referer = ''; }
+    try { extra.cookie = document.cookie || ''; } catch(e) { extra.cookie = ''; }
+    return extra;
   }
 
   function isVideoUrl(url) {
@@ -58,9 +72,20 @@ export class JSInjector {
   for (var i = 0; i < iframes.length; i++) {
     var iframeSrc = iframes[i].src || iframes[i].getAttribute('src');
     if (iframeSrc && isVideoUrl(iframeSrc)) {
-      postResult(iframeSrc, 'iframe', 'iframe_scan');
+      var extra = getSnifferExtra();
+      postResult(iframeSrc, 'iframe', 'iframe_scan', extra);
     }
   }
+
+  window.addEventListener('message', function(event) {
+    try {
+      var data = JSON.parse(event.data);
+      if (data && data.__kazumi_sniff && data.url) {
+        var extra = getSnifferExtra();
+        postResult(data.url, data.type || 'unknown', data.source || 'iframe_postmessage', extra);
+      }
+    } catch(e) {}
+  });
 
   var observer = new MutationObserver(function(mutations) {
     mutations.forEach(function(mutation) {
@@ -68,7 +93,8 @@ export class JSInjector {
         if (node.nodeName === 'IFRAME') {
           var src = node.src || node.getAttribute('src');
           if (src && isVideoUrl(src)) {
-            postResult(src, 'iframe', 'mutation_observer');
+            var extra = getSnifferExtra();
+            postResult(src, 'iframe', 'mutation_observer', extra);
           }
         }
         if (node.querySelectorAll) {
@@ -76,7 +102,8 @@ export class JSInjector {
           for (var j = 0; j < frames.length; j++) {
             var fsrc = frames[j].src || frames[j].getAttribute('src');
             if (fsrc && isVideoUrl(fsrc)) {
-              postResult(fsrc, 'iframe', 'mutation_observer');
+              var extra = getSnifferExtra();
+              postResult(fsrc, 'iframe', 'mutation_observer', extra);
             }
           }
         }
@@ -103,7 +130,8 @@ export class JSInjector {
     Object.defineProperty(HTMLMediaElement.prototype, 'src', {
       set: function(val) {
         if (val && isVideoUrl(val)) {
-          postResult(val, 'video_src_setter', 'property_intercept');
+          var extra = getSnifferExtra();
+          postResult(val, 'video_src_setter', 'property_intercept', extra);
         }
         origVideoSrcSetter.set.call(this, val);
       },
@@ -117,7 +145,8 @@ export class JSInjector {
     for (var i = 0; i < media.length; i++) {
       var src = media[i].currentSrc || media[i].src || media[i].getAttribute('src');
       if (src && isVideoUrl(src)) {
-        postResult(src, 'media_current_src', source);
+        var extra = getSnifferExtra();
+        postResult(src, 'media_current_src', source, extra);
       }
     }
   }
@@ -142,14 +171,28 @@ export class JSInjector {
   window.__kazumi_sniffer_injected = true;
   window.__kazumi_sniffed_results = [];
 
-  function postResult(url, type, source) {
+  function postResult(url, type, source, extra) {
+    var msg = {url: url, type: type, source: source};
+    if (extra) {
+      if (extra.referer) msg.referer = extra.referer;
+      if (extra.cookie) msg.cookie = extra.cookie;
+      if (extra.contentType) msg.contentType = extra.contentType;
+      if (extra.hasRange) msg.hasRange = 'true';
+    }
     window.__kazumi_sniffed_results.push({url: url, type: type, source: source, ts: Date.now()});
     console.log('[KazumiSniffer] postResult: ' + type + ' ' + source + ' ' + url.substring(0, 80));
     if (window.VideoBridgeDebug && window.VideoBridgeDebug.postMessage) {
-      window.VideoBridgeDebug.postMessage(JSON.stringify({url: url, type: type, source: source}));
+      window.VideoBridgeDebug.postMessage(JSON.stringify(msg));
     } else if (window.jsBridge && window.jsBridge.postMessage) {
-      window.jsBridge.postMessage(JSON.stringify({url: url, type: type, source: source}));
+      window.jsBridge.postMessage(JSON.stringify(msg));
     }
+  }
+
+  function getSnifferExtra() {
+    var extra = {};
+    try { extra.referer = document.referrer || ''; } catch(e) { extra.referer = ''; }
+    try { extra.cookie = document.cookie || ''; } catch(e) { extra.cookie = ''; }
+    return extra;
   }
 
   function isVideoUrl(url) {
@@ -185,12 +228,30 @@ export class JSInjector {
     return text && text.indexOf('#EXTM3U') !== -1;
   }
 
+  var videoMimeTypes = [
+    'mpegurl', 'mpegURL', 'video/mp4', 'video/flv', 'video/x-flv',
+    'video/f4v', 'video/MP2T', 'video/webm', 'video/quicktime',
+    'video/x-msvideo', 'video/x-matroska', 'video/3gpp',
+    'application/x-mpegURL', 'application/vnd.apple.mpegurl',
+    'application/octet-stream'
+  ];
+
+  function isVideoMimeType(ct) {
+    if (!ct) return false;
+    var lower = ct.toLowerCase();
+    for (var v = 0; v < videoMimeTypes.length; v++) {
+      if (lower.indexOf(videoMimeTypes[v].toLowerCase()) !== -1) return true;
+    }
+    return false;
+  }
+
   function processVideoElement(video) {
     var src = video.getAttribute('src');
     if (src && src.trim() !== '' && !src.startsWith('blob:') && src.indexOf('googleads') === -1) {
       if (src.indexOf('http://') === 0 || src.indexOf('https://') === 0) {
         console.log('[KazumiSniffer] VIDEO src found: ' + src.substring(0, 80));
-        postResult(src, 'video_tag', 'mutation_observer');
+        var extra = getSnifferExtra();
+        postResult(src, 'video_tag', 'mutation_observer', extra);
         return true;
       }
     }
@@ -200,7 +261,8 @@ export class JSInjector {
       if (src && src.trim() !== '' && !src.startsWith('blob:') && src.indexOf('googleads') === -1) {
         if (src.indexOf('http://') === 0 || src.indexOf('https://') === 0) {
           console.log('[KazumiSniffer] VIDEO source tag found: ' + src.substring(0, 80));
-          postResult(src, 'video_tag', 'mutation_observer');
+          var extra = getSnifferExtra();
+          postResult(src, 'video_tag', 'mutation_observer', extra);
           return true;
         }
       }
@@ -212,7 +274,8 @@ export class JSInjector {
     if (!url || typeof url !== 'string') return false;
     if (url.indexOf('blob:') === 0 || url.indexOf('data:') === 0) return false;
     if (isVideoUrl(url) || ((url.indexOf('http://') === 0 || url.indexOf('https://') === 0) && url.indexOf('googleads') === -1)) {
-      postResult(url, type, source);
+      var extra = getSnifferExtra();
+      postResult(url, type, source, extra);
       return true;
     }
     return false;
@@ -381,6 +444,132 @@ export class JSInjector {
     if (hookInstallCount >= 40) clearInterval(hookInstallTimer);
   }, 250);
 
+  var iframeSnifferScript = null;
+
+  function getIframeSnifferScript() {
+    if (iframeSnifferScript) return iframeSnifferScript;
+    iframeSnifferScript = '(' + function() {
+      if (window.__kazumi_iframe_sniffer_injected) return;
+      window.__kazumi_iframe_sniffer_injected = true;
+      function postToParent(url, type, source) {
+        var msg = {__kazumi_sniff: true, url: url, type: type, source: source};
+        try {
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage(JSON.stringify(msg), '*');
+          }
+        } catch(e) {}
+        try {
+          if (window.VideoBridgeDebug && window.VideoBridgeDebug.postMessage) {
+            window.VideoBridgeDebug.postMessage(JSON.stringify(msg));
+          } else if (window.jsBridge && window.jsBridge.postMessage) {
+            window.jsBridge.postMessage(JSON.stringify(msg));
+          }
+        } catch(e2) {}
+      }
+      function isVUrl(url) {
+        if (!url) return false;
+        var lower = url.toLowerCase();
+        if (lower.indexOf('.m3u8') !== -1 || lower.indexOf('.mp4') !== -1 ||
+            lower.indexOf('.flv') !== -1 || lower.indexOf('.mknvideo') !== -1) return true;
+        return false;
+      }
+      var origXhrOpen = XMLHttpRequest.prototype.open;
+      var origXhrSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this.__kazumi_url = url;
+        return origXhrOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function() {
+        var self = this;
+        if (self.__kazumi_url && isVUrl(self.__kazumi_url)) {
+          postToParent(self.__kazumi_url, 'xhr', 'iframe_xhr');
+        }
+        self.addEventListener('load', function() {
+          try {
+            var resp = self.responseText || self.response;
+            if (typeof resp === 'string' && resp.indexOf('#EXTM3U') !== -1) {
+              postToParent(self.__kazumi_url, 'm3u8_content', 'iframe_xhr_content');
+            }
+          } catch(e) {}
+        });
+        return origXhrSend.apply(this, arguments);
+      };
+      var origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (url && isVUrl(url)) {
+          postToParent(url, 'fetch', 'iframe_fetch');
+        }
+        return origFetch.apply(this, arguments).then(function(response) {
+          if (url && response && response.headers) {
+            var ct = response.headers.get('content-type') || '';
+            if (ct.indexOf('mpegurl') !== -1 || ct.indexOf('mpegURL') !== -1 ||
+                ct.indexOf('video/') !== -1) {
+              postToParent(url, 'video_content_type', 'iframe_fetch_ct');
+            }
+          }
+          return response;
+        });
+      };
+      var origSrcSetter = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+      if (origSrcSetter && origSrcSetter.set) {
+        Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+          set: function(val) {
+            if (val && isVUrl(val)) postToParent(val, 'video_src_setter', 'iframe_src_setter');
+            origSrcSetter.set.call(this, val);
+          },
+          get: origSrcSetter.get,
+          configurable: true
+        });
+      }
+      function scanVideos() {
+        var videos = document.querySelectorAll('video');
+        for (var i = 0; i < videos.length; i++) {
+          var src = videos[i].currentSrc || videos[i].src || videos[i].getAttribute('src');
+          if (src && isVUrl(src)) postToParent(src, 'video_tag', 'iframe_video_scan');
+        }
+      }
+      scanVideos();
+      setInterval(scanVideos, 1000);
+      console.log('[KazumiSniffer] iframe sniffer injected');
+    } + ')();';
+    return iframeSnifferScript;
+  }
+
+  function tryInjectIframe(iframe) {
+    try {
+      if (iframe.__kazumi_injected) return;
+      iframe.__kazumi_injected = true;
+      var src = iframe.src || iframe.getAttribute('src') || '';
+      if (src.indexOf('http://') !== 0 && src.indexOf('https://') !== 0) return;
+      if (src.indexOf('googleads') !== -1 || src.indexOf('doubleclick') !== -1) return;
+      var script = getIframeSnifferScript();
+      try {
+        var iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        if (iframeDoc && !iframe.__kazumi_script_added) {
+          var s = iframeDoc.createElement('script');
+          s.textContent = script;
+          s.setAttribute('data-kazumi-sniffer', 'true');
+          (iframeDoc.head || iframeDoc.documentElement).appendChild(s);
+          iframe.__kazumi_script_added = true;
+          console.log('[KazumiSniffer] Injected into same-origin iframe: ' + src.substring(0, 60));
+        }
+      } catch(e) {
+        console.log('[KazumiSniffer] Cross-origin iframe, relying on postMessage: ' + src.substring(0, 60));
+      }
+    } catch(e2) {}
+  }
+
+  window.addEventListener('message', function(event) {
+    try {
+      var data = JSON.parse(event.data);
+      if (data && data.__kazumi_sniff && data.url) {
+        var extra = getSnifferExtra();
+        postResult(data.url, data.type || 'unknown', data.source || 'iframe_postmessage', extra);
+      }
+    } catch(e) {}
+  });
+
   var observer = new MutationObserver(function(mutations) {
     for (var m = 0; m < mutations.length; m++) {
       var mutation = mutations[m];
@@ -394,10 +583,17 @@ export class JSInjector {
         if (node.nodeName === 'VIDEO') {
           if (processVideoElement(node)) return;
         }
+        if (node.nodeName === 'IFRAME') {
+          tryInjectIframe(node);
+        }
         if (node.querySelectorAll) {
           var videos = node.querySelectorAll('video');
           for (var i = 0; i < videos.length; i++) {
             if (processVideoElement(videos[i])) return;
+          }
+          var iframes = node.querySelectorAll('iframe');
+          for (var j = 0; j < iframes.length; j++) {
+            tryInjectIframe(iframes[j]);
           }
         }
       }
@@ -413,6 +609,10 @@ export class JSInjector {
     for (var i = 0; i < document.querySelectorAll('video').length; i++) {
       if (processVideoElement(document.querySelectorAll('video')[i])) return;
     }
+    var existingIframes = document.querySelectorAll('iframe');
+    for (var fi = 0; fi < existingIframes.length; fi++) {
+      tryInjectIframe(existingIframes[fi]);
+    }
     observer.observe(root, {childList: true, subtree: true, attributes: true, attributeFilter: ['src']});
   }
   if (document.readyState === 'loading') {
@@ -426,7 +626,8 @@ export class JSInjector {
     for (var i = 0; i < media.length; i++) {
       var src = media[i].currentSrc || media[i].src || media[i].getAttribute('src');
       if (src && (isVideoUrl(src) || (src.indexOf('http://') === 0 || src.indexOf('https://') === 0) && !src.startsWith('blob:'))) {
-        postResult(src, 'media_current_src', source);
+        var extra = getSnifferExtra();
+        postResult(src, 'media_current_src', source, extra);
       }
     }
   }
@@ -456,14 +657,25 @@ export class JSInjector {
   };
   XMLHttpRequest.prototype.send = function() {
     var self = this;
-    if (self.__kazumi_url && isVideoUrl(self.__kazumi_url)) {
-      postResult(self.__kazumi_url, 'xhr', 'xhr_intercept');
+    var url = self.__kazumi_url;
+    if (url && isVideoUrl(url)) {
+      var extra = getSnifferExtra();
+      postResult(url, 'xhr', 'xhr_intercept', extra);
     }
     self.addEventListener('load', function() {
       try {
+        var ct = self.getResponseHeader('Content-Type') || '';
+        if (ct && isVideoMimeType(ct)) {
+          var extra = getSnifferExtra();
+          extra.contentType = ct;
+          postResult(url, 'video_content_type', 'xhr_content_type', extra);
+          return;
+        }
         var resp = self.responseText || self.response;
         if (typeof resp === 'string' && isM3u8Content(resp)) {
-          postResult(self.__kazumi_url, 'm3u8_content', 'xhr_content_detect');
+          var extra2 = getSnifferExtra();
+          extra2.contentType = ct;
+          postResult(url, 'm3u8_content', 'xhr_content_detect', extra2);
         }
       } catch(e) {}
     });
@@ -473,14 +685,34 @@ export class JSInjector {
   var origFetch = window.fetch;
   window.fetch = function(input, init) {
     var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    var hasRange = false;
+    if (init && init.headers) {
+      try {
+        if (typeof init.headers === 'object') {
+          var hKeys = Object.keys(init.headers);
+          for (var hk = 0; hk < hKeys.length; hk++) {
+            if (hKeys[hk].toLowerCase() === 'range') { hasRange = true; break; }
+          }
+        }
+      } catch(e) {}
+    }
     if (url && isVideoUrl(url)) {
-      postResult(url, 'fetch', 'fetch_intercept');
+      var extra = getSnifferExtra();
+      if (hasRange) extra.hasRange = true;
+      postResult(url, 'fetch', 'fetch_intercept', extra);
     }
     return origFetch.apply(this, arguments).then(function(response) {
       if (url && response && response.headers) {
         var ct = response.headers.get('content-type') || '';
-        if (ct.indexOf('mpegurl') !== -1 || ct.indexOf('mpegURL') !== -1) {
-          postResult(url, 'm3u8_content', 'fetch_content_type');
+        if (isVideoMimeType(ct)) {
+          var extra = getSnifferExtra();
+          extra.contentType = ct;
+          if (hasRange) extra.hasRange = true;
+          postResult(url, 'video_content_type', 'fetch_content_type', extra);
+        } else if (ct.indexOf('mpegurl') !== -1 || ct.indexOf('mpegURL') !== -1) {
+          var extra2 = getSnifferExtra();
+          extra2.contentType = ct;
+          postResult(url, 'm3u8_content', 'fetch_content_type', extra2);
         }
       }
       return response;
@@ -492,7 +724,8 @@ export class JSInjector {
     Object.defineProperty(HTMLMediaElement.prototype, 'src', {
       set: function(val) {
         if (val && (isVideoUrl(val) || ((val.indexOf('http://') === 0 || val.indexOf('https://') === 0) && !val.startsWith('blob:')))) {
-          postResult(val, 'video_src_setter', 'property_intercept');
+          var extra = getSnifferExtra();
+          postResult(val, 'video_src_setter', 'property_intercept', extra);
         }
         origVideoSrcSetter.set.call(this, val);
       },
@@ -501,7 +734,7 @@ export class JSInjector {
     });
   }
 
-  console.log('[KazumiSniffer] Modern (video/fetch/XHR/m3u8) script injected');
+  console.log('[KazumiSniffer] Modern (video/fetch/XHR/m3u8/iframe/postMessage) script injected');
 })();
 `;
   }
@@ -603,5 +836,21 @@ export class JSInjector {
 
   static validateScriptHash(hash: string): boolean {
     return hash === JSInjector.SCRIPT_HASH
+  }
+
+  static extractHeadersFromJson(headerJson: string): Record<string, string> {
+    let headers: Record<string, string> = {}
+    if (headerJson.length === 0) {
+      return headers
+    }
+    try {
+      let parsed = JSON.parse(headerJson) as Record<string, string>
+      let keys = Object.keys(parsed)
+      for (let i = 0; i < keys.length; i++) {
+        headers[keys[i]] = parsed[keys[i]]
+      }
+    } catch (e) {
+    }
+    return headers
   }
 }

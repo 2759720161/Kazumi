@@ -37,3 +37,9 @@ export class ScoringModifier {
   ruleName: string = ''
   scoreDelta: number = 0
 }
+
+export class RangeRequestVerdict {
+  isRangeVideo: boolean = false
+  matchedRuleName: string = ''
+  detectedContentType: string = ''
+}

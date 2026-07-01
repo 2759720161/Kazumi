@@ -293,7 +293,8 @@ export class VideoSourceResolver {
     let best: SnifferResult | null = null
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
-      if (r.type === 'm3u8' || r.type === 'mp4' || r.type === 'flv' || r.type === 'ts') {
+      if (r.type === 'm3u8' || r.type === 'mp4' || r.type === 'flv' ||
+        r.type === 'ts' || r.type === 'range_video') {
         if (best === null || r.score > best.score) {
           best = r
         }
@@ -302,7 +303,7 @@ export class VideoSourceResolver {
     if (best === null) {
       for (let i = 0; i < results.length; i++) {
         const r = results[i]
-        if (r.type === 'blob') {
+        if (r.type === 'blob' || r.type === 'unknown') {
           if (best === null || r.score > best.score) {
             best = r
           }
@@ -366,31 +367,66 @@ export class VideoSourceResolver {
       options.headers[key] = request.headers[key]
     }
 
-    if (options.referer.length === 0 || options.userAgent.length === 0) {
-      let capturedContext: CapturedRequestContext | null = null
-      for (let i = 0; i < result.candidates.length; i++) {
-        const candidate = result.candidates[i]
-        if (candidate.url === result.videoUrl && candidate.context !== null) {
-          capturedContext = candidate.context
-          break
+    let capturedContext: CapturedRequestContext | null = null
+    for (let i = 0; i < result.candidates.length; i++) {
+      const candidate = result.candidates[i]
+      if (candidate.url === result.videoUrl && candidate.context !== null) {
+        capturedContext = candidate.context
+        break
+      }
+    }
+    if (capturedContext !== null) {
+      if (options.referer.length === 0 && capturedContext.referer.length > 0) {
+        options.referer = capturedContext.referer
+      }
+      if (options.userAgent.length === 0 && capturedContext.userAgent.length > 0) {
+        options.userAgent = capturedContext.userAgent
+      }
+      let ctxHeaderKeys = Object.keys(capturedContext.headers)
+      for (let i = 0; i < ctxHeaderKeys.length; i++) {
+        let key = ctxHeaderKeys[i]
+        if (options.headers[key] === undefined) {
+          options.headers[key] = capturedContext.headers[key]
         }
       }
-      if (capturedContext !== null) {
-        if (options.referer.length === 0 && capturedContext.referer.length > 0) {
-          options.referer = capturedContext.referer
-        }
-        if (options.userAgent.length === 0 && capturedContext.userAgent.length > 0) {
-          options.userAgent = capturedContext.userAgent
-        }
-        let ctxHeaderKeys = Object.keys(capturedContext.headers)
-        for (let i = 0; i < ctxHeaderKeys.length; i++) {
-          let key = ctxHeaderKeys[i]
-          options.headers[key] = capturedContext.headers[key]
+      if (capturedContext.cookies.length > 0) {
+        let existingCookie = options.headers['Cookie']
+        if (existingCookie !== undefined && existingCookie.length > 0) {
+          let merged = this.mergeCookieStrings(existingCookie, capturedContext.cookies)
+          options.headers['Cookie'] = merged
+        } else {
+          options.headers['Cookie'] = capturedContext.cookies
         }
       }
     }
 
     return options
+  }
+
+  private mergeCookieStrings(existing: string, captured: string): string {
+    let cookieMap: Map<string, string> = new Map()
+    let parseCookies = (cookieStr: string) => {
+      let pairs = cookieStr.split(';')
+      for (let i = 0; i < pairs.length; i++) {
+        let pair = pairs[i].trim()
+        if (pair.length === 0) {
+          continue
+        }
+        let eqIdx = pair.indexOf('=')
+        if (eqIdx > 0) {
+          let name = pair.substring(0, eqIdx).trim()
+          let value = pair.substring(eqIdx + 1).trim()
+          cookieMap.set(name, value)
+        }
+      }
+    }
+    parseCookies(existing)
+    parseCookies(captured)
+    let parts: string[] = []
+    cookieMap.forEach((value: string, key: string) => {
+      parts.push(key + '=' + value)
+    })
+    return parts.join('; ')
   }
 
   async buildPlaybackOptionsWithRule(result: VideoSourceResult, request: VideoSourceRequest): Promise<PlaybackOptions> {

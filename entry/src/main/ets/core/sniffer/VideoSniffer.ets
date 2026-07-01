@@ -239,8 +239,15 @@ export class VideoSniffer {
       let url = data['url'] || ''
       let type = data['type'] || ''
       let source = data['source'] || ''
+      let referer = data['referer'] || ''
+      let cookie = data['cookie'] || ''
+      let contentType = data['contentType'] || ''
+      let hasRange = data['hasRange'] === 'true'
       if (!url) {
         return
+      }
+      if (referer.length > 0) {
+        this.currentReferer = referer
       }
       let result: SnifferResult | null = null
       let isVideoElementSource = source.indexOf('video_element') !== -1 ||
@@ -259,10 +266,29 @@ export class VideoSniffer {
       } else {
         result = this.urlFilter.filter(url, source)
       }
+      if (hasRange && result === null) {
+        const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url,
+          contentType.length > 0 ? { 'Content-Type': contentType } : {})
+        if (rangeVerdict.isRangeVideo) {
+          result = new SnifferResult(url, 'range_video', 'unknown', source)
+          result.ruleSource = 'range_request'
+          result.score = SnifferResult.calculateScore('range_video', source, url, 'unknown', this.ruleEvaluator)
+        }
+      }
       if (result !== null) {
         const ctx = new CapturedRequestContext()
         ctx.url = result.url
         ctx.referer = this.currentReferer
+        if (referer.length > 0) {
+          ctx.referer = referer
+        }
+        if (cookie.length > 0) {
+          ctx.cookies = cookie
+        }
+        if (contentType.length > 0) {
+          ctx.contentType = contentType
+        }
+        ctx.hasRangeHeader = hasRange
         result.context = ctx
       }
       this.recordResult(result)

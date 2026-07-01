@@ -1,5 +1,19 @@
-import { SniffRule, WeakCandidateVerdict, PromotePageVerdict, FilterVerdict, ProtocolCapability, ScoringModifier } from './SniffRule'
+import { SniffRule, WeakCandidateVerdict, PromotePageVerdict, FilterVerdict, ProtocolCapability, ScoringModifier, RangeRequestVerdict } from './SniffRule'
 import { NetworkPolicy } from './NetworkPolicy'
+
+const STATIC_EXTENSIONS: string[] = [
+  '.js', '.css', '.html', '.htm', '.jpg', '.jpeg', '.png', '.gif', '.webp',
+  '.svg', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.json', '.xml',
+  '.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.rar'
+]
+
+const VIDEO_MIME_TYPES: string[] = [
+  'mpegurl', 'mpegURL', 'video/mp4', 'video/flv', 'video/x-flv',
+  'video/f4v', 'video/MP2T', 'video/webm', 'video/quicktime',
+  'video/x-msvideo', 'video/x-matroska', 'video/3gpp',
+  'application/x-mpegURL', 'application/vnd.apple.mpegurl',
+  'application/octet-stream'
+]
 
 export class SniffRuleEvaluator {
   private rules: SniffRule[] = []
@@ -215,6 +229,51 @@ export class SniffRuleEvaluator {
       return true
     }
     return false
+  }
+
+  evaluateRangeRequest(url: string, headers: Record<string, string>): RangeRequestVerdict {
+    const verdict = new RangeRequestVerdict()
+    let hasRange = false
+    let contentType = ''
+    const headerKeys = Object.keys(headers)
+    for (let i = 0; i < headerKeys.length; i++) {
+      const key = headerKeys[i]
+      const lowerKey = key.toLowerCase()
+      if (lowerKey === 'range') {
+        hasRange = true
+      }
+      if (lowerKey === 'content-type') {
+        contentType = headers[key]
+      }
+    }
+    if (!hasRange) {
+      return verdict
+    }
+    const lowerUrl = url.toLowerCase()
+    if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
+      return verdict
+    }
+    const cleanUrl = lowerUrl.split('?')[0].split('#')[0]
+    for (let i = 0; i < STATIC_EXTENSIONS.length; i++) {
+      if (cleanUrl.endsWith(STATIC_EXTENSIONS[i])) {
+        return verdict
+      }
+    }
+    if (contentType.length > 0) {
+      const lowerCt = contentType.toLowerCase()
+      for (let i = 0; i < VIDEO_MIME_TYPES.length; i++) {
+        if (lowerCt.indexOf(VIDEO_MIME_TYPES[i].toLowerCase()) !== -1) {
+          verdict.isRangeVideo = true
+          verdict.matchedRuleName = 'range_video_mime'
+          verdict.detectedContentType = contentType
+          return verdict
+        }
+      }
+    }
+    verdict.isRangeVideo = true
+    verdict.matchedRuleName = 'range_header_present'
+    verdict.detectedContentType = contentType
+    return verdict
   }
 
   private matchRule(rule: SniffRule, lowerTarget: string): boolean {

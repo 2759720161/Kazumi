@@ -49,10 +49,15 @@ export class SnifferSessionPool {
 
     this.previousLease = this.activeLease
     this.activeLease = lease
-    this.poolState = 'sniffing'
+    this.poolState = (this.backgroundLease !== null && !this.backgroundLease.released) ? 'concurrent' : 'sniffing'
 
     logger.info('acquire: sessionId=%{public}d origin=%{public}s ruleSourceId=%{public}d',
       lease.sessionId, lease.origin, lease.ruleSourceId)
+
+    if (this.backgroundLease !== null && !this.backgroundLease.released) {
+      logger.info('concurrent_mode: foreground=%{public}d alongside background=%{public}d',
+        lease.sessionId, this.backgroundLease.sessionId)
+    }
 
     return lease
   }
@@ -88,7 +93,7 @@ export class SnifferSessionPool {
 
     lease.released = true
     if (!lease.background) {
-      this.poolState = 'idle'
+      this.poolState = (this.backgroundLease !== null && !this.backgroundLease.released) ? 'preparing' : 'idle'
     }
 
     const cleanupLevel = this.determineCleanupLevel(lease)
@@ -223,6 +228,12 @@ export class SnifferSessionPool {
 
   getPoolState(): string {
     return this.poolState
+  }
+
+  getConcurrencyState(): string {
+    const fg = this.activeLease !== null && !this.activeLease.released ? 'fg=active' : 'fg=idle'
+    const bg = this.backgroundLease !== null && !this.backgroundLease.released ? 'bg=active' : 'bg=idle'
+    return fg + ' ' + bg
   }
 
   private determineCleanupLevel(lease: SnifferLease): WebViewCleanupLevel {

@@ -174,10 +174,6 @@ export class VideoSourceResolver {
   }
 
   async prepareNext(request: VideoSourceRequest): Promise<VideoSourceResult> {
-    if (this.isResolving || this.sniffer.getIsSniffing()) {
-      logger.info('prepareNext skipped: resolver busy')
-      return VideoSourceResult.fail('预解析跳过：当前嗅探仍在运行', 0, 0)
-    }
     if (this.backgroundSniffer.getIsSniffing()) {
       logger.info('prepareNext skipped: background sniffer busy')
       return VideoSourceResult.fail('预解析跳过：后台 worker 正忙', 0, 0)
@@ -768,86 +764,64 @@ export class VideoSourceResolver {
   }
 
   handleInterceptedRequest(url: string, headers: Record<string, string> = {}, workerId: number = 1): void {
-    if ((!this.isResolving && !this.isPreparingNext) || !this.sniffer.getIsSniffing()) {
-      if (workerId !== 2 || !this.backgroundSniffer.getIsSniffing()) {
+    if (workerId === 1) {
+      if (!this.isResolving || this.currentLease === null ||
+        !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
         return
       }
-    }
-    if (workerId === 1 && this.currentLease === null) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease === null) {
-      return
-    }
-    if (workerId === 1 && this.currentLease !== null && !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease !== null &&
-      !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
-      return
+    } else {
+      if (!this.isPreparingNext || this.backgroundLease === null ||
+        !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
+        return
+      }
     }
     logger.debug('handleInterceptedRequest worker=%{public}d: %{public}s', workerId, url.substring(0, 100))
     this.getSnifferForWorker(workerId).handleInterceptedRequest(url, headers)
   }
 
   onWebViewPageBegin(workerId: number = 1): void {
-    if (!this.isResolving && !this.isPreparingNext) {
-      return
-    }
-    if (workerId === 1 && this.currentLease === null) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease === null) {
-      return
-    }
-    if (workerId === 1 && this.currentLease !== null && !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease !== null &&
-      !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
-      return
+    if (workerId === 1) {
+      if (!this.isResolving || this.currentLease === null ||
+        !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
+        return
+      }
+    } else {
+      if (!this.isPreparingNext || this.backgroundLease === null ||
+        !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
+        return
+      }
     }
     logger.debug('onWebViewPageBegin worker=%{public}d', workerId)
     this.getSnifferForWorker(workerId).onPageBegin()
   }
 
   onWebViewPageEnd(workerId: number = 1): void {
-    if (!this.isResolving && !this.isPreparingNext) {
-      return
-    }
-    if (workerId === 1 && this.currentLease === null) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease === null) {
-      return
-    }
-    if (workerId === 1 && this.currentLease !== null && !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease !== null &&
-      !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
-      return
+    if (workerId === 1) {
+      if (!this.isResolving || this.currentLease === null ||
+        !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
+        return
+      }
+    } else {
+      if (!this.isPreparingNext || this.backgroundLease === null ||
+        !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
+        return
+      }
     }
     logger.debug('onWebViewPageEnd worker=%{public}d', workerId)
     this.getSnifferForWorker(workerId).onPageEnd()
   }
 
   handleJsBridgeMessage(message: string, workerId: number = 1): void {
-    if (!this.isResolving && !this.isPreparingNext) {
-      return
-    }
-    if (workerId === 1 && this.currentLease === null) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease === null) {
-      return
-    }
-    if (workerId === 1 && this.currentLease !== null && !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
-      return
-    }
-    if (workerId === 2 && this.backgroundLease !== null &&
-      !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
-      return
+    if (workerId === 1) {
+      if (!this.isResolving || this.currentLease === null ||
+        !this.sessionPool.isLeaseActive(this.currentLease.sessionId)) {
+        return
+      }
+    } else {
+      if (!this.isPreparingNext || this.backgroundLease === null ||
+        !this.sessionPool.isBackgroundLeaseActive(this.backgroundLease.sessionId)) {
+        return
+      }
     }
     logger.debug('handleJsBridgeMessage worker=%{public}d: %{public}s', workerId, message.substring(0, 120))
     this.getSnifferForWorker(workerId).handleJsBridgeMessage(message)

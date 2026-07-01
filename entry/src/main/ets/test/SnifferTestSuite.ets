@@ -557,5 +557,34 @@ export class SnifferTestSuite {
     } else {
       this.assert('Pool-bg-cancel', false, 'failed to acquire background lease')
     }
+
+    let pool5 = new SnifferSessionPool()
+    let fgLease = pool5.acquire(req1)
+    let bgLease = pool5.acquireBackground(req2)
+    this.assert('Pool-concurrent-both-acquired',
+      pool5.isLeaseActive(fgLease.sessionId) && bgLease !== null && pool5.isBackgroundLeaseActive(bgLease.sessionId),
+      'fg=' + fgLease.sessionId + ' bg=' + (bgLease !== null ? bgLease.sessionId : 'null'))
+    this.assert('Pool-concurrent-different-workers',
+      fgLease.workerId === 1 && bgLease !== null && bgLease.workerId === 2,
+      'fgW=' + fgLease.workerId + ' bgW=' + (bgLease !== null ? bgLease.workerId : -1))
+    this.assert('Pool-concurrent-different-sessions',
+      fgLease.sessionId !== bgLease.sessionId,
+      'fgS=' + fgLease.sessionId + ' bgS=' + (bgLease !== null ? bgLease.sessionId : -1))
+    this.assert('Pool-concurrent-state',
+      pool5.getConcurrencyState() === 'fg=active bg=active',
+      'state=' + pool5.getConcurrencyState())
+    pool5.cancelActive('test_fg_cancel')
+    this.assert('Pool-concurrent-fg-cancel-bg-still-active',
+      !pool5.isLeaseActive(fgLease.sessionId) && bgLease !== null && pool5.isBackgroundLeaseActive(bgLease.sessionId),
+      'fg cancelled, bg still active')
+    if (bgLease !== null) {
+      pool5.cancelBackground('test_bg_cancel')
+      this.assert('Pool-concurrent-both-cancelled',
+        !pool5.isLeaseActive(fgLease.sessionId) && !pool5.isBackgroundLeaseActive(bgLease.sessionId),
+        'both cancelled')
+    }
+    this.assert('Pool-concurrent-final-state',
+      pool5.getConcurrencyState() === 'fg=idle bg=idle',
+      'state=' + pool5.getConcurrencyState())
   }
 }

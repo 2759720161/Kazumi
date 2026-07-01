@@ -26,6 +26,7 @@ interface MpvNapiInterface {
 }
 
 interface MpvEventData {
+  ctxId: number
   eventId: number
   errorCode: number
   propertyName: string
@@ -99,10 +100,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
   private hlsAdFilterEnabled: boolean = true
   private segAllowImgEnabled: boolean = true
   private pendingAspectMode: VideoAspectMode | null = null
+  private isReleasing: boolean = false
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
-    if (this.isInitialized && this.ctxId >= 0 && napi !== null && surfaceId.length > 0) {
+    if (this.isInitialized && !this.isReleasing && this.ctxId >= 0 && napi !== null && surfaceId.length > 0) {
       try {
         const err = napi.nativeSetSurfaceId(this.ctxId, surfaceId)
         if (err < 0) {
@@ -131,6 +133,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
   prepare(options: PlaybackOptions): void {
     logger.info('mpv prepare start, urlLength=%{public}d, surfaceId=%{public}s', options.url.length, this.surfaceId)
     this.clearPrepareTimeout()
+    this.isReleasing = false
     this.resetState()
     this.state.stateName = 'creating'
     this.notifyStateChange()
@@ -176,7 +179,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.setAspectMode(this.pendingAspectMode)
       }
 
-      napi.nativeOnEvent(this.ctxId, (event: MpvEventData) => {
+      const eventCtxId = this.ctxId
+      napi.nativeOnEvent(eventCtxId, (event: MpvEventData) => {
+        if (this.isReleasing || this.ctxId !== eventCtxId || event.ctxId !== eventCtxId) {
+          return
+        }
         this.handleMpvEvent(event)
       })
 
@@ -310,15 +317,20 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
   release(): void {
     this.clearPrepareTimeout()
-    if (this.isInitialized && this.ctxId >= 0 && napi !== null) {
+    if (this.isReleasing) {
+      return
+    }
+    if (this.ctxId >= 0 && napi !== null) {
+      const releasingCtxId = this.ctxId
+      this.isReleasing = true
+      this.isInitialized = false
+      this.ctxId = -1
       try {
-        napi.nativeDestroy(this.ctxId)
-        logger.info('mpv instance destroyed, ctxId=%{public}d', this.ctxId)
+        napi.nativeDestroy(releasingCtxId)
+        logger.info('mpv instance destroy scheduled, ctxId=%{public}d', releasingCtxId)
       } catch (_err) {
         logger.error('mpv destroy failed')
       }
-      this.isInitialized = false
-      this.ctxId = -1
     }
     this.resetState()
   }

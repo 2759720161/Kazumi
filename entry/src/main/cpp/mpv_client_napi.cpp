@@ -1,5 +1,6 @@
 #include <cstring>
 #include <string>
+#include <thread>
 
 #include "mpv/client.h"
 #include "mpv_client_wrapper.h"
@@ -165,7 +166,10 @@ static napi_value NativeDestroy(napi_env env, napi_callback_info info)
     napi_get_value_int64(env, args[0], &ctxId);
 
     mpv_event_handler_destroy();
-    mpv_wrapper_destroy(ctxId);
+
+    std::thread([ctxId]() {
+        mpv_wrapper_destroy(ctxId);
+    }).detach();
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);

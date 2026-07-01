@@ -33,6 +33,8 @@ export struct PlayerSurface {
   aboutToDisappear(): void {
     if (this.hasEngine && this.playerEngine !== null) {
       this.playerEngine.release();
+      this.playerEngine = null;
+      this.hasEngine = false;
     }
   }
 
@@ -182,6 +184,7 @@ export struct PlayerSurface {
       logger.info('Video URL changed, re-preparing player');
       if (this.hasEngine && this.playerEngine !== null) {
         this.playerEngine.release();
+        this.playerEngine = null;
         this.hasEngine = false;
       }
       this.initPlayer();

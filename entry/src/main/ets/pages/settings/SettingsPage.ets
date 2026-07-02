@@ -268,6 +268,12 @@ export struct SettingsPage {
 
         this.ItemDivider()
 
+        this.NavigationItem($r('sys.symbol.play_circle'), '本地播放', '播放本地视频并加载弹幕', '', () => {
+          router.pushUrl({ url: 'pages/player/LocalPlayerPage' })
+        })
+
+        this.ItemDivider()
+
         this.NavigationItem($r('sys.symbol.clock'), '历史记录', '查看播放历史', '', () => {
           router.pushUrl({ url: 'pages/history/HistoryPage' })
         })

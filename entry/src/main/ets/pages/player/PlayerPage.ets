@@ -25,9 +25,12 @@ import { CollectType } from '../../models/CollectType'
 import { AnimeItem } from '../../models/AnimeItem'
 import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 
+import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
+import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker'
 import { Logger } from '../../utils/Logger'
 import { router, window } from '@kit.ArkUI'
 import { audio } from '@kit.AudioKit'
+import { common } from '@kit.AbilityKit'
 
 import { webview } from '@kit.ArkWeb'
 import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
@@ -802,6 +805,10 @@ export struct PlayerPage {
             this.toggleDanmaku()
             this.showMoreMenu = false
           })
+          this.MoreMenuItem('加载本地弹幕', () => {
+            this.pickAndLoadLocalDanmaku()
+            this.showMoreMenu = false
+          })
           this.MoreMenuItem('弹幕匹配', () => {
             this.openDanmakuMatchPanel()
             this.showMoreMenu = false
@@ -815,6 +822,10 @@ export struct PlayerPage {
           })
 
         } else {
+          this.MoreMenuItem('加载本地弹幕', () => {
+            this.pickAndLoadLocalDanmaku()
+            this.showMoreMenu = false
+          })
           this.MoreMenuItem('弹幕匹配', () => {
             this.openDanmakuMatchPanel()
             this.showMoreMenu = false
@@ -2359,6 +2370,33 @@ export struct PlayerPage {
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
     this.selectedPanelTab = 1
+  }
+
+  private async pickAndLoadLocalDanmaku(): Promise<void> {
+    try {
+      const context = getContext(this) as common.UIAbilityContext
+      const fileResult: LocalFileResult | null = await LocalFilePicker.pickDanmakuFile(context)
+      if (fileResult === null) {
+        return
+      }
+      const parseResult: LocalDanmakuParseResult = DanmakuFileParser.parse(fileResult.fileName, fileResult.content)
+      if (parseResult.errorMessage.length > 0) {
+        this.showHudText(parseResult.errorMessage)
+        return
+      }
+      if (this.danmakuManager !== null) {
+        if (this.danmakuManager.hasDanmakuData()) {
+          this.danmakuManager.appendLocalDanmaku(parseResult.items)
+          this.showHudText('追加 ' + parseResult.items.length + ' 条本地弹幕')
+        } else {
+          this.danmakuManager.loadLocalDanmaku(parseResult.items)
+          this.showHudText('加载 ' + parseResult.items.length + ' 条本地弹幕')
+        }
+      }
+    } catch (err) {
+      logger.error('加载本地弹幕失败: %{public}s', err instanceof Error ? err.message : String(err))
+      this.showHudText('加载本地弹幕失败')
+    }
   }
 
   private async openDanmakuMatchPanel(): Promise<void> {

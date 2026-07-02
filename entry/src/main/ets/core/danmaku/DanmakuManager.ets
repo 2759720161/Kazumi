@@ -167,6 +167,49 @@ export class DanmakuManager {
     }
   }
 
+  loadLocalDanmaku(items: DanmakuItem[]): void {
+    if (!this.isDanmakuEnabled || items.length === 0) {
+      return
+    }
+    this.clearCurrentDanmaku()
+    this.currentEpisodeKey = ''
+    this.onDanmakuLoaded(items)
+    this.stats.matchSource = 'local-file'
+    this.stats.loadedCount = items.length
+    this.failureReason = ''
+    logger.info('本地弹幕加载: count=%{public}d', items.length)
+  }
+
+  appendLocalDanmaku(items: DanmakuItem[]): void {
+    if (!this.isDanmakuEnabled || items.length === 0) {
+      return
+    }
+    const merged: DanmakuItem[] = []
+    let i = 0
+    let j = 0
+    while (i < this.currentRawDanmaku.length && j < items.length) {
+      if (this.currentRawDanmaku[i].timeMs <= items[j].timeMs) {
+        merged.push(this.currentRawDanmaku[i])
+        i++
+      } else {
+        merged.push(items[j])
+        j++
+      }
+    }
+    while (i < this.currentRawDanmaku.length) {
+      merged.push(this.currentRawDanmaku[i])
+      i++
+    }
+    while (j < items.length) {
+      merged.push(items[j])
+      j++
+    }
+    this.onDanmakuLoaded(merged)
+    this.stats.loadedCount = merged.length
+    logger.info('本地弹幕追加合并: online=%{public}d, local=%{public}d, total=%{public}d',
+      this.currentRawDanmaku.length, items.length, merged.length)
+  }
+
   async saveManualMapping(bangumiId: number, episodeNo: number, animeName: string,
     animeId: number, episodeId: number, animeTitle: string, episodeTitle: string,
     sourceId: number = -1, episodeUrl: string = ''): Promise<void> {

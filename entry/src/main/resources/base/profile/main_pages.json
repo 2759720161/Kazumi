@@ -11,6 +11,7 @@
     "pages/settings/DanmakuSettingsPage",
     "pages/settings/DanmakuBlockRulesPage",
     "pages/settings/RuleDebugPage",
-    "pages/settings/RuleShopPage"
+    "pages/settings/RuleShopPage",
+    "pages/player/LocalPlayerPage"
   ]
 }

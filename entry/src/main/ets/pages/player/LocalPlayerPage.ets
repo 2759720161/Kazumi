@@ -8,6 +8,9 @@ import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker
 import { DanmakuSettingsPanelContent } from '../../components/player/DanmakuSettingsPanel'
 import { DanmakuSettingsSidePanel } from '../../components/player/DanmakuSettingsSidePanel'
 import { AspectModePanel } from '../../components/player/AspectModePanel'
+import { LocalVideoHistoryStore } from '../../store/LocalVideoHistoryStore'
+import { LocalVideoRecord } from '../../models/LocalVideoRecord'
+import { DanmakuItem } from '../../models/DanmakuItem'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
 import { router, window } from '@kit.ArkUI'
@@ -16,9 +19,12 @@ import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
 
 const logger = new Logger('LocalPlayerPage')
 
+const HISTORY_SAVE_INTERVAL_MS: number = 5000
+
 @Entry
 @Component
 export struct LocalPlayerPage {
+  showBackButton: boolean = true
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('danmakuSettingsVersion') @Watch('onDanmakuSettingsVersionChanged') danmakuSettingsVersion: number = 0
@@ -48,10 +54,21 @@ export struct LocalPlayerPage {
   @State showDanmakuSettingsPanel: boolean = false
   @State showDanmakuSettingsSheet: boolean = false
   @State danmakuSettingsOpenVersion: number = 0
+  @State localHistory: LocalVideoRecord[] = []
+  @State showDanmakuLoadDialog: boolean = false
+  @State showDanmakuOffsetPanel: boolean = false
+  @State danmakuOffsetMs: number = 0
+  @State danmakuLoadedFormat: string = ''
+  @State danmakuLoadedCount: number = 0
+  @State pendingDanmakuItems: DanmakuItem[] = []
+  @State pendingDanmakuFileName: string = ''
+  @State pendingDanmakuFormat: string = ''
   private controlHideTimer: number = -1
   private hudTimer: number = -1
   private wasPlayingBeforeDrag: boolean = false
-  private audioManager: Object | null = null
+  private lastHistorySaveMs: number = 0
+  private historySeekMs: number = -1
+  private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
 
   aboutToAppear(): void {
     this.danmakuManager = new DanmakuManager()
@@ -61,16 +78,29 @@ export struct LocalPlayerPage {
       }
     })
 
-    const params = router.getParams() as Record<string, Object>
-    if (params !== null) {
-      if (params['videoUri'] !== undefined) this.videoUri = params['videoUri'] as string
-      if (params['videoFileName'] !== undefined) this.videoFileName = params['videoFileName'] as string
+    const rawParams = router.getParams()
+    if (rawParams !== null && rawParams !== undefined) {
+      const params = rawParams as Record<string, Object>
+      const videoUri = params['videoUri']
+      const videoFileName = params['videoFileName']
+      const historyPositionMs = params['historyPositionMs']
+
+      if (typeof videoUri === 'string') this.videoUri = videoUri
+      if (typeof videoFileName === 'string') this.videoFileName = videoFileName
+      if (typeof historyPositionMs === 'number') this.historySeekMs = historyPositionMs
     }
 
     if (this.videoUri.length > 0) {
       const options = new PlaybackOptions()
       options.url = this.videoUri
+      if (this.historySeekMs > 0) {
+        options.startPositionMs = this.historySeekMs
+        this.historySeekMs = -1
+        this.showHudText('继续播放 ' + this.formatTime(options.startPositionMs))
+      }
       this.playbackOptions = options
+    } else {
+      this.loadLocalHistory()
     }
 
     this.startAutoHideTimer()
@@ -80,6 +110,9 @@ export struct LocalPlayerPage {
   aboutToDisappear(): void {
     this.pauseAutoHideTimer()
     this.clearHudTimer()
+    if (this.videoUri.length > 0) {
+      this.saveLocalHistory()
+    }
     if (this.danmakuManager !== null) {
       this.danmakuManager.release()
       this.danmakuManager = null
@@ -98,6 +131,190 @@ export struct LocalPlayerPage {
   }
 
   build() {
+    if (this.videoUri.length === 0) {
+      this.HomeState()
+    } else {
+      this.PlayerState()
+    }
+  }
+
+  @Builder
+  HomeState(): void {
+    Column() {
+      Column()
+        .width('100%')
+        .height(getEffectiveTopSafeHeight(this.topSafeHeight))
+        .backgroundColor($r('app.color.page_background'))
+
+      Row() {
+        if (this.showBackButton) {
+          SymbolGlyph($r('sys.symbol.chevron_left'))
+            .fontSize(24)
+            .fontColor([$r('app.color.text_primary')])
+            .onClick(() => {
+              router.back()
+            })
+        }
+        Text('本地播放')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: this.showBackButton ? 10 : 4 })
+        Blank()
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height(56)
+      .padding({ left: 16, right: 16 })
+
+      Scroll() {
+        Column() {
+          Column() {
+            SymbolGlyph($r('sys.symbol.play_circle'))
+              .fontSize(48)
+              .fontColor([$r('app.color.accent_blue')])
+              .margin({ bottom: 12 })
+            Text('选择本地视频')
+              .fontSize(18)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .margin({ bottom: 6 })
+            Text('MP4 / MKV / AVI / WEBM / TS / FLV / MOV / WMV / 3GP')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .width('100%')
+          .padding({ top: 40, bottom: 40 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+          .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+          .onClick(() => {
+            this.pickVideoFile()
+          })
+
+          Column() {
+            Row() {
+              Text('最近播放')
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+              Blank()
+                .layoutWeight(1)
+              if (this.localHistory.length > 0) {
+                Text('清空')
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+                  .onClick(() => {
+                    this.clearAllHistory()
+                  })
+              }
+            }
+            .width('100%')
+            .padding({ left: 4, right: 4, top: 18, bottom: 8 })
+
+            if (this.localHistory.length === 0) {
+              Column() {
+                Text('暂无本地播放记录')
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .width('100%')
+              .height(80)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .borderRadius(12)
+              .backgroundColor($r('app.color.card_background'))
+              .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+            } else {
+              Column() {
+                ForEach(this.localHistory, (record: LocalVideoRecord) => {
+                  this.HistoryItemRow(record)
+                }, (record: LocalVideoRecord) => 'local_history_' + record.id)
+              }
+              .width('100%')
+              .borderRadius(12)
+              .clip(true)
+              .backgroundColor($r('app.color.card_background'))
+              .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+            }
+          }
+          .width('100%')
+          .margin({ top: 8 })
+
+          Column() {
+            Text('可加载弹幕文件：B站 XML / 弹弹 JSON / ASS（以弹幕形式显示）')
+              .fontSize(12)
+              .fontColor($r('app.color.text_hint'))
+          }
+          .width('100%')
+          .padding({ top: 16, bottom: 8 })
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16 })
+      }
+      .layoutWeight(1)
+      .edgeEffect(EdgeEffect.Spring)
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.page_background'))
+  }
+
+  @Builder
+  HistoryItemRow(record: LocalVideoRecord): void {
+    Row() {
+      Column() {
+        Text(record.fileName)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        Row() {
+          Text(this.formatTime(record.positionMs) + ' / ' + this.formatTime(record.durationMs))
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+          if (record.danmakuFileName.length > 0) {
+            Text('  弹幕: ' + record.danmakuFileName)
+              .fontSize(11)
+              .fontColor($r('app.color.text_hint'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .constraintSize({ maxWidth: 160 })
+          }
+        }
+        .width('100%')
+        .margin({ top: 3 })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
+    }
+    .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
+    .onClick(() => {
+      this.playFromHistory(record)
+    })
+    .gesture(
+      LongPressGesture()
+        .onAction(() => {
+          this.deleteHistoryRecord(record.id)
+        })
+    )
+  }
+
+  @Builder
+  PlayerState(): void {
     Stack() {
       Column() {
         if (!this.isFullScreen) {
@@ -129,6 +346,30 @@ export struct LocalPlayerPage {
       },
       onDisappear: () => {
         this.showDanmakuSettingsSheet = false
+        this.startAutoHideTimer()
+      }
+    })
+    .bindSheet($$this.showDanmakuLoadDialog, this.buildDanmakuLoadDialog, {
+      height: 280,
+      showClose: false,
+      dragBar: false,
+      onAppear: () => {
+        this.pauseAutoHideTimer()
+      },
+      onDisappear: () => {
+        this.showDanmakuLoadDialog = false
+        this.startAutoHideTimer()
+      }
+    })
+    .bindSheet($$this.showDanmakuOffsetPanel, this.buildDanmakuOffsetPanel, {
+      height: 240,
+      showClose: false,
+      dragBar: true,
+      onAppear: () => {
+        this.pauseAutoHideTimer()
+      },
+      onDisappear: () => {
+        this.showDanmakuOffsetPanel = false
         this.startAutoHideTimer()
       }
     })
@@ -631,18 +872,37 @@ export struct LocalPlayerPage {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
-
-        if (this.danmakuFileName.length > 0) {
-          Text(this.danmakuFileName)
-            .fontSize(12)
-            .fontColor($r('app.color.text_hint'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .margin({ left: 8 })
-        }
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12 })
+
+      if (this.danmakuFileName.length > 0) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.doc_text'))
+            .fontSize(16)
+            .fontColor([$r('app.color.accent_blue')])
+          Text(this.danmakuFileName)
+            .fontSize(13)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+            .margin({ left: 6 })
+          Text(this.danmakuLoadedCount + ' 条')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .margin({ left: 4 })
+          if (this.danmakuOffsetMs !== 0) {
+            Text(this.formatOffset(this.danmakuOffsetMs))
+              .fontSize(11)
+              .fontColor($r('app.color.status_warning'))
+              .margin({ left: 4 })
+          }
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8 })
+        .alignItems(VerticalAlign.Center)
+      }
 
       Row() {
         Button('选择视频')
@@ -662,9 +922,22 @@ export struct LocalPlayerPage {
           .backgroundColor($r('app.color.accent_blue'))
           .fontColor(Color.White)
           .borderRadius(18)
+          .margin({ right: 8 })
           .onClick(() => {
             this.pickAndLoadLocalDanmaku()
           })
+
+        if (this.danmakuFileName.length > 0) {
+          Button('校准')
+            .height(36)
+            .fontSize(14)
+            .backgroundColor($r('app.color.button_ghost_bg'))
+            .fontColor($r('app.color.text_primary'))
+            .borderRadius(18)
+            .onClick(() => {
+              this.showDanmakuOffsetPanel = true
+            })
+        }
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 8, bottom: 16 })
@@ -698,6 +971,12 @@ export struct LocalPlayerPage {
           this.openDanmakuSettings()
           this.showMoreMenu = false
         })
+        if (this.danmakuFileName.length > 0) {
+          this.MoreMenuItem('弹幕时间校准', () => {
+            this.showDanmakuOffsetPanel = true
+            this.showMoreMenu = false
+          })
+        }
         this.MoreMenuItem('视频比例', () => {
           this.showAspectModePanel = true
         })
@@ -788,6 +1067,135 @@ export struct LocalPlayerPage {
     })
   }
 
+  @Builder
+  buildDanmakuLoadDialog() {
+    Column() {
+      Text('弹幕已存在')
+        .fontSize(17)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .margin({ top: 24, bottom: 4 })
+      Text('当前已有 ' + this.danmakuLoadedCount + ' 条弹幕，如何处理新加载的 ' + this.pendingDanmakuItems.length + ' 条弹幕？')
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .margin({ bottom: 20 })
+        .padding({ left: 24, right: 24 })
+
+      Row({ space: 8 }) {
+        Button('取消')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(15)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(12)
+          .onClick(() => {
+            this.showDanmakuLoadDialog = false
+            this.pendingDanmakuItems = []
+            this.pendingDanmakuFileName = ''
+            this.pendingDanmakuFormat = ''
+          })
+
+        Button('追加')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(15)
+          .backgroundColor($r('app.color.accent_blue'))
+          .fontColor(Color.White)
+          .borderRadius(12)
+          .onClick(() => {
+            this.applyPendingDanmaku(true)
+            this.showDanmakuLoadDialog = false
+          })
+
+        Button('替换')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(15)
+          .backgroundColor($r('app.color.status_error'))
+          .fontColor(Color.White)
+          .borderRadius(12)
+          .onClick(() => {
+            this.applyPendingDanmaku(false)
+            this.showDanmakuLoadDialog = false
+          })
+      }
+      .width('100%')
+      .padding({ left: 20, right: 20, bottom: 20 })
+    }
+    .width('100%')
+  }
+
+  @Builder
+  buildDanmakuOffsetPanel() {
+    Column() {
+      Text('弹幕时间校准')
+        .fontSize(17)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .margin({ top: 20, bottom: 8 })
+
+      Text('当前偏移: ' + this.formatOffset(this.danmakuOffsetMs))
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .margin({ bottom: 16 })
+
+      Row({ space: 8 }) {
+        Button('-5s')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(14)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(10)
+          .onClick(() => this.adjustDanmakuOffset(-5000))
+        Button('-1s')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(14)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(10)
+          .onClick(() => this.adjustDanmakuOffset(-1000))
+        Button('重置')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(14)
+          .backgroundColor($r('app.color.card_background'))
+          .fontColor($r('app.color.text_secondary'))
+          .borderRadius(10)
+          .onClick(() => this.resetDanmakuOffset())
+        Button('+1s')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(14)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(10)
+          .onClick(() => this.adjustDanmakuOffset(1000))
+        Button('+5s')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(14)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(10)
+          .onClick(() => this.adjustDanmakuOffset(5000))
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, bottom: 20 })
+    }
+    .width('100%')
+  }
+
   private handlePlayerState(state: PlayerState): void {
     this.isPlaying = state.playing
     this.positionMs = state.positionMs
@@ -798,6 +1206,14 @@ export struct LocalPlayerPage {
 
     if (this.danmakuManager !== null) {
       this.danmakuManager.onPlayerStateUpdate(state)
+    }
+
+    if (this.videoUri.length > 0 && this.durationMs > 0) {
+      const now = Date.now()
+      if (now - this.lastHistorySaveMs >= HISTORY_SAVE_INTERVAL_MS) {
+        this.lastHistorySaveMs = now
+        this.saveLocalHistory()
+      }
     }
   }
 
@@ -895,12 +1311,13 @@ export struct LocalPlayerPage {
 
   private applyAspectMode(mode: VideoAspectMode): void {
     this.currentAspectMode = mode
+    PreferencesStore.getInstance().setNumber('videoAspectMode', mode).catch((_err: void) => {})
   }
 
   private async loadAspectModePreference(): Promise<void> {
     try {
       const prefs = PreferencesStore.getInstance()
-      const savedMode = await prefs.getNumber('aspectMode', VideoAspectMode.contain)
+      const savedMode = await prefs.getNumber('videoAspectMode', VideoAspectMode.contain)
       this.currentAspectMode = savedMode as VideoAspectMode
     } catch (_err) {
       this.currentAspectMode = VideoAspectMode.contain
@@ -955,23 +1372,54 @@ export struct LocalPlayerPage {
       }
       const parseResult: LocalDanmakuParseResult = DanmakuFileParser.parse(fileResult.fileName, fileResult.content)
       if (parseResult.errorMessage.length > 0) {
-        this.showHudText(parseResult.errorMessage)
+        this.showHudText('弹幕解析失败: ' + parseResult.errorMessage)
         return
       }
-      this.danmakuFileName = fileResult.fileName
-      if (this.danmakuManager !== null) {
-        if (this.danmakuManager.hasDanmakuData()) {
-          this.danmakuManager.appendLocalDanmaku(parseResult.items)
-          this.showHudText('追加 ' + parseResult.items.length + ' 条本地弹幕')
-        } else {
+      if (parseResult.items.length === 0) {
+        this.showHudText('弹幕文件为空')
+        return
+      }
+
+      if (this.danmakuManager !== null && this.danmakuManager.hasDanmakuData()) {
+        this.pendingDanmakuItems = parseResult.items
+        this.pendingDanmakuFileName = fileResult.fileName
+        this.pendingDanmakuFormat = this.formatFormatLabel(parseResult.format)
+        this.showDanmakuLoadDialog = true
+      } else {
+        this.danmakuFileName = fileResult.fileName
+        this.danmakuLoadedFormat = this.formatFormatLabel(parseResult.format)
+        this.danmakuLoadedCount = parseResult.items.length
+        this.danmakuOffsetMs = 0
+        if (this.danmakuManager !== null) {
           this.danmakuManager.loadLocalDanmaku(parseResult.items)
-          this.showHudText('加载 ' + parseResult.items.length + ' 条本地弹幕')
         }
+        this.showHudText('加载 ' + parseResult.items.length + ' 条弹幕 (' + this.danmakuLoadedFormat + ')')
       }
     } catch (err) {
       logger.error('加载本地弹幕失败: %{public}s', err instanceof Error ? err.message : String(err))
       this.showHudText('加载本地弹幕失败')
     }
+  }
+
+  private applyPendingDanmaku(append: boolean): void {
+    if (this.danmakuManager !== null) {
+      if (append) {
+        this.danmakuManager.appendLocalDanmaku(this.pendingDanmakuItems)
+        this.danmakuLoadedCount += this.pendingDanmakuItems.length
+        this.showHudText('追加 ' + this.pendingDanmakuItems.length + ' 条弹幕')
+      } else {
+        this.danmakuOffsetMs = 0
+        this.danmakuManager.resetDanmakuOffset()
+        this.danmakuManager.loadLocalDanmaku(this.pendingDanmakuItems)
+        this.danmakuLoadedCount = this.pendingDanmakuItems.length
+        this.showHudText('替换为 ' + this.pendingDanmakuItems.length + ' 条弹幕')
+      }
+      this.danmakuFileName = this.pendingDanmakuFileName
+      this.danmakuLoadedFormat = this.pendingDanmakuFormat
+    }
+    this.pendingDanmakuItems = []
+    this.pendingDanmakuFileName = ''
+    this.pendingDanmakuFormat = ''
   }
 
   private async pickVideoFile(): Promise<void> {
@@ -1021,6 +1469,122 @@ export struct LocalPlayerPage {
       clearTimeout(this.hudTimer)
       this.hudTimer = -1
     }
+  }
+
+  private adjustDanmakuOffset(deltaMs: number): void {
+    if (this.danmakuManager !== null) {
+      this.danmakuManager.applyDanmakuOffset(deltaMs)
+      this.danmakuOffsetMs = this.danmakuManager.getCurrentOffsetMs()
+      this.showHudText('弹幕偏移 ' + this.formatOffset(this.danmakuOffsetMs))
+    }
+  }
+
+  private resetDanmakuOffset(): void {
+    if (this.danmakuManager !== null) {
+      this.danmakuManager.resetDanmakuOffset()
+      this.danmakuOffsetMs = 0
+      this.showHudText('弹幕偏移已重置')
+    }
+  }
+
+  private async saveLocalHistory(): Promise<void> {
+    if (this.videoFileName.length === 0) {
+      return
+    }
+    try {
+      const record = new LocalVideoRecord()
+      record.fileUri = this.videoUri
+      record.fileName = this.videoFileName
+      record.fileSize = 0
+      record.durationMs = this.durationMs
+      record.positionMs = this.positionMs
+      record.lastPlayedAt = Date.now()
+      record.danmakuFileName = this.danmakuFileName
+      record.danmakuUri = ''
+      record.danmakuOffsetMs = this.danmakuOffsetMs
+      record.danmakuFormat = this.danmakuLoadedFormat
+      record.danmakuCount = this.danmakuLoadedCount
+      record.createdAt = Date.now()
+      await this.localVideoHistoryStore.upsert(record)
+    } catch (err) {
+      logger.warn('保存本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private async loadLocalHistory(): Promise<void> {
+    try {
+      this.localHistory = await this.localVideoHistoryStore.getAll()
+    } catch (err) {
+      logger.warn('加载本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
+      this.localHistory = []
+    }
+  }
+
+  private async playFromHistory(record: LocalVideoRecord): Promise<void> {
+    if (record.fileUri.length > 0) {
+      this.videoUri = record.fileUri
+      this.videoFileName = record.fileName
+      const options = new PlaybackOptions()
+      options.url = this.videoUri
+      if (record.positionMs > 0) {
+        options.startPositionMs = record.positionMs
+        this.showHudText('继续播放 ' + this.formatTime(record.positionMs))
+      }
+      this.playbackOptions = options
+      this.danmakuFileName = record.danmakuFileName
+      this.danmakuOffsetMs = record.danmakuOffsetMs
+      this.danmakuLoadedFormat = record.danmakuFormat
+      this.danmakuLoadedCount = record.danmakuCount
+      this.startAutoHideTimer()
+    } else {
+      this.showHudText('文件不可用，请重新选择')
+    }
+  }
+
+  private async deleteHistoryRecord(id: number): Promise<void> {
+    try {
+      await this.localVideoHistoryStore.deleteById(id)
+      this.localHistory = await this.localVideoHistoryStore.getAll()
+      this.showHudText('已删除记录')
+    } catch (err) {
+      logger.warn('删除本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private async clearAllHistory(): Promise<void> {
+    try {
+      await this.localVideoHistoryStore.clearAll()
+      this.localHistory = []
+      this.showHudText('已清空所有记录')
+    } catch (err) {
+      logger.warn('清空本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private formatOffset(ms: number): string {
+    if (ms === 0) {
+      return '0s'
+    }
+    const sign = ms > 0 ? '+' : ''
+    const absMs = Math.abs(ms)
+    if (absMs >= 1000) {
+      const seconds = absMs / 1000
+      return sign + (seconds % 1 === 0 ? seconds.toFixed(0) : seconds.toFixed(1)) + 's'
+    }
+    return sign + absMs + 'ms'
+  }
+
+  private formatFormatLabel(format: string): string {
+    if (format === 'bilibili-xml') {
+      return 'B站 XML'
+    }
+    if (format === 'dandan-json') {
+      return '弹弹 JSON'
+    }
+    if (format === 'ass') {
+      return 'ASS'
+    }
+    return format.toUpperCase()
   }
 
   private formatTime(ms: number): string {

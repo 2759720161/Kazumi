@@ -54,6 +54,7 @@ export struct SettingsPage {
   @StorageLink('home_compact_mode') compactMode: boolean = false
   @StorageLink(RULE_SOURCE_VERSION_KEY) @Watch('onRuleSourceVersionChange') ruleSourceVersion: number = 0
   @State updatableCount: number = 0
+  private updateCheckToken: number = 0
 
   aboutToAppear(): void {
     this.loadSettings()
@@ -264,12 +265,6 @@ export struct SettingsPage {
           normal: {
             .backgroundColor(Color.Transparent)
           }
-        })
-
-        this.ItemDivider()
-
-        this.NavigationItem($r('sys.symbol.play_circle'), '本地播放', '播放本地视频并加载弹幕', '', () => {
-          router.pushUrl({ url: 'pages/player/LocalPlayerPage' })
         })
 
         this.ItemDivider()
@@ -805,6 +800,8 @@ export struct SettingsPage {
   }
 
   private async loadSettings(): Promise<void> {
+    const token = ++this.updateCheckToken
+    this.updatableCount = 0
     try {
       this.rules = await this.ruleSourceStore.getAll()
       this.ruleCount = this.rules.length
@@ -836,12 +833,26 @@ export struct SettingsPage {
       await credStore.init()
       this.isDanmakuCredentialConfigured = credStore.hasCredentials()
 
-      RuleCatalogService.countUpdatableRules().then((count: number) => {
-        this.updatableCount = count
-      }).catch(() => {})
+      this.refreshUpdatableCount(token)
     } catch (err) {
+      if (token === this.updateCheckToken) {
+        this.updatableCount = 0
+      }
       logger.error('Load settings failed: %{public}s', JSON.stringify(err))
     }
+  }
+
+  private refreshUpdatableCount(token: number): void {
+    RuleCatalogService.countUpdatableRules().then((count: number) => {
+      if (token === this.updateCheckToken) {
+        this.updatableCount = count
+      }
+    }).catch((err: Error) => {
+      if (token === this.updateCheckToken) {
+        this.updatableCount = 0
+      }
+      logger.warn('Refresh rule update badge failed: %{public}s', err instanceof Error ? err.message : String(err))
+    })
   }
 
   private handleVersionTap(): void {

@@ -1,5 +1,6 @@
 import { picker, fileIo } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
+import { util } from '@kit.ArkTS'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('LocalFilePicker')
@@ -7,11 +8,17 @@ const logger = new Logger('LocalFilePicker')
 export class LocalFileResult {
   fileName: string = ''
   content: string = ''
+  fileSize: number = 0
 }
 
 export class LocalVideoResult {
   fileName: string = ''
   uri: string = ''
+}
+
+export class TextFileReadResult {
+  content: string = ''
+  fileSize: number = 0
 }
 
 export class LocalFilePicker {
@@ -28,16 +35,17 @@ export class LocalFilePicker {
 
       const uri = uris[0]
       const fileName = LocalFilePicker.getFileNameFromUri(uri)
-      const content = LocalFilePicker.readTextFile(uri)
-      if (content.length === 0) {
+      const readResult = LocalFilePicker.readTextFile(uri)
+      if (readResult.content.length === 0) {
         logger.warn('弹幕文件内容为空: %{public}s', fileName)
         return null
       }
 
-      logger.info('选择弹幕文件: %{public}s, size=%{public}d', fileName, content.length)
+      logger.info('选择弹幕文件: %{public}s, size=%{public}d', fileName, readResult.content.length)
       const result = new LocalFileResult()
       result.fileName = fileName
-      result.content = content
+      result.content = readResult.content
+      result.fileSize = readResult.fileSize
       return result
     } catch (err) {
       logger.error('选择弹幕文件失败: %{public}s', err instanceof Error ? err.message : String(err))
@@ -69,25 +77,35 @@ export class LocalFilePicker {
     }
   }
 
-  private static readTextFile(uri: string): string {
+  private static readTextFile(uri: string): TextFileReadResult {
+    const emptyResult = new TextFileReadResult()
+    emptyResult.content = ''
+    emptyResult.fileSize = 0
     try {
       const file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY)
       try {
         const stat = fileIo.statSync(file.fd)
+        if (stat.size > 20 * 1024 * 1024) {
+          logger.warn('文件过大: %{public}d bytes', stat.size)
+          const oversizedResult = new TextFileReadResult()
+          oversizedResult.content = ''
+          oversizedResult.fileSize = stat.size
+          return oversizedResult
+        }
         const buf = new ArrayBuffer(stat.size)
         fileIo.readSync(file.fd, buf)
-        const arr = new Uint8Array(buf)
-        let result = ''
-        for (let i = 0; i < arr.length; i++) {
-          result += String.fromCharCode(arr[i])
-        }
+        const decoder = util.TextDecoder.create('utf-8')
+        const content = decoder.decodeToString(new Uint8Array(buf))
+        const result = new TextFileReadResult()
+        result.content = content
+        result.fileSize = stat.size
         return result
       } finally {
         fileIo.closeSync(file)
       }
     } catch (err) {
       logger.error('读取文件失败: %{public}s', err instanceof Error ? err.message : String(err))
-      return ''
+      return emptyResult
     }
   }
 

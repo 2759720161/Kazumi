@@ -144,6 +144,18 @@ export class RdbMigration {
           'INTEGER NOT NULL DEFAULT 0');
         logger.info('Migration v6: added sort_order to rule_source');
       }
+    },
+    {
+      version: 7,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await rdbManager.executeSql(
+          RdbSchema.getCreateLocalVideoHistoryTable()
+        );
+        await rdbManager.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`
+        );
+        logger.info('Migration v7: created local_video_history table');
+      }
     }
   ];
 

@@ -1,6 +1,7 @@
 import { HomePage } from './home/HomePage'
 import { TimelinePage } from './timeline/TimelinePage'
 import { FavoritePage } from './favorite/FavoritePage'
+import { LocalPlayerPage } from './player/LocalPlayerPage'
 import { SettingsPage } from './settings/SettingsPage'
 import {
   HdsTabs,
@@ -45,6 +46,11 @@ struct Index {
         .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '片库'))
 
         TabContent() {
+          LocalPlayerPage({ showBackButton: false })
+        }
+        .tabBar(this.bottomTabStyle($r('sys.symbol.folder'), $r('sys.symbol.folder_fill'), '本地'))
+
+        TabContent() {
           SettingsPage()
         }
         .tabBar(this.bottomTabStyle($r('sys.symbol.person'), $r('sys.symbol.person_fill'), '我的'))
@@ -84,9 +90,9 @@ struct Index {
   private buildHdsTabFloatingStyle(): HdsTabsFloatingStyle {
     return {
       barWidth: {
-        smallWidth: 280,
-        mediumWidth: 320,
-        largeWidth: 360
+        smallWidth: 332,
+        mediumWidth: 380,
+        largeWidth: 430
       },
       barBottomMargin: this.bottomSafeHeight + this.getHdsTabBarBottomMargin(),
       gradientMask: {

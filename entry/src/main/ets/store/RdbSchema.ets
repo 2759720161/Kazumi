@@ -86,6 +86,24 @@ export class RdbSchema {
       `)`;
   }
 
+  static getCreateLocalVideoHistoryTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_FILE_URI} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_FILE_NAME} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_FILE_SIZE} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_LAST_PLAYED_AT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DANMAKU_FILE_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DANMAKU_URI} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DANMAKU_OFFSET_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DANMAKU_FORMAT} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DANMAKU_COUNT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
   static getCreateIndexes(): string[] {
     return [
       `CREATE INDEX IF NOT EXISTS idx_rule_source_name ON ${RdbConstants.TABLE_RULE_SOURCE}(${RdbConstants.COL_NAME})`,
@@ -95,7 +113,8 @@ export class RdbSchema {
       `CREATE INDEX IF NOT EXISTS idx_favorite_bangumi_id ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_BANGUMI_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_watch_history_anime_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_ANIME_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`,
-      `CREATE INDEX IF NOT EXISTS idx_collect_change_bangumi_id ON ${RdbConstants.TABLE_COLLECT_CHANGE}(${RdbConstants.COL_BANGUMI_ID})`
+      `CREATE INDEX IF NOT EXISTS idx_collect_change_bangumi_id ON ${RdbConstants.TABLE_COLLECT_CHANGE}(${RdbConstants.COL_BANGUMI_ID})`,
+      `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`
     ];
   }
 
@@ -105,7 +124,8 @@ export class RdbSchema {
       RdbSchema.getCreateFavoriteTable(),
       RdbSchema.getCreateWatchHistoryTable(),
       RdbSchema.getCreateSearchHistoryTable(),
-      RdbSchema.getCreateCollectChangeTable()
+      RdbSchema.getCreateCollectChangeTable(),
+      RdbSchema.getCreateLocalVideoHistoryTable()
     ];
     const indexes = RdbSchema.getCreateIndexes();
     for (let i = 0; i < indexes.length; i++) {

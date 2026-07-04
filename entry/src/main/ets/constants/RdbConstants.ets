@@ -1,6 +1,6 @@
 export class RdbConstants {
   static readonly DB_NAME: string = 'kazumi_main.db'
-  static readonly DB_VERSION: number = 6
+  static readonly DB_VERSION: number = 7
   static readonly DB_SECURITY_LEVEL: number = 1
 
   static readonly TABLE_RULE_SOURCE: string = 'rule_source'
@@ -8,6 +8,7 @@ export class RdbConstants {
   static readonly TABLE_WATCH_HISTORY: string = 'watch_history'
   static readonly TABLE_SEARCH_HISTORY: string = 'search_history'
   static readonly TABLE_COLLECT_CHANGE: string = 'collect_change'
+  static readonly TABLE_LOCAL_VIDEO_HISTORY: string = 'local_video_history'
 
   static readonly COL_ID: string = 'id'
   static readonly COL_NAME: string = 'name'
@@ -55,4 +56,13 @@ export class RdbConstants {
   static readonly COL_ROAD_INDEX: string = 'road_index'
   static readonly COL_EPISODE_INDEX: string = 'episode_index'
   static readonly COL_ACTION: string = 'action'
+  static readonly COL_FILE_URI: string = 'file_uri'
+  static readonly COL_FILE_NAME: string = 'file_name'
+  static readonly COL_FILE_SIZE: string = 'file_size'
+  static readonly COL_LAST_PLAYED_AT: string = 'last_played_at'
+  static readonly COL_DANMAKU_FILE_NAME: string = 'danmaku_file_name'
+  static readonly COL_DANMAKU_URI: string = 'danmaku_uri'
+  static readonly COL_DANMAKU_OFFSET_MS: string = 'danmaku_offset_ms'
+  static readonly COL_DANMAKU_FORMAT: string = 'danmaku_format'
+  static readonly COL_DANMAKU_COUNT: string = 'danmaku_count'
 }

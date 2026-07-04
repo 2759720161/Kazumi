@@ -1,0 +1,15 @@
+export class LocalVideoRecord {
+  id: number = -1
+  fileUri: string = ''
+  fileName: string = ''
+  fileSize: number = 0
+  durationMs: number = 0
+  positionMs: number = 0
+  lastPlayedAt: number = 0
+  danmakuFileName: string = ''
+  danmakuUri: string = ''
+  danmakuOffsetMs: number = 0
+  danmakuFormat: string = ''
+  danmakuCount: number = 0
+  createdAt: number = 0
+}

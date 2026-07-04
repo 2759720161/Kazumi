@@ -16,6 +16,13 @@ import { DanmakuDeduplicator } from './DanmakuDeduplicator'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
 
+export class DanmakuStats {
+  count: number = 0
+  format: string = ''
+  offsetMs: number = 0
+  source: string = ''
+}
+
 const logger = new Logger('DanmakuManager')
 
 const DANMAKU_PREFS_KEY_ENABLED = 'danmaku_enabled'
@@ -72,6 +79,7 @@ export class DanmakuManager {
   private stats: DanmakuRuntimeStats = new DanmakuRuntimeStats()
   private currentSettings: DanmakuStyleSettings = DanmakuStyleSettings.getDefault()
   private currentRawDanmaku: DanmakuItem[] = []
+  private currentOffsetMs: number = 0
   private lastPlayerState: PlayerState | null = null
 
   async init(): Promise<void> {
@@ -184,30 +192,87 @@ export class DanmakuManager {
     if (!this.isDanmakuEnabled || items.length === 0) {
       return
     }
+    const existingKeys: Set<string> = new Set()
+    for (let i = 0; i < this.currentRawDanmaku.length; i++) {
+      const key = this.currentRawDanmaku[i].timeMs + '|' + this.currentRawDanmaku[i].content + '|' + this.currentRawDanmaku[i].type
+      existingKeys.add(key)
+    }
+    const dedupedItems: DanmakuItem[] = []
+    for (let j = 0; j < items.length; j++) {
+      const key = items[j].timeMs + '|' + items[j].content + '|' + items[j].type
+      if (!existingKeys.has(key)) {
+        dedupedItems.push(items[j])
+        existingKeys.add(key)
+      }
+    }
+    if (dedupedItems.length === 0) {
+      logger.info('本地弹幕追加: 所有弹幕已存在，跳过')
+      return
+    }
     const merged: DanmakuItem[] = []
     let i = 0
-    let j = 0
-    while (i < this.currentRawDanmaku.length && j < items.length) {
-      if (this.currentRawDanmaku[i].timeMs <= items[j].timeMs) {
+    let k = 0
+    while (i < this.currentRawDanmaku.length && k < dedupedItems.length) {
+      if (this.currentRawDanmaku[i].timeMs <= dedupedItems[k].timeMs) {
         merged.push(this.currentRawDanmaku[i])
         i++
       } else {
-        merged.push(items[j])
-        j++
+        merged.push(dedupedItems[k])
+        k++
       }
     }
     while (i < this.currentRawDanmaku.length) {
       merged.push(this.currentRawDanmaku[i])
       i++
     }
-    while (j < items.length) {
-      merged.push(items[j])
-      j++
+    while (k < dedupedItems.length) {
+      merged.push(dedupedItems[k])
+      k++
     }
     this.onDanmakuLoaded(merged)
     this.stats.loadedCount = merged.length
-    logger.info('本地弹幕追加合并: online=%{public}d, local=%{public}d, total=%{public}d',
-      this.currentRawDanmaku.length, items.length, merged.length)
+    logger.info('本地弹幕追加合并: existing=%{public}d, new=%{public}d, deduped=%{public}d, total=%{public}d',
+      this.currentRawDanmaku.length, items.length, dedupedItems.length, merged.length)
+  }
+
+  applyDanmakuOffset(deltaMs: number): void {
+    if (deltaMs === 0 || this.currentRawDanmaku.length === 0) {
+      return
+    }
+    for (let i = 0; i < this.currentRawDanmaku.length; i++) {
+      this.currentRawDanmaku[i].timeMs = Math.max(0, this.currentRawDanmaku[i].timeMs + deltaMs)
+    }
+    this.currentRawDanmaku.sort((a: DanmakuItem, b: DanmakuItem) => a.timeMs - b.timeMs)
+    this.currentOffsetMs += deltaMs
+    this.onDanmakuLoaded(this.currentRawDanmaku)
+    logger.info('弹幕偏移: delta=%{public}d, total=%{public}d', deltaMs, this.currentOffsetMs)
+  }
+
+  resetDanmakuOffset(): void {
+    if (this.currentOffsetMs === 0 || this.currentRawDanmaku.length === 0) {
+      return
+    }
+    for (let i = 0; i < this.currentRawDanmaku.length; i++) {
+      this.currentRawDanmaku[i].timeMs = Math.max(0, this.currentRawDanmaku[i].timeMs - this.currentOffsetMs)
+    }
+    this.currentRawDanmaku.sort((a: DanmakuItem, b: DanmakuItem) => a.timeMs - b.timeMs)
+    const offset = this.currentOffsetMs
+    this.currentOffsetMs = 0
+    this.onDanmakuLoaded(this.currentRawDanmaku)
+    logger.info('弹幕偏移已重置: was=%{public}d', offset)
+  }
+
+  getCurrentOffsetMs(): number {
+    return this.currentOffsetMs
+  }
+
+  getLocalDanmakuStats(): DanmakuStats {
+    const stats = new DanmakuStats()
+    stats.count = this.currentRawDanmaku.length
+    stats.format = this.stats.matchSource === 'local-file' ? 'local-file' : ''
+    stats.offsetMs = this.currentOffsetMs
+    stats.source = this.stats.matchSource
+    return stats
   }
 
   async saveManualMapping(bangumiId: number, episodeNo: number, animeName: string,

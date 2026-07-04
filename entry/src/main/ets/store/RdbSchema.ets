@@ -89,8 +89,9 @@ export class RdbSchema {
   static getCreateLocalVideoHistoryTable(): string {
     return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY} (` +
       `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_FILE_KEY} TEXT NOT NULL UNIQUE, ` +
       `${RdbConstants.COL_FILE_URI} TEXT NOT NULL DEFAULT '', ` +
-      `${RdbConstants.COL_FILE_NAME} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_FILE_NAME} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_FILE_SIZE} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
@@ -114,6 +115,7 @@ export class RdbSchema {
       `CREATE INDEX IF NOT EXISTS idx_watch_history_anime_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_ANIME_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`,
       `CREATE INDEX IF NOT EXISTS idx_collect_change_bangumi_id ON ${RdbConstants.TABLE_COLLECT_CHANGE}(${RdbConstants.COL_BANGUMI_ID})`,
+      `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_key ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_KEY})`,
       `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`
     ];
   }

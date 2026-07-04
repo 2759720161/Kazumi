@@ -7,6 +7,7 @@ const logger = new Logger('LocalFilePicker')
 
 export class LocalFileResult {
   fileName: string = ''
+  uri: string = ''
   content: string = ''
   fileSize: number = 0
 }
@@ -14,6 +15,7 @@ export class LocalFileResult {
 export class LocalVideoResult {
   fileName: string = ''
   uri: string = ''
+  fileSize: number = 0
 }
 
 export class TextFileReadResult {
@@ -44,6 +46,7 @@ export class LocalFilePicker {
       logger.info('选择弹幕文件: %{public}s, size=%{public}d', fileName, readResult.content.length)
       const result = new LocalFileResult()
       result.fileName = fileName
+      result.uri = uri
       result.content = readResult.content
       result.fileSize = readResult.fileSize
       return result
@@ -70,6 +73,7 @@ export class LocalFilePicker {
       const result = new LocalVideoResult()
       result.fileName = fileName
       result.uri = uri
+      result.fileSize = LocalFilePicker.getFileSize(uri)
       return result
     } catch (err) {
       logger.error('选择视频文件失败: %{public}s', err instanceof Error ? err.message : String(err))
@@ -106,6 +110,34 @@ export class LocalFilePicker {
     } catch (err) {
       logger.error('读取文件失败: %{public}s', err instanceof Error ? err.message : String(err))
       return emptyResult
+    }
+  }
+
+  static readDanmakuFileByUri(uri: string, fileName: string): LocalFileResult | null {
+    const readResult = LocalFilePicker.readTextFile(uri)
+    if (readResult.content.length === 0) {
+      return null
+    }
+    const result = new LocalFileResult()
+    result.fileName = fileName.length > 0 ? fileName : LocalFilePicker.getFileNameFromUri(uri)
+    result.uri = uri
+    result.content = readResult.content
+    result.fileSize = readResult.fileSize
+    return result
+  }
+
+  private static getFileSize(uri: string): number {
+    try {
+      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY)
+      try {
+        const stat = fileIo.statSync(file.fd)
+        return stat.size
+      } finally {
+        fileIo.closeSync(file)
+      }
+    } catch (err) {
+      logger.warn('读取文件大小失败: %{public}s', err instanceof Error ? err.message : String(err))
+      return 0
     }
   }
 

@@ -235,6 +235,17 @@ export class DanmakuManager {
       this.currentRawDanmaku.length, items.length, dedupedItems.length, merged.length)
   }
 
+  clearLocalDanmaku(): void {
+    this.currentRawDanmaku = []
+    this.currentEpisodeKey = ''
+    this.currentOffsetMs = 0
+    this.clearCurrentDanmaku()
+    this.stats.loadedCount = 0
+    this.stats.matchSource = 'none'
+    this.failureReason = ''
+    logger.info('本地弹幕已清空')
+  }
+
   applyDanmakuOffset(deltaMs: number): void {
     if (deltaMs === 0 || this.currentRawDanmaku.length === 0) {
       return

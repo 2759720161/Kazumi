@@ -1,5 +1,6 @@
 export class LocalVideoRecord {
   id: number = -1
+  fileKey: string = ''
   fileUri: string = ''
   fileName: string = ''
   fileSize: number = 0

@@ -152,12 +152,69 @@ export class RdbMigration {
           RdbSchema.getCreateLocalVideoHistoryTable()
         );
         await rdbManager.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_key ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_KEY})`
+        );
+        await rdbManager.executeSql(
           `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`
         );
         logger.info('Migration v7: created local_video_history table');
       }
+    },
+    {
+      version: 8,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.rebuildLocalVideoHistoryWithFileKey(rdbManager);
+        logger.info('Migration v8: rebuilt local_video_history with file_key uniqueness');
+      }
     }
   ];
+
+  private static async rebuildLocalVideoHistoryWithFileKey(rdbManager: RdbManager): Promise<void> {
+    const tempTable = `${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}_v8`;
+    await rdbManager.executeSql(
+      `CREATE TABLE IF NOT EXISTS ${tempTable} (` +
+      `${RdbConstants.COL_ID} INTEGER PRIMARY KEY AUTOINCREMENT, ` +
+      `${RdbConstants.COL_FILE_KEY} TEXT NOT NULL UNIQUE, ` +
+      `${RdbConstants.COL_FILE_URI} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_FILE_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_FILE_SIZE} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_LAST_PLAYED_AT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DANMAKU_FILE_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DANMAKU_URI} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DANMAKU_OFFSET_MS} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DANMAKU_FORMAT} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DANMAKU_COUNT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `)`
+    );
+    await rdbManager.executeSql(
+      `INSERT OR IGNORE INTO ${tempTable} (` +
+      `${RdbConstants.COL_ID}, ${RdbConstants.COL_FILE_KEY}, ${RdbConstants.COL_FILE_URI}, ` +
+      `${RdbConstants.COL_FILE_NAME}, ${RdbConstants.COL_FILE_SIZE}, ${RdbConstants.COL_DURATION_MS}, ` +
+      `${RdbConstants.COL_POSITION_MS}, ${RdbConstants.COL_LAST_PLAYED_AT}, ${RdbConstants.COL_DANMAKU_FILE_NAME}, ` +
+      `${RdbConstants.COL_DANMAKU_URI}, ${RdbConstants.COL_DANMAKU_OFFSET_MS}, ${RdbConstants.COL_DANMAKU_FORMAT}, ` +
+      `${RdbConstants.COL_DANMAKU_COUNT}, ${RdbConstants.COL_CREATED_AT}) ` +
+      `SELECT ${RdbConstants.COL_ID}, ` +
+      `CASE WHEN ${RdbConstants.COL_FILE_URI} <> '' ` +
+      `THEN ${RdbConstants.COL_FILE_URI} || '|' || CAST(${RdbConstants.COL_FILE_SIZE} AS TEXT) || '|' || ${RdbConstants.COL_FILE_NAME} ` +
+      `ELSE ${RdbConstants.COL_FILE_NAME} || '|' || CAST(${RdbConstants.COL_FILE_SIZE} AS TEXT) || '|' || CAST(${RdbConstants.COL_DURATION_MS} AS TEXT) END, ` +
+      `${RdbConstants.COL_FILE_URI}, ${RdbConstants.COL_FILE_NAME}, ${RdbConstants.COL_FILE_SIZE}, ` +
+      `${RdbConstants.COL_DURATION_MS}, ${RdbConstants.COL_POSITION_MS}, ${RdbConstants.COL_LAST_PLAYED_AT}, ` +
+      `${RdbConstants.COL_DANMAKU_FILE_NAME}, ${RdbConstants.COL_DANMAKU_URI}, ${RdbConstants.COL_DANMAKU_OFFSET_MS}, ` +
+      `${RdbConstants.COL_DANMAKU_FORMAT}, ${RdbConstants.COL_DANMAKU_COUNT}, ${RdbConstants.COL_CREATED_AT} ` +
+      `FROM ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}`
+    );
+    await rdbManager.executeSql(`DROP TABLE ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}`);
+    await rdbManager.executeSql(`ALTER TABLE ${tempTable} RENAME TO ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}`);
+    await rdbManager.executeSql(
+      `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_key ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_KEY})`
+    );
+    await rdbManager.executeSql(
+      `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`
+    );
+  }
 
   private static async ensureFavoriteCollectColumns(rdbManager: RdbManager): Promise<void> {
     await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_FAVORITE,

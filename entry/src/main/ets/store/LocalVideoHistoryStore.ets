@@ -20,9 +20,9 @@ export class LocalVideoHistoryStore {
     return this.parseResultSet(resultSet);
   }
 
-  async getByFileName(fileName: string): Promise<LocalVideoRecord | null> {
+  async getByFileKey(fileKey: string): Promise<LocalVideoRecord | null> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
-    predicates.equalTo(RdbConstants.COL_FILE_NAME, fileName);
+    predicates.equalTo(RdbConstants.COL_FILE_KEY, fileKey);
     const resultSet = await this.rdbManager.query(predicates);
     const list = this.parseResultSet(resultSet);
     if (list.length > 0) {
@@ -32,12 +32,16 @@ export class LocalVideoHistoryStore {
   }
 
   async upsert(record: LocalVideoRecord): Promise<number> {
-    const existing = await this.getByFileName(record.fileName);
+    const fileKey = this.buildFileKey(record);
+    record.fileKey = fileKey;
+    const existing = await this.getByFileKey(fileKey);
     if (existing !== null) {
       const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
-      predicates.equalTo(RdbConstants.COL_FILE_NAME, record.fileName);
+      predicates.equalTo(RdbConstants.COL_FILE_KEY, fileKey);
       const values: relationalStore.ValuesBucket = {
+        file_key: fileKey,
         file_uri: record.fileUri,
+        file_name: record.fileName,
         file_size: record.fileSize,
         duration_ms: record.durationMs,
         position_ms: record.positionMs,
@@ -51,6 +55,7 @@ export class LocalVideoHistoryStore {
       return await this.rdbManager.update(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values, predicates);
     } else {
       const values: relationalStore.ValuesBucket = {
+        file_key: fileKey,
         file_uri: record.fileUri,
         file_name: record.fileName,
         file_size: record.fileSize,
@@ -90,6 +95,7 @@ export class LocalVideoHistoryStore {
         do {
           const record = new LocalVideoRecord();
           record.id = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_ID));
+          record.fileKey = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_FILE_KEY));
           record.fileUri = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_FILE_URI));
           record.fileName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_FILE_NAME));
           record.fileSize = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_FILE_SIZE));
@@ -111,5 +117,15 @@ export class LocalVideoHistoryStore {
       resultSet.close();
     }
     return list;
+  }
+
+  private buildFileKey(record: LocalVideoRecord): string {
+    if (record.fileKey.length > 0) {
+      return record.fileKey;
+    }
+    if (record.fileUri.length > 0) {
+      return `${record.fileUri}|${record.fileSize}|${record.fileName}`;
+    }
+    return `${record.fileName}|${record.fileSize}|${record.durationMs}`;
   }
 }

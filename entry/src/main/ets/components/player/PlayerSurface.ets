@@ -206,7 +206,12 @@ export struct PlayerSurface {
       return;
     }
 
-    if (this.engineType === 'mpv' && PlayerEngineFactory.isMpvNapiAvailableSync()) {
+    if (this.playbackOptions.isLocalFile) {
+      logger.info('Creating AVPlayer engine for local file')
+      const avEngine = new AVPlayerEngine()
+      avEngine.setSurfaceId(this.surfaceId)
+      this.playerEngine = avEngine
+    } else if (this.engineType === 'mpv' && PlayerEngineFactory.isMpvNapiAvailableSync()) {
       logger.info('Creating mpv player engine')
       const mpvEngine = new MpvPlayerEngine()
       mpvEngine.setSurfaceId(this.surfaceId)
@@ -238,6 +243,8 @@ export struct PlayerSurface {
     options.referer = this.playbackOptions.referer;
     options.userAgent = this.playbackOptions.userAgent;
     options.proxy = this.playbackOptions.proxy;
+    options.isLocalFile = this.playbackOptions.isLocalFile;
+    options.localFileSize = this.playbackOptions.localFileSize;
     let headerKeys = Object.keys(this.playbackOptions.headers)
     for (let i = 0; i < headerKeys.length; i++) {
       let key = headerKeys[i]

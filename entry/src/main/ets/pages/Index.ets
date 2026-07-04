@@ -1,7 +1,7 @@
 import { HomePage } from './home/HomePage'
 import { TimelinePage } from './timeline/TimelinePage'
 import { FavoritePage } from './favorite/FavoritePage'
-import { LocalPlayerPage } from './player/LocalPlayerPage'
+import { LocalPage } from './local/LocalPage'
 import { SettingsPage } from './settings/SettingsPage'
 import {
   HdsTabs,
@@ -46,7 +46,7 @@ struct Index {
         .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '片库'))
 
         TabContent() {
-          LocalPlayerPage({ showBackButton: false })
+          LocalPage()
         }
         .tabBar(this.bottomTabStyle($r('sys.symbol.folder'), $r('sys.symbol.folder_fill'), '本地'))
 

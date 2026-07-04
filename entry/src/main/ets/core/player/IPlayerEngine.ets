@@ -47,6 +47,8 @@ export class PlaybackOptions {
   userAgent: string = ''
   proxy: string = ''
   streamMetadata: StreamMetadata | null = null
+  isLocalFile: boolean = false
+  localFileSize: number = 0
 }
 
 export class PlayerState {

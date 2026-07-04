@@ -1,4 +1,5 @@
 import { media } from '@kit.MediaKit'
+import { fileIo } from '@kit.CoreFileKit'
 import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode } from './IPlayerEngine'
 import { Logger } from '../../utils/Logger'
 
@@ -16,6 +17,7 @@ export class AVPlayerEngine implements IPlayerEngine {
   private pendingInitialPlayAfterSeek: boolean = false
   private pendingInitialSeekMs: number = -1
   private initialSeekFallbackTimer: number = -1
+  private localSourceFile: fileIo.File | null = null
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
@@ -32,6 +34,7 @@ export class AVPlayerEngine implements IPlayerEngine {
   prepare(options: PlaybackOptions): void {
     this.clearPrepareTimeout()
     this.clearInitialSeekState()
+    this.closeLocalSourceFile()
     this.resetState()
     this.currentOptions = options
     this.state.stateName = 'creating'
@@ -48,11 +51,23 @@ export class AVPlayerEngine implements IPlayerEngine {
       this.registerListeners()
       if (options.url.length > 0) {
         try {
-          player.url = options.url
+          if (options.isLocalFile) {
+            const file = fileIo.openSync(options.url, fileIo.OpenMode.READ_ONLY)
+            const length = options.localFileSize > 0 ? options.localFileSize : fileIo.statSync(file.fd).size
+            player.fdSrc = {
+              fd: file.fd,
+              offset: 0,
+              length: length
+            }
+            this.localSourceFile = file
+            logger.info('Set AVPlayer fdSrc for local file: fd=%{public}d, length=%{public}d', file.fd, length)
+          } else {
+            player.url = options.url
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          logger.error('Set AVPlayer url failed: %{public}s', msg)
-          this.failPlayback('AVPlayer set url failed: ' + msg)
+          logger.error('Set AVPlayer source failed: %{public}s', msg)
+          this.failPlayback('AVPlayer set source failed: ' + msg)
         }
       }
     }).catch((err: Error) => {
@@ -384,6 +399,7 @@ export class AVPlayerEngine implements IPlayerEngine {
       }
       this.avPlayer = null
     }
+    this.closeLocalSourceFile()
     this.currentOptions = null
     this.resetState()
   }
@@ -447,10 +463,23 @@ export class AVPlayerEngine implements IPlayerEngine {
       }
       this.avPlayer = null
     }
+    this.closeLocalSourceFile()
   }
 
   private resetState(): void {
     this.state = new PlayerState()
+  }
+
+  private closeLocalSourceFile(): void {
+    if (this.localSourceFile === null) {
+      return
+    }
+    try {
+      fileIo.closeSync(this.localSourceFile)
+    } catch (_err) {
+      logger.warn('Close local source file failed')
+    }
+    this.localSourceFile = null
   }
 
   private notifyStateChange(): void {

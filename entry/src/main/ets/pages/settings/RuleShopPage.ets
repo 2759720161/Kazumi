@@ -66,7 +66,6 @@ struct RuleShopPage {
               .height(getTopSpacerHeight(this.topSafeHeight))
               .width('100%')
 
-            this.RepositorySummary()
             this.SortToggle()
             this.OperationMessageSection()
             this.CatalogList()
@@ -112,92 +111,6 @@ struct RuleShopPage {
     }
     .width('100%')
     .height('100%')
-  }
-
-  @Builder
-  RepositorySummary(): void {
-    Column() {
-      Row() {
-        Column() {
-          Text('规则仓库')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary'))
-            .width('100%')
-
-          Text(this.repositoryUrl.length > 0 ? '从已导入的规则仓库安装、更新和管理播放规则' : '通过右上角链接导入规则仓库')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-            .margin({ top: 3 })
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
-
-        Row() {
-          LoadingProgress()
-            .width(18)
-            .height(18)
-            .color($r('app.color.accent_blue'))
-        }
-        .width(34)
-        .height(34)
-        .borderRadius(17)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .backgroundColor($r('app.color.episode_item_selected_bg'))
-        .opacity(this.loading ? 1 : 0)
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 14, bottom: 12 })
-
-      Row() {
-        this.SummaryMetric('仓库', String(this.catalogItems.length))
-        this.SummaryDivider()
-        this.SummaryMetric('已安装', String(this.localRules.length))
-        this.SummaryDivider()
-        this.SummaryMetric('可更新', String(this.getUpdateCount()))
-        this.SummaryDivider()
-        this.SummaryMetric('已启用', String(this.getEnabledCount()))
-      }
-      .width('100%')
-      .padding({ left: 14, right: 14, bottom: 14 })
-    }
-    .width('100%')
-    .borderRadius(12)
-    .clip(true)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-    .margin({ bottom: 8 })
-  }
-
-  @Builder
-  SummaryMetric(label: string, value: string): void {
-    Column() {
-      Text(value)
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.accent_blue'))
-        .maxLines(1)
-      Text(label)
-        .fontSize(11)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ top: 2 })
-    }
-    .layoutWeight(1)
-    .alignItems(HorizontalAlign.Center)
-  }
-
-  @Builder
-  SummaryDivider(): void {
-    Divider()
-      .vertical(true)
-      .height(28)
-      .color($r('app.color.divider_color'))
-      .strokeWidth(0.5)
   }
 
   @Builder
@@ -457,51 +370,48 @@ struct RuleShopPage {
     .onClick(() => {
       this.enableMenuRuleName = name
     })
-    .bindPopup(this.enableMenuRuleName === name, {
-      builder: this.RuleEnableMenuContent,
+    .bindMenu(this.enableMenuRuleName === name, this.RuleEnableMenuContent, {
       placement: Placement.Bottom,
       showInSubWindow: false,
-      onStateChange: (e: PopupStateChangeParam) => {
-        if (!e.isVisible) {
-          this.enableMenuRuleName = ''
-        }
+      onDisappear: () => {
+        this.enableMenuRuleName = ''
       }
     })
   }
 
   @Builder
   RuleEnableMenuContent(): void {
-    Column() {
+    Menu() {
       this.RuleEnableMenuItem('启用', true)
       this.RuleEnableMenuItem('关闭', false)
     }
     .width(132)
-    .padding(8)
-    .borderRadius(20)
-    .backgroundColor($r('app.color.card_background'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+    .fontColor($r('app.color.text_primary'))
+    .radius(20)
   }
 
   @Builder
   RuleEnableMenuItem(label: string, enabled: boolean): void {
-    Text(label)
-      .fontSize(16)
-      .fontWeight(this.isRuleEnabled(this.enableMenuRuleName) === enabled ? FontWeight.Bold : FontWeight.Medium)
-      .fontColor(this.isRuleEnabled(this.enableMenuRuleName) === enabled ?
-        $r('app.color.accent_blue') : $r('app.color.text_primary'))
+    MenuItem() {
+      Row() {
+        Text(label)
+          .fontSize(16)
+          .fontWeight(this.isRuleEnabled(this.enableMenuRuleName) === enabled ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.isRuleEnabled(this.enableMenuRuleName) === enabled ?
+            $r('app.color.accent_blue') : $r('app.color.text_primary'))
+          .layoutWeight(1)
+      }
       .width('100%')
-      .height(52)
-      .padding({ left: 18, right: 18 })
-      .textAlign(TextAlign.Start)
+      .height(48)
+      .padding({ left: 14, right: 14 })
       .borderRadius(14)
       .backgroundColor(this.isRuleEnabled(this.enableMenuRuleName) === enabled ?
         $r('app.color.episode_item_selected_bg') : Color.Transparent)
-      .onClick(() => {
-        this.setRuleEnabledByName(this.enableMenuRuleName, enabled)
-        this.enableMenuRuleName = ''
-      })
+    }
+    .onClick(() => {
+      this.setRuleEnabledByName(this.enableMenuRuleName, enabled)
+      this.enableMenuRuleName = ''
+    })
   }
 
   @Builder
@@ -618,26 +528,6 @@ struct RuleShopPage {
 
   private getRuleSortPriority(item: RuleCatalogItem): number {
     return this.findLocalRule(item.name) !== null ? 0 : 1
-  }
-
-  private getEnabledCount(): number {
-    let count = 0
-    for (let i = 0; i < this.localRules.length; i++) {
-      if (this.localRules[i].enabled) {
-        count++
-      }
-    }
-    return count
-  }
-
-  private getUpdateCount(): number {
-    let count = 0
-    for (let i = 0; i < this.catalogItems.length; i++) {
-      if (RuleCatalogService.getRuleStatus(this.catalogItems[i], this.localRules) === 'update') {
-        count++
-      }
-    }
-    return count
   }
 
   private buildRuleSubtitle(item: RuleCatalogItem): string {

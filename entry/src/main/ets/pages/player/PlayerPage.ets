@@ -23,7 +23,6 @@ import { HistoryRecord } from '../../models/HistoryRecord'
 import { CollectController } from '../../controller/CollectController'
 import { CollectType } from '../../models/CollectType'
 import { AnimeItem } from '../../models/AnimeItem'
-import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 
 import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
 import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker'
@@ -107,7 +106,6 @@ export struct PlayerPage {
   @State showHud: boolean = false
   @State hudText: string = ''
   @State currentCollectType: number = CollectType.none
-  @State showCollectMenu: boolean = false
   @State currentAspectMode: VideoAspectMode = VideoAspectMode.contain
   @State showAspectModePanel: boolean = false
   @State showRoadPickerPopup: boolean = false
@@ -305,18 +303,6 @@ export struct PlayerPage {
       },
       onDisappear: () => {
         this.showDanmakuSettingsSheet = false
-        this.startAutoHideTimer()
-      }
-    })
-    .bindSheet($$this.showCollectMenu, this.buildCollectStatusSheet, {
-      height: 'auto',
-      showClose: false,
-      dragBar: true,
-      onAppear: () => {
-        this.pauseAutoHideTimer()
-      },
-      onDisappear: () => {
-        this.showCollectMenu = false
         this.startAutoHideTimer()
       }
     })
@@ -755,12 +741,12 @@ export struct PlayerPage {
       }
 
       this.TopSymbolButton(
-        this.currentCollectType > CollectType.none ? CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart_badge_plus'),
-        this.currentCollectType > CollectType.none ? CollectType.getLabel(this.currentCollectType) : '收藏',
+        CollectType.isFavorite(this.currentCollectType) ? CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart'),
+        CollectType.isFavorite(this.currentCollectType) ? '已收藏' : '收藏',
         () => {
-          this.showCollectMenu = true
+          this.toggleCollect()
         },
-        this.currentCollectType > CollectType.none
+        CollectType.isFavorite(this.currentCollectType)
       )
 
       this.TopSymbolButton(this.showMoreMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
@@ -1323,14 +1309,11 @@ export struct PlayerPage {
             .onClick(() => {
               this.showRoadPickerPopup = !this.showRoadPickerPopup
             })
-            .bindPopup(this.showRoadPickerPopup, {
-              builder: this.RoadPickerPopupContent,
+            .bindMenu(this.showRoadPickerPopup, this.RoadPickerPopupContent, {
               placement: Placement.Bottom,
               showInSubWindow: false,
-              onStateChange: (e: PopupStateChangeParam) => {
-                if (!e.isVisible) {
-                  this.showRoadPickerPopup = false
-                }
+              onDisappear: () => {
+                this.showRoadPickerPopup = false
               }
             })
           }
@@ -1449,14 +1432,11 @@ export struct PlayerPage {
           .onClick(() => {
             this.showRoadPickerPopup = !this.showRoadPickerPopup
           })
-          .bindPopup(this.showRoadPickerPopup, {
-            builder: this.RoadPickerPopupContent,
+          .bindMenu(this.showRoadPickerPopup, this.RoadPickerPopupContent, {
             placement: Placement.BottomLeft,
             showInSubWindow: false,
-            onStateChange: (e: PopupStateChangeParam) => {
-              if (!e.isVisible) {
-                this.showRoadPickerPopup = false
-              }
+            onDisappear: () => {
+              this.showRoadPickerPopup = false
             }
           })
         }
@@ -1627,23 +1607,9 @@ export struct PlayerPage {
 
   @Builder
   private RoadPickerPopupContent() {
-    Column() {
-      Row() {
-        SymbolGlyph($r('sys.symbol.play_circle'))
-          .fontSize(16)
-          .fontColor([$r('app.color.text_secondary')])
-        
-        Text('选择播放源')
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 6 })
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 12, bottom: 8 })
-      
-      Column() {
-        ForEach(this.roads, (road: PlaybackRoad, index?: number) => {
+    Menu() {
+      ForEach(this.roads, (road: PlaybackRoad, index?: number) => {
+        MenuItem() {
           Row() {
             Column() {
               Text(this.getRoadDisplayName(road, index))
@@ -1653,7 +1619,7 @@ export struct PlayerPage {
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .width('100%')
-              
+
               Text(`${road.episodes.length}集`)
                 .fontSize(12)
                 .fontColor($r('app.color.text_secondary'))
@@ -1662,41 +1628,24 @@ export struct PlayerPage {
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start)
-            
-            if (index === this.visibleRoadIndex) {
-              Column() {
-                SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
-                  .fontSize(20)
-                  .fontColor([$r('app.color.accent_blue')])
-              }
-              .width(24)
-              .height('100%')
-              .justifyContent(FlexAlign.Center)
-            }
           }
           .width('100%')
-          .height(56)
-          .padding({ left: 16, right: 16 })
-          .borderRadius(12)
-          .backgroundColor(index === this.visibleRoadIndex ? $r('app.color.episode_item_selected_bg') : $r('app.color.card_background'))
-          .margin({ bottom: 4 })
-          .onClick(() => {
-            if (index !== undefined) {
-              this.onRoadSelected(index)
-              this.showRoadPickerPopup = false
-            }
-          })
-        }, (road: PlaybackRoad, index?: number) => `road_popup_${index}`)
-      }
-      .width('100%')
-      .padding({ left: 8, right: 8, bottom: 8 })
+          .height(58)
+          .padding({ left: 14, right: 14 })
+          .borderRadius(14)
+          .backgroundColor(index === this.visibleRoadIndex ? $r('app.color.episode_item_selected_bg') : Color.Transparent)
+        }
+        .onClick(() => {
+          if (index !== undefined) {
+            this.onRoadSelected(index)
+            this.showRoadPickerPopup = false
+          }
+        })
+      }, (road: PlaybackRoad, index?: number) => `road_menu_${index}`)
     }
     .width(240)
-    .borderRadius(16)
-    .backgroundColor($r('app.color.page_background'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+    .fontColor($r('app.color.text_primary'))
+    .radius(20)
   }
 
   @Builder
@@ -2796,36 +2745,18 @@ export struct PlayerPage {
     return this.sourceResolver.getIsResolving()
   }
 
-  @Builder
-  buildCollectStatusSheet(): void {
-    CollectStatusMenu({
-      currentType: this.currentCollectType,
-      isVisible: $showCollectMenu,
-      onSelect: (type: number) => {
-        this.onCollectTypeSelected(type)
-      }
-    })
-  }
-
-  private async onCollectTypeSelected(type: number): Promise<void> {
-    if (type === CollectType.none) {
-      this.showCollectMenu = false
-      try {
-        const animeItem = this.buildAnimeItemFromPlayer()
-        await this.collectController.deleteCollect(animeItem)
-        this.currentCollectType = CollectType.none
-      } catch (err) {
-        logger.error('Delete collect failed: %{public}s', err instanceof Error ? err.message : String(err))
-      }
-      return
-    }
+  private async toggleCollect(): Promise<void> {
     try {
       const animeItem = this.buildAnimeItemFromPlayer()
-      await this.collectController.addCollect(animeItem, type)
-      this.currentCollectType = type
-      this.showCollectMenu = false
+      if (CollectType.isFavorite(this.currentCollectType)) {
+        await this.collectController.deleteCollect(animeItem)
+        this.currentCollectType = CollectType.none
+      } else {
+        await this.collectController.addCollect(animeItem, CollectType.favorite)
+        this.currentCollectType = CollectType.favorite
+      }
     } catch (err) {
-      logger.error('Add collect failed: %{public}s', err instanceof Error ? err.message : String(err))
+      logger.error('Toggle collect failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
   }
 

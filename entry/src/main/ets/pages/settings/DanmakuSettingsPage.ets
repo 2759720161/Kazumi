@@ -39,6 +39,7 @@ import {
   DANMAKU_PREFS_KEY_TIME_OFFSET,
   DANMAKU_PREFS_KEY_MASSIVE_MODE
 } from '../../core/danmaku/DanmakuStyleSettings'
+import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../../utils/AdvancedOptionsUnlock'
 
 const logger = new Logger('DanmakuSettingsPage')
 
@@ -174,6 +175,7 @@ struct DanmakuSettingsSwitchRow {
 export struct DanmakuSettingsPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
+  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = false
   @State danmakuBorder: boolean = true
   @State danmakuBorderSize: number = 1.5
   @State danmakuColor: boolean = true
@@ -225,7 +227,9 @@ export struct DanmakuSettingsPage {
             .width('100%')
 
           this.DanmakuStatusCard()
-          this.SourceFilterSection()
+          if (this.advancedOptionsUnlocked) {
+            this.SourceFilterSection()
+          }
           this.DisplayBasicSection()
           this.DisplayAdvancedSection()
           this.StyleSection()

@@ -5,11 +5,7 @@ import { Logger } from '../utils/Logger'
 
 const logger = new Logger('BundledRuleSourceLoader')
 
-const BUNDLED_PLUGIN_FILES: string[] = [
-  'plugins/AGE.json',
-  'plugins/DM84.json',
-  'plugins/aafun.json'
-]
+const BUNDLED_PLUGIN_FILES: string[] = []
 
 export class BundledRuleSourceLoader {
   static async loadAll(context: common.UIAbilityContext): Promise<RuleSource[]> {

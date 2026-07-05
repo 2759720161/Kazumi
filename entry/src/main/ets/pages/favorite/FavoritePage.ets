@@ -1,8 +1,6 @@
 import { CollectController } from '../../controller/CollectController'
 import { CollectedBangumi } from '../../models/CollectedBangumi'
-import { CollectType } from '../../models/CollectType'
 import { CollectCard } from '../../components/collect/CollectCard'
-import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 import { EmptyState } from '../../components/common/EmptyState'
 import { Logger } from '../../utils/Logger'
 import {
@@ -13,25 +11,22 @@ import {
   TitleBarStyleOptions,
   TitleBarContentOptions,
   HdsNavigationIconOptions,
-  HdsNavigationMenuContentOptions,
-  HdsTabs,
-  hdsMaterial
+  HdsNavigationMenuContentOptions
 } from '@kit.UIDesignKit'
-import { LengthMetrics } from '@kit.ArkUI'
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle
 } from '../../utils/HdsPageStyle'
+import {
+  BOTTOM_TAB_AUTO_HIDE_DEFAULT,
+  getBottomTabHideDistance,
+  requestBottomTabAnimation,
+  resolveBottomTabOffsetByDelta,
+  resolveBottomTabSnapTarget
+} from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('FavoritePage')
-const COLLECT_TAB_LABELS: string[] = ['在看', '想看', '搁置', '看过', '抛弃']
-const COLLECT_TAB_BAR_HEIGHT: number = 40
-const COLLECT_TAB_BAR_SECTION_GAP: number = 6
-const COLLECT_TAB_BAR_HORIZONTAL_PADDING: number = 8
-const COLLECT_TAB_ITEM_GAP: number = 8
-const COLLECT_TAB_ITEM_MAX_WIDTH: number = 84
-const COLLECT_TAB_ITEM_MIN_WIDTH: number = 52
 
 @Component
 export struct FavoritePage {
@@ -40,18 +35,18 @@ export struct FavoritePage {
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
   @StorageLink('currentTab') @Watch('onCurrentTabChanged') currentTab: number = 0
   @StorageLink('collectVersion') @Watch('onCollectVersionChanged') collectVersion: number = 0
+  @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
+  @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State collectedList: CollectedBangumi[] = []
   @State visibleCollectedList: CollectedBangumi[] = []
   @State isEditMode: boolean = false
   @State isLoading: boolean = true
-  @State currentTabIndex: number = 0
   @State showDeleteDialog: boolean = false
   @State deleteTargetAnimeId: string = ''
   @State deleteTargetName: string = ''
-  @State showStatusMenu: boolean = false
-  @State statusMenuTarget: CollectedBangumi | null = null
   @State showEditTipDialog: boolean = false
   private collectController: CollectController = new CollectController()
+  private scroller: Scroller = new Scroller()
 
   aboutToAppear(): void {
     this.loadCollectibles()
@@ -70,10 +65,10 @@ export struct FavoritePage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       HdsNavigation() {
-        Scroll() {
+        Scroll(this.scroller) {
           Column() {
             Blank()
-              .height(getTopSpacerHeight(this.topSafeHeight) + COLLECT_TAB_BAR_HEIGHT)
+              .height(getTopSpacerHeight(this.topSafeHeight))
               .width('100%')
 
             if (this.isLoading) {
@@ -88,7 +83,7 @@ export struct FavoritePage {
               .justifyContent(FlexAlign.Center)
             } else if (this.collectedList.length === 0) {
               Column() {
-                EmptyState({ message: '你的片库还是空的' })
+                EmptyState({ message: '你的收藏还是空的' })
               }
               .width('100%')
               .layoutWeight(1)
@@ -109,6 +104,12 @@ export struct FavoritePage {
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
         .clip(false)
+        .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
+          this.updateBottomTabOffset(yOffset)
+        })
+        .onScrollStop(() => {
+          this.snapBottomTabOffset()
+        })
       }
       .width('100%')
       .height('100%')
@@ -118,20 +119,6 @@ export struct FavoritePage {
       .hideBackButton(true)
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
-      .bindSheet($$this.showStatusMenu, this.StatusMenuSheetContent, {
-        height: SheetSize.FIT_CONTENT,
-        dragBar: true,
-        showClose: false,
-        radius: LengthMetrics.vp(24),
-        backgroundColor: $r('app.color.page_background'),
-        onDisappear: () => {
-          this.showStatusMenu = false
-        }
-      })
-
-      if (!this.isLoading && this.collectedList.length > 0) {
-        this.CollectTabBar()
-      }
 
       if (this.showDeleteDialog) {
         this.DeleteConfirmDialog()
@@ -155,63 +142,10 @@ export struct FavoritePage {
   }
 
   @Builder
-  StatusMenuSheetContent() {
-    if (this.statusMenuTarget !== null) {
-      CollectStatusMenu({
-        currentType: this.statusMenuTarget!.collectType,
-        isVisible: $showStatusMenu,
-        onSelect: (type: number) => {
-          this.onStatusMenuSelect(type)
-        }
-      })
-    }
-  }
-
-  @Builder
-  CollectTabBar(): void {
-    Column() {
-      Scroll() {
-        Row({ space: COLLECT_TAB_ITEM_GAP }) {
-          ForEach(COLLECT_TAB_LABELS, (label: string, index?: number) => {
-            CollectTabItem({
-              label: label,
-              index: index ?? 0,
-              tabWidth: this.getCollectTabWidth(),
-              selectedIndex: this.currentTabIndex,
-              onSelected: (selectedIndex: number) => {
-                logger.info('Collect tab selected: %{public}d', selectedIndex)
-                this.currentTabIndex = selectedIndex
-                this.refreshVisibleCollectedList()
-              }
-            })
-          }, (label: string, index?: number) => `collect_tab_${index}`)
-        }
-        .height(COLLECT_TAB_BAR_HEIGHT)
-        .alignItems(VerticalAlign.Center)
-        .padding({
-          left: COLLECT_TAB_BAR_HORIZONTAL_PADDING,
-          right: COLLECT_TAB_BAR_HORIZONTAL_PADDING
-        })
-      }
-      .width('100%')
-      .height(COLLECT_TAB_BAR_HEIGHT)
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.None)
-      .clip(false)
-    }
-    .width('100%')
-    .height(COLLECT_TAB_BAR_HEIGHT)
-    .margin({ top: getTopSpacerHeight(this.topSafeHeight) })
-    .zIndex(30)
-    .hitTestBehavior(HitTestMode.Default)
-  }
-
-  @Builder
   CollectGrid(): void {
     if (this.visibleCollectedList.length === 0) {
       Column() {
-        EmptyState({ message: `${COLLECT_TAB_LABELS[this.currentTabIndex]}列表为空` })
+        EmptyState({ message: '你的收藏还是空的' })
       }
       .width('100%')
       .layoutWeight(1)
@@ -223,12 +157,12 @@ export struct FavoritePage {
             CollectCard({
               collectedBangumi: item,
               isEditMode: this.isEditMode,
-              onStatusChange: (type: number) => {
-                this.onCardStatusChange(item, type)
+              onRemove: () => {
+                this.requestDelete(item)
               }
             })
           }
-        }, (item: CollectedBangumi) => `collect_${item.animeId}_${item.collectType}`)
+        }, (item: CollectedBangumi) => `collect_${item.animeId}`)
       }
       .columnsTemplate(this.getGridColumnsTemplate())
       .columnsGap(8)
@@ -236,7 +170,7 @@ export struct FavoritePage {
       .scrollBar(BarState.Off)
       .width('100%')
       .layoutWeight(1)
-      .padding({ left: 12, right: 12, top: COLLECT_TAB_BAR_SECTION_GAP, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 6, bottom: 8 })
     }
   }
 
@@ -308,7 +242,7 @@ export struct FavoritePage {
           .width('100%')
           .margin({ bottom: 12 })
 
-        Text('点击卡片可以修改收藏状态或取消收藏')
+        Text('点击卡片可以取消收藏')
           .fontSize(14)
           .fontColor($r('app.color.text_secondary'))
           .width('100%')
@@ -340,17 +274,10 @@ export struct FavoritePage {
     .padding({ left: 32, right: 32 })
   }
 
-  private getCollectedByType(collectType: number): CollectedBangumi[] {
-    return this.collectedList
-      .filter((item: CollectedBangumi) => item.collectType === collectType)
-      .sort((a: CollectedBangumi, b: CollectedBangumi) => b.createdAt - a.createdAt)
-  }
-
   private refreshVisibleCollectedList(): void {
-    const collectType = this.currentTabIndex + 1
-    this.visibleCollectedList = this.getCollectedByType(collectType)
-    logger.info('Visible collectibles refreshed: tab=%{public}d type=%{public}d count=%{public}d',
-      this.currentTabIndex, collectType, this.visibleCollectedList.length)
+    this.visibleCollectedList = [...this.collectedList]
+      .sort((a: CollectedBangumi, b: CollectedBangumi) => b.createdAt - a.createdAt)
+    logger.info('Visible collectibles refreshed: count=%{public}d', this.visibleCollectedList.length)
   }
 
   private getGridColumnCount(): number {
@@ -365,12 +292,40 @@ export struct FavoritePage {
     return fraction.repeat(count).trim()
   }
 
-  private getCollectTabWidth(): number {
-    const availableWidth = this.screenWidthVp
-      - COLLECT_TAB_BAR_HORIZONTAL_PADDING * 2
-      - COLLECT_TAB_ITEM_GAP * (COLLECT_TAB_LABELS.length - 1)
-    const fittedWidth = availableWidth / COLLECT_TAB_LABELS.length
-    return Math.max(COLLECT_TAB_ITEM_MIN_WIDTH, Math.min(COLLECT_TAB_ITEM_MAX_WIDTH, fittedWidth))
+  private updateBottomTabOffset(deltaY: number): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const currentOffset = this.scroller.currentOffset()
+    if (currentOffset.yOffset <= 0) {
+      requestBottomTabAnimation(false)
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const nextOffset = resolveBottomTabOffsetByDelta(deltaY, this.bottomTabOffset, maxOffset)
+    if (Math.abs(nextOffset - this.bottomTabOffset) >= 0.5) {
+      this.bottomTabOffset = nextOffset
+      requestBottomTabAnimation(resolveBottomTabSnapTarget(nextOffset, maxOffset) > 0)
+    }
+  }
+
+  private snapBottomTabOffset(): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const targetOffset = resolveBottomTabSnapTarget(this.bottomTabOffset, maxOffset)
+    if (Math.abs(targetOffset - this.bottomTabOffset) < 0.5) {
+      return
+    }
+    const shouldHide = targetOffset > 0
+    requestBottomTabAnimation(shouldHide)
+    if (!shouldHide) {
+      this.bottomTabOffset = 0
+    }
   }
 
   private async loadCollectibles(): Promise<void> {
@@ -395,29 +350,10 @@ export struct FavoritePage {
     }
   }
 
-  private onCardStatusChange(item: CollectedBangumi, currentType: number): void {
-    this.statusMenuTarget = item
-    this.showStatusMenu = true
-  }
-
-  private async onStatusMenuSelect(type: number): Promise<void> {
-    if (this.statusMenuTarget === null) return
-
-    if (type === CollectType.none) {
-      this.deleteTargetAnimeId = this.statusMenuTarget!.animeId
-      this.deleteTargetName = this.statusMenuTarget!.animeName
-      this.showStatusMenu = false
-      this.showDeleteDialog = true
-      return
-    }
-
-    try {
-      await this.collectController.updateCollectType(this.statusMenuTarget!.animeId, type)
-      this.showStatusMenu = false
-      await this.loadCollectibles()
-    } catch (err) {
-      logger.error('Update collect type failed: %{public}s', JSON.stringify(err))
-    }
+  private requestDelete(item: CollectedBangumi): void {
+    this.deleteTargetAnimeId = item.animeId
+    this.deleteTargetName = item.animeName
+    this.showDeleteDialog = true
   }
 
   private buildEditIcon(): HdsNavigationIconOptions {
@@ -447,7 +383,7 @@ export struct FavoritePage {
 
   private buildTitle(): HdsNavigationTitle {
     return {
-      mainTitle: '片库',
+      mainTitle: '收藏',
       subTitle: this.isEditMode ? '编辑模式' : ''
     }
   }
@@ -473,98 +409,5 @@ export struct FavoritePage {
       enableComponentSafeArea: false,
       avoidLayoutSafeArea: true
     }
-  }
-}
-
-@Component
-struct CollectTabItem {
-  @Prop label: string = ''
-  @Prop index: number = 0
-  @Prop tabWidth: number = COLLECT_TAB_ITEM_MAX_WIDTH
-  @Prop selectedIndex: number = 0
-  onSelected?: (index: number) => void
-
-  build() {
-    Column() {
-      HdsTabs() {
-        TabContent()
-          .clip(false)
-          .tabBar(this.tabBarContentBuilder())
-          .width('100%')
-          .height('100%')
-          .backgroundColor(Color.Transparent)
-          .hitTestBehavior(HitTestMode.None)
-      }
-      .clip(false)
-      .hitTestBehavior(HitTestMode.None)
-      .align(Alignment.Center)
-      .height(COLLECT_TAB_BAR_HEIGHT)
-      .barWidth(this.tabWidth)
-      .barHeight(COLLECT_TAB_BAR_HEIGHT)
-      .barOverlap(true)
-      .barPosition(BarPosition.End)
-      .vertical(false)
-      .backgroundColor(Color.Transparent)
-      .shadow(undefined)
-      .barFloatingStyle({
-        barWidth: {
-          smallWidth: this.tabWidth,
-          mediumWidth: this.tabWidth,
-          largeWidth: this.tabWidth
-        },
-        gradientMask: {
-          maskColor: Color.Transparent
-        },
-        barBottomMargin: 0,
-        barSideMargin: 0,
-        systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.IMMERSIVE,
-          materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
-        },
-        lightColor: Color.Transparent
-      })
-    }
-    .backgroundColor(Color.Transparent)
-    .clip(false)
-    .width(this.tabWidth)
-    .height(COLLECT_TAB_BAR_HEIGHT)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-  }
-
-  @Builder
-  tabBarContentBuilder() {
-    Stack({ alignContent: Alignment.Center }) {
-      Column() {
-        Text(this.label)
-          .fontSize(14)
-          .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-          .fontColor(this.isSelected() ? '#E6000000' : '#99000000')
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Clip })
-          .textAlign(TextAlign.Center)
-          .width('100%')
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-    }
-    .width('100%')
-    .height('100%')
-    .hitTestBehavior(HitTestMode.Transparent)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-    .onClick(() => {
-      this.selectTab()
-    })
-  }
-
-  private selectTab(): void {
-    this.onSelected?.(this.index)
-  }
-
-  private isSelected(): boolean {
-    return this.selectedIndex === this.index
   }
 }

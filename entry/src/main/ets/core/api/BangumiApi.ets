@@ -837,6 +837,61 @@ export class BangumiApi {
     if (target.coverMedium.length === 0) target.coverMedium = fallback.coverMedium;
   }
 
+  private static async enrichCalendarItems(result: AnimeItem[][]): Promise<void> {
+    const candidates: AnimeItem[] = [];
+    const todayIndex = BangumiApi.getTodayCalendarIndex();
+    BangumiApi.collectCalendarEnrichCandidates(result, todayIndex, candidates);
+    for (let day = 0; day < result.length; day++) {
+      if (day !== todayIndex) {
+        BangumiApi.collectCalendarEnrichCandidates(result, day, candidates);
+      }
+    }
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const maxItems = Math.min(candidates.length, 28);
+    const batchSize = 4;
+    logger.info('Enrich calendar subject details: %{public}d/%{public}d items', maxItems, candidates.length);
+    for (let start = 0; start < maxItems; start += batchSize) {
+      const tasks: Promise<void>[] = [];
+      const end = Math.min(start + batchSize, maxItems);
+      for (let i = start; i < end; i++) {
+        tasks.push(BangumiApi.enrichCalendarItem(candidates[i]));
+      }
+      await Promise.all(tasks);
+    }
+  }
+
+  private static collectCalendarEnrichCandidates(result: AnimeItem[][], day: number, candidates: AnimeItem[]): void {
+    if (day < 0 || day >= result.length) {
+      return;
+    }
+    for (let i = 0; i < result[day].length; i++) {
+      const item = result[day][i];
+      if (item.bangumiId > 0 && (item.desc.length === 0 || item.tags.length <= 3 || item.eps <= 0)) {
+        candidates.push(item);
+      }
+    }
+  }
+
+  private static getTodayCalendarIndex(): number {
+    const day = new Date().getDay();
+    return day === 0 ? 6 : day - 1;
+  }
+
+  private static async enrichCalendarItem(item: AnimeItem): Promise<void> {
+    try {
+      const detail = await BangumiApi.getSubject(item.bangumiId);
+      if (detail !== null) {
+        BangumiApi.mergeSubjectDetail(item, detail);
+      }
+    } catch (err) {
+      logger.warn('Enrich calendar item failed: %{public}d %{public}s',
+        item.bangumiId, err instanceof Error ? err.message : String(err));
+    }
+  }
+
   static async fetchCalendarBySeason(start: string, end: string): Promise<AnimeItem[][]> {
     const result: AnimeItem[][] = []
     for (let i = 0; i < 7; i++) {
@@ -873,12 +928,12 @@ export class BangumiApi {
 
       const json = JSON.parse(bodyStr) as Record<string, Object>
       BangumiApi.fillCalendarFromJson(json, result)
-      const totalDays = result.filter((arr: AnimeItem[]) => arr.length > 0).length
+      const totalDays = BangumiApi.countCalendarDays(result)
       if (totalDays === 0) {
         request.destroy()
         return result
       }
-      const totalItems = result.reduce((sum: number, arr: AnimeItem[]) => sum + arr.length, 0)
+      const totalItems = BangumiApi.countCalendarItems(result)
       logger.info('fetchCalendarBySeason loaded: %{public}d items across %{public}d days', totalItems, totalDays)
       request.destroy()
       return result
@@ -977,11 +1032,17 @@ export class BangumiApi {
     }
 
     const mirrorResult = await BangumiApi.fetchMirrorCalendarSeason();
-    if (mirrorResult) {
+    if (mirrorResult && BangumiApi.isCalendarResultUseful(mirrorResult)) {
       return mirrorResult;
+    } else if (mirrorResult) {
+      const mirrorItems = BangumiApi.countCalendarItems(mirrorResult);
+      const mirrorDays = BangumiApi.countCalendarDays(mirrorResult);
+      logger.warn('Mirror calendar is incomplete: %{public}d items across %{public}d days, fallback to p1 calendar',
+        mirrorItems, mirrorDays);
     }
 
     const calendarDomains: string[] = [
+      'https://api.kazumi.fyi',
       'https://bgmapi.anibt.net',
       'https://next.bgm.tv',
       'https://api.bgm.tv'
@@ -1020,8 +1081,14 @@ export class BangumiApi {
 
         const json = JSON.parse(bodyStr) as Record<string, Object>;
         BangumiApi.fillCalendarFromJson(json, result);
-        const totalDays = result.filter((arr: AnimeItem[]) => arr.length > 0).length;
-        const totalItems = result.reduce((sum: number, arr: AnimeItem[]) => sum + arr.length, 0);
+        const totalDays = BangumiApi.countCalendarDays(result);
+        const totalItems = BangumiApi.countCalendarItems(result);
+        if (totalItems === 0 || totalDays === 0) {
+          logger.warn('Calendar from %{public}s is empty, try next domain', domain);
+          request.destroy();
+          continue;
+        }
+        await BangumiApi.enrichCalendarItems(result);
         logger.info('Calendar loaded from %{public}s: %{public}d items across %{public}d days',
           domain, totalItems, totalDays);
         request.destroy();
@@ -1080,12 +1147,12 @@ export class BangumiApi {
         result.push([]);
       }
       BangumiApi.fillCalendarFromJson(json, result);
-      const totalDays = result.filter((arr: AnimeItem[]) => arr.length > 0).length;
+      const totalDays = BangumiApi.countCalendarDays(result);
       if (totalDays === 0) {
         request.destroy();
         return null;
       }
-      const totalItems = result.reduce((sum: number, arr: AnimeItem[]) => sum + arr.length, 0);
+      const totalItems = BangumiApi.countCalendarItems(result);
       logger.info('Mirror calendar loaded: %{public}d items across %{public}d days', totalItems, totalDays);
       request.destroy();
       return result;
@@ -1118,6 +1185,22 @@ export class BangumiApi {
       }
       result[weekday - 1] = items;
     }
+  }
+
+  static isCalendarResultUseful(result: AnimeItem[][]): boolean {
+    return BangumiApi.countCalendarItems(result) >= 7 && BangumiApi.countCalendarDays(result) >= 3;
+  }
+
+  static hasCalendarItems(result: AnimeItem[][]): boolean {
+    return BangumiApi.countCalendarItems(result) > 0;
+  }
+
+  private static countCalendarItems(result: AnimeItem[][]): number {
+    return result.reduce((sum: number, arr: AnimeItem[]) => sum + arr.length, 0);
+  }
+
+  private static countCalendarDays(result: AnimeItem[][]): number {
+    return result.filter((arr: AnimeItem[]) => arr.length > 0).length;
   }
 
   private static formatDate(d: Date): string {
@@ -1208,6 +1291,20 @@ export class BangumiApi {
         }
       }
       anime.tags = tags;
+    }
+
+    if (anime.tags.length === 0) {
+      const metaTags = item['metaTags'] as Object[];
+      if (metaTags !== null && metaTags !== undefined) {
+        const tags: string[] = [];
+        for (let i = 0; i < metaTags.length; i++) {
+          const tagName = (metaTags[i] as string) ?? '';
+          if (tagName.length > 0) {
+            tags.push(tagName);
+          }
+        }
+        anime.tags = tags;
+      }
     }
 
     const infoboxList = item['infobox'] as Object[];

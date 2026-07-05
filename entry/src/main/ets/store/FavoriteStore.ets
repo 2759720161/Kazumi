@@ -3,6 +3,7 @@ import { RdbManager } from './RdbManager';
 import { RdbConstants } from '../constants/RdbConstants';
 import { FavoriteRecord } from '../models/FavoriteRecord';
 import { CollectedBangumi } from '../models/CollectedBangumi';
+import { CollectType } from '../models/CollectType';
 import { Logger } from '../utils/Logger';
 
 const logger = new Logger('FavoriteStore');
@@ -108,7 +109,7 @@ export class FavoriteStore {
       return 0;
     }
     resultSet.goToFirstRow();
-    const type = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_COLLECT_TYPE));
+    const type = CollectType.normalize(resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_COLLECT_TYPE)));
     resultSet.close();
     return type;
   }
@@ -161,7 +162,7 @@ export class FavoriteStore {
           item.animeUrl = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_ANIME_URL));
           item.sourceName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_NAME));
           item.sourceId = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_SOURCE_ID));
-          item.collectType = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_COLLECT_TYPE));
+          item.collectType = CollectType.normalize(resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_COLLECT_TYPE)));
           item.bangumiId = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_BANGUMI_ID));
           item.bangumiCover = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_BANGUMI_COVER));
           item.coverFallback = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_COVER_FALLBACK));
@@ -197,7 +198,7 @@ export class FavoriteStore {
         if (resultSet.rowCount > 0 && resultSet.goToFirstRow()) {
           do {
             const aid = resultSet.getString(0)
-            const ctype = resultSet.getLong(1)
+            const ctype = CollectType.normalize(resultSet.getLong(1))
             result.set(aid, ctype)
           } while (resultSet.goToNextRow())
         }

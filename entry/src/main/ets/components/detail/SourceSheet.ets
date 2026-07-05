@@ -9,6 +9,13 @@ import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('SourceSheet')
 
+export class SourceSheetSnapshot {
+  pluginStates: PluginSearchState[] = []
+  selectedPluginId: number = -1
+  selectedResult: SearchResultRef | null = null
+  hasUserSelectedPlugin: boolean = false
+}
+
 @Component
 export struct SourceSheet {
   @State pluginStates: PluginSearchState[] = []
@@ -33,6 +40,8 @@ export struct SourceSheet {
   @Prop animeOriginalName: string = ''
   @Prop animeAliases: string[] = []
   @Prop @Watch('onCloseSignalChange') closeSignal: number = 0
+  @Prop preserveOnDisappear: boolean = false
+  @Prop restoreSnapshot: SourceSheetSnapshot | null = null
   private searchService: PluginSearchService = new PluginSearchService()
   private ruleStore: RuleSourceStore = new RuleSourceStore()
   private isClosed: boolean = false
@@ -40,6 +49,7 @@ export struct SourceSheet {
   private hasUserSelectedPlugin: boolean = false
   private roadsRequestToken: number = 0
   onRoadsReady?: ((source: PlaybackSource) => void)
+  onSnapshotChanged?: ((snapshot: SourceSheetSnapshot) => void)
 
   aboutToAppear(): void {
     this.isClosed = false
@@ -48,10 +58,16 @@ export struct SourceSheet {
         this.applyPluginStates(states)
       }
     })
+    if (this.restoreFromSnapshot()) {
+      return
+    }
     this.startSearch()
   }
 
   aboutToDisappear(): void {
+    if (this.preserveOnDisappear) {
+      return
+    }
     this.cancelSearch()
   }
 
@@ -206,74 +222,57 @@ export struct SourceSheet {
     }
     .width('100%')
     .padding({ left: 20, right: 20, top: 14, bottom: 8 })
-    .bindPopup(this.showKeywordMenu, {
-      builder: this.KeywordMenuContent,
+    .bindMenu(this.showKeywordMenu, this.KeywordMenuContent, {
       placement: Placement.Bottom,
       showInSubWindow: false,
-      onStateChange: (e: PopupStateChangeParam) => {
-        if (!e.isVisible) {
-          this.showKeywordMenu = false
-        }
+      onDisappear: () => {
+        this.showKeywordMenu = false
       }
     })
   }
 
   @Builder
   private KeywordMenuContent(): void {
-    Column() {
+    Menu() {
       if (this.animeOriginalName.length > 0 && this.animeOriginalName !== this.getCurrentKeyword()) {
-        Text('使用原名')
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .width('100%')
-          .height(48)
-          .padding({ left: 18, right: 18 })
-          .textAlign(TextAlign.Start)
-          .borderRadius(12)
-          .onClick(() => {
-            this.showKeywordMenu = false
-            this.queryCurrentSource(this.animeOriginalName)
-          })
+        this.KeywordMenuItem('使用原名', () => {
+          this.showKeywordMenu = false
+          this.queryCurrentSource(this.animeOriginalName)
+        })
       }
 
       if (this.getAliasList().length > 0) {
-        Text('使用别名')
+        this.KeywordMenuItem('使用别名', () => {
+          this.showKeywordMenu = false
+          this.openAliasDialog()
+        })
+      }
+
+      this.KeywordMenuItem('手动输入', () => {
+        this.showKeywordMenu = false
+        this.openManualSearchDialog()
+      })
+    }
+    .width(160)
+    .fontColor($r('app.color.text_primary'))
+    .radius(20)
+  }
+
+  @Builder
+  private KeywordMenuItem(label: string, action: () => void): void {
+    MenuItem() {
+      Row() {
+        Text(label)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .width('100%')
-          .height(48)
-          .padding({ left: 18, right: 18 })
-          .textAlign(TextAlign.Start)
-          .borderRadius(12)
-          .onClick(() => {
-            this.showKeywordMenu = false
-            this.openAliasDialog()
-          })
+          .layoutWeight(1)
       }
-
-      Text('手动输入')
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
         .width('100%')
         .height(48)
-        .padding({ left: 18, right: 18 })
-        .textAlign(TextAlign.Start)
-        .borderRadius(12)
-        .onClick(() => {
-          this.showKeywordMenu = false
-          this.openManualSearchDialog()
-        })
+        .padding({ left: 14, right: 14 })
     }
-    .width(160)
-    .padding(6)
-    .borderRadius(16)
-    .backgroundColor($r('app.color.card_background'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+    .onClick(action)
   }
 
   @Builder
@@ -451,13 +450,13 @@ export struct SourceSheet {
             this.SupplementarySearchEntry()
           }
           .width('100%')
-          .height('100%')
           .alignItems(HorizontalAlign.Start)
           .justifyContent(FlexAlign.Start)
         }
         .width('100%')
-        .height('100%')
         .layoutWeight(1)
+        .scrollable(ScrollDirection.Vertical)
+        .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
       }
     }
@@ -1064,6 +1063,7 @@ export struct SourceSheet {
     const requestPluginId = result.sourceId
     const currentResult = result
     this.selectedResult = result
+    this.emitSnapshot()
     this.isQueryingRoads = true
     this.queryRoadsError = ''
     logger.info('queryRoads start token=%{public}d pluginId=%{public}d name=%{public}s',
@@ -1182,6 +1182,7 @@ export struct SourceSheet {
 
     if (this.pluginStates.length === 0) {
       this.selectedPluginIndex = 0
+      this.emitSnapshot()
       return
     }
 
@@ -1189,6 +1190,7 @@ export struct SourceSheet {
       const nextIndex = this.findPluginIndexById(selectedPluginId)
       if (nextIndex >= 0) {
         this.selectedPluginIndex = nextIndex
+        this.emitSnapshot()
         return
       }
     }
@@ -1197,12 +1199,14 @@ export struct SourceSheet {
     if (matchedIndex >= 0) {
       this.selectedPluginIndex = matchedIndex
       this.resetRoadQueryState()
+      this.emitSnapshot()
       return
     }
 
     if (this.selectedPluginIndex < 0 || this.selectedPluginIndex >= this.pluginStates.length) {
       this.selectedPluginIndex = 0
     }
+    this.emitSnapshot()
   }
 
   private getSelectedPluginId(): number {
@@ -1291,6 +1295,80 @@ export struct SourceSheet {
     return runtime.buildSearchUrl(keyword)
   }
 
+  private restoreFromSnapshot(): boolean {
+    const snapshot = this.restoreSnapshot
+    if (snapshot === null || snapshot.pluginStates.length === 0) {
+      return false
+    }
+    const restoredStates = this.clonePluginStates(snapshot.pluginStates)
+    this.hasUserSelectedPlugin = snapshot.hasUserSelectedPlugin
+    this.isSearching = false
+    this.isQueryingRoads = false
+    this.queryRoadsError = ''
+    this.searchService.restoreStates(restoredStates)
+    this.pluginStates = restoredStates
+    const restoredIndex = this.findPluginIndexById(snapshot.selectedPluginId)
+    if (restoredIndex >= 0) {
+      this.selectedPluginIndex = restoredIndex
+    } else {
+      this.selectedPluginIndex = 0
+    }
+    this.selectedResult = this.cloneSearchResult(snapshot.selectedResult)
+    this.emitSnapshot()
+    return true
+  }
+
+  private emitSnapshot(): void {
+    if (!this.onSnapshotChanged) {
+      return
+    }
+    const snapshot = new SourceSheetSnapshot()
+    snapshot.pluginStates = this.clonePluginStates(this.pluginStates)
+    snapshot.selectedPluginId = this.getSelectedPluginId()
+    snapshot.selectedResult = this.cloneSearchResult(this.selectedResult)
+    snapshot.hasUserSelectedPlugin = this.hasUserSelectedPlugin
+    this.onSnapshotChanged(snapshot)
+  }
+
+  private clonePluginStates(states: PluginSearchState[]): PluginSearchState[] {
+    const cloned: PluginSearchState[] = []
+    for (let i = 0; i < states.length; i++) {
+      const src = states[i]
+      const state = new PluginSearchState()
+      state.pluginId = src.pluginId
+      state.pluginName = src.pluginName
+      state.status = src.status
+      state.errorMessage = src.errorMessage
+      state.keyword = src.keyword
+      state.searchResults = this.cloneSearchResults(src.searchResults)
+      cloned.push(state)
+    }
+    return cloned
+  }
+
+  private cloneSearchResults(results: SearchResultRef[]): SearchResultRef[] {
+    const cloned: SearchResultRef[] = []
+    for (let i = 0; i < results.length; i++) {
+      const result = this.cloneSearchResult(results[i])
+      if (result !== null) {
+        cloned.push(result)
+      }
+    }
+    return cloned
+  }
+
+  private cloneSearchResult(result: SearchResultRef | null): SearchResultRef | null {
+    if (result === null) {
+      return null
+    }
+    const cloned = new SearchResultRef()
+    cloned.name = result.name
+    cloned.url = result.url
+    cloned.sourceId = result.sourceId
+    cloned.sourceName = result.sourceName
+    return cloned
+  }
+
   private onCloseSignalChange(): void {
     this.cancelSearch()
   }
@@ -1315,6 +1393,7 @@ export struct SourceSheet {
     }
     this.selectedPluginIndex = index
     this.resetRoadQueryState()
+    this.emitSnapshot()
   }
 
   private resetRoadQueryState(): void {

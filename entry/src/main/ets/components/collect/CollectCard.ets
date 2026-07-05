@@ -1,5 +1,4 @@
 import { CollectedBangumi } from '../../models/CollectedBangumi'
-import { CollectType } from '../../models/CollectType'
 import { router } from '@kit.ArkUI'
 import { Logger } from '../../utils/Logger'
 
@@ -9,7 +8,7 @@ const logger = new Logger('CollectCard')
 export struct CollectCard {
   @Prop collectedBangumi: CollectedBangumi
   @Prop isEditMode: boolean = false
-  onStatusChange?: (type: number) => void
+  onRemove?: () => void
 
   build() {
     Stack({ alignContent: Alignment.BottomStart }) {
@@ -41,7 +40,7 @@ export struct CollectCard {
     .clip(true)
     .onClick(() => {
       if (this.isEditMode) {
-        this.showStatusMenu()
+        this.requestRemove()
       } else {
         router.pushUrl({
           url: 'pages/detail/DetailPage',
@@ -102,7 +101,7 @@ export struct CollectCard {
   private StatusBadge(): void {
     Row() {
       Row() {
-        SymbolGlyph(CollectType.getIcon(this.collectedBangumi.collectType))
+        SymbolGlyph($r('sys.symbol.heart_fill'))
           .fontSize(12)
           .fontColor([$r('app.color.text_on_primary')])
       }
@@ -123,7 +122,7 @@ export struct CollectCard {
   private StatusButton(): void {
     Row() {
       Row() {
-        SymbolGlyph(CollectType.getIcon(this.collectedBangumi.collectType))
+        SymbolGlyph($r('sys.symbol.heart_slash'))
           .fontSize(16)
           .fontColor([$r('app.color.text_on_primary')])
       }
@@ -133,7 +132,7 @@ export struct CollectCard {
       .backgroundColor($r('app.color.button_primary_bg'))
       .justifyContent(FlexAlign.Center)
       .onClick(() => {
-        this.showStatusMenu()
+        this.requestRemove()
       })
     }
     .width('100%')
@@ -148,9 +147,7 @@ export struct CollectCard {
     return cover.length > 0 ? cover : $r('app.media.ic_placeholder')
   }
 
-  private showStatusMenu(): void {
-    if (this.onStatusChange) {
-      this.onStatusChange!(this.collectedBangumi.collectType)
-    }
+  private requestRemove(): void {
+    this.onRemove?.()
   }
 }

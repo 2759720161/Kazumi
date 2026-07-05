@@ -21,7 +21,7 @@ export class DefaultRuleSourceInitializer {
       return false
     }
 
-    logger.info('No rule sources found, initializing default rules')
+    logger.info('No rule sources found; default built-in rules are disabled')
     const defaultRules = DefaultRuleSourceInitializer.getDefaultRules()
     let inserted = 0
     for (let i = 0; i < defaultRules.length; i++) {
@@ -38,43 +38,10 @@ export class DefaultRuleSourceInitializer {
   }
 
   /**
-   * @deprecated Legacy method — hardcoded rules are dead code. Use RuleCatalogService or BundledRuleSourceLoader instead.
+   * @deprecated Legacy method — built-in rules are disabled. Use RuleCatalogService or user import instead.
    */
   static getDefaultRules(): RuleSource[] {
-    const rules: RuleSource[] = []
-
-    const rule1 = new RuleSource()
-    rule1.api = 'https://api.example.com'
-    rule1.type = 'anime'
-    rule1.name = 'AgeFans'
-    rule1.version = '1.0.0'
-    rule1.baseUrl = 'https://www.agefans.cc'
-    rule1.searchURL = '/search?query=@keyword'
-    rule1.searchList = '//div[@class="blockcontent1"]//a'
-    rule1.searchName = './/text()'
-    rule1.searchResult = './@href'
-    rule1.chapterRoads = '//div[@class="fullsitec"]//a'
-    rule1.chapterResult = '.'
-    rule1.useWebview = true
-    rule1.enabled = true
-    rules.push(rule1)
-
-    const rule2 = new RuleSource()
-    rule2.api = 'https://api.example2.com'
-    rule2.type = 'anime'
-    rule2.name = 'Yhdm'
-    rule2.version = '1.0.0'
-    rule2.baseUrl = 'https://www.yhdm.io'
-    rule2.searchURL = '/search/@keyword/'
-    rule2.searchList = '//div[@class="lpic"]//a'
-    rule2.searchName = './/h2/text()'
-    rule2.searchResult = './@href'
-    rule2.chapterRoads = '//div[@class="movurl"]//a'
-    rule2.chapterResult = '.'
-    rule2.enabled = true
-    rules.push(rule2)
-
-    return rules
+    return []
   }
 
   static async importFromJson(jsonStr: string): Promise<number> {

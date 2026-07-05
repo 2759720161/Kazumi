@@ -8,6 +8,15 @@ import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
 import { UserDownloadFolder } from '../services/UserDownloadFolder';
+import {
+  BOTTOM_TAB_ANIMATION_HIDDEN_KEY,
+  BOTTOM_TAB_ANIMATION_TOKEN_KEY,
+  BOTTOM_TAB_AUTO_HIDE_DEFAULT,
+  BOTTOM_TAB_SHOW_ANIMATION_DEFAULT,
+  PREFS_KEY_BOTTOM_TAB_AUTO_HIDE,
+  PREFS_KEY_BOTTOM_TAB_SHOW_ANIMATION
+} from '../utils/BottomTabAutoHide';
+import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../utils/AdvancedOptionsUnlock';
 
 const logger = new Logger('EntryAbility');
 
@@ -20,6 +29,12 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('keyboardAvoidHeight', 0);
     AppStorage.setOrCreate('screenWidthVp', 0);
     AppStorage.setOrCreate('screenHeightVp', 0);
+    AppStorage.setOrCreate('bottomTabAutoHide', BOTTOM_TAB_AUTO_HIDE_DEFAULT);
+    AppStorage.setOrCreate('bottomTabShowAnimation', BOTTOM_TAB_SHOW_ANIMATION_DEFAULT);
+    AppStorage.setOrCreate('bottomTabOffset', 0);
+    AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
+    AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);
+    AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, false);
     SettingsChangeSignal.initDanmakuVersion();
 
     try {
@@ -101,6 +116,20 @@ export default class EntryAbility extends UIAbility {
         this.context.getApplicationContext().setColorMode(savedColorMode);
         logger.info('Applied saved colorMode: %{public}d', savedColorMode);
       }
+
+      const bottomTabAutoHide = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_BOTTOM_TAB_AUTO_HIDE,
+        BOTTOM_TAB_AUTO_HIDE_DEFAULT
+      );
+      AppStorage.setOrCreate('bottomTabAutoHide', bottomTabAutoHide);
+      const bottomTabShowAnimation = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_BOTTOM_TAB_SHOW_ANIMATION,
+        BOTTOM_TAB_SHOW_ANIMATION_DEFAULT
+      );
+      AppStorage.setOrCreate('bottomTabShowAnimation', bottomTabShowAnimation);
+      AppStorage.setOrCreate('bottomTabOffset', 0);
+      AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
+      AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to init Preferences: %{public}s', msg);

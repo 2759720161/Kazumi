@@ -1,12 +1,11 @@
 import { CollectController } from '../../controller/CollectController'
 import { CollectType } from '../../models/CollectType'
 import { AnimeItem } from '../../models/AnimeItem'
-import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 import { DetailHeroBackground } from '../../components/detail/DetailHeroBackground'
 import { DetailTitleBlock } from '../../components/detail/DetailTitleBlock'
 import { DetailInfoPanel } from '../../components/detail/DetailInfoPanel'
 import { DetailFloatingPlayButton } from '../../components/detail/DetailFloatingPlayButton'
-import { SourceSheet } from '../../components/detail/SourceSheet'
+import { SourceSheet, SourceSheetSnapshot } from '../../components/detail/SourceSheet'
 import { BangumiApi } from '../../core/api/BangumiApi'
 import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { EpisodeData } from '../../models/EpisodeData'
@@ -77,7 +76,7 @@ export struct DetailPage {
   @State animeAirWeekday: number = 0
   @State tagsExpanded: boolean = false
   @State isSubjectDetailLoading: boolean = false
-  @State showCollectMenu: boolean = false
+  @State preserveSourceSheetOnDisappear: boolean = false
 
 
   private animeUrl: string = ''
@@ -85,7 +84,7 @@ export struct DetailPage {
   private collectController: CollectController = new CollectController()
   private historyStore: HistoryStore = new HistoryStore()
   private contentScroller: Scroller = new Scroller()
-  private pendingPlaybackSource: PlaybackSource | null = null
+  private sourceSheetSnapshot: SourceSheetSnapshot | null = null
 
 
   aboutToAppear(): void {
@@ -118,6 +117,20 @@ export struct DetailPage {
       setTimeout(() => {
         this.showSourceSheet = true
       }, 300)
+    }
+
+    this.restoreSourceSheetAfterPlayerIfNeeded()
+  }
+
+  onPageShow(): void {
+    this.restoreSourceSheetAfterPlayerIfNeeded()
+  }
+
+  private restoreSourceSheetAfterPlayerIfNeeded(): void {
+    if (this.preserveSourceSheetOnDisappear) {
+      logger.info('DetailPage restored from player, keep source sheet visible')
+      this.preserveSourceSheetOnDisappear = false
+      this.showSourceSheet = true
     }
   }
 
@@ -180,14 +193,13 @@ export struct DetailPage {
         radius: LengthMetrics.vp(24),
         backgroundColor: $r('app.color.page_background'),
         onDisappear: () => {
+          if (this.preserveSourceSheetOnDisappear) {
+            logger.info('SourceSheet disappeared during player navigation, preserve sheet state')
+            return
+          }
           this.sourceSheetCloseSignal++
           this.showSourceSheet = false
-          const pending = this.pendingPlaybackSource
-          this.pendingPlaybackSource = null
-          if (pending !== null) {
-            logger.info('SourceSheet dismissed, continue router push')
-            this.openPlayerWithHistory(pending)
-          }
+          this.sourceSheetSnapshot = null
         }
       })
 
@@ -204,27 +216,6 @@ export struct DetailPage {
     .width('100%')
     .height(LayoutPolicy.matchParent)
     .background($r('app.color.page_background_media'))
-    .bindSheet($$this.showCollectMenu, this.CollectSheetContent, {
-      height: SheetSize.FIT_CONTENT,
-      dragBar: true,
-      showClose: false,
-      radius: LengthMetrics.vp(24),
-      backgroundColor: $r('app.color.page_background'),
-      onDisappear: () => {
-        this.showCollectMenu = false
-      }
-    })
-  }
-
-  @Builder
-  private CollectSheetContent() {
-    CollectStatusMenu({
-      currentType: this.currentCollectType,
-      isVisible: $showCollectMenu,
-      onSelect: (type: number) => {
-        this.onCollectMenuSelect(type)
-      }
-    })
   }
 
   @Builder
@@ -234,8 +225,13 @@ export struct DetailPage {
       animeOriginalName: this.animeOriginalName,
       animeAliases: this.animeAliases,
       closeSignal: this.sourceSheetCloseSignal,
+      preserveOnDisappear: this.preserveSourceSheetOnDisappear,
+      restoreSnapshot: this.sourceSheetSnapshot,
       onRoadsReady: (source: PlaybackSource) => {
         this.onRoadsReady(source)
+      },
+      onSnapshotChanged: (snapshot: SourceSheetSnapshot) => {
+        this.sourceSheetSnapshot = snapshot
       }
     })
   }
@@ -442,13 +438,12 @@ export struct DetailPage {
 
   private onRoadsReady(source: PlaybackSource): void {
     if (source.status === 'success' && source.roads.length > 0) {
-      logger.info('onRoadsReady accepted, wait sheet disappear before push')
-      this.pendingPlaybackSource = source
-      this.showSourceSheet = false
+      logger.info('onRoadsReady accepted, push player and preserve source sheet')
+      this.openPlayerWithHistory(source, true)
     }
   }
 
-  private async openPlayerWithHistory(source: PlaybackSource): Promise<void> {
+  private async openPlayerWithHistory(source: PlaybackSource, preserveSourceSheet: boolean = false): Promise<void> {
     logger.info('openPlayerWithHistory source=%{public}s roads=%{public}d', source.name, source.roads.length)
     const selected = await this.resolveInitialEpisode(source)
     if (selected === null) {
@@ -470,6 +465,10 @@ export struct DetailPage {
 
     logger.info('router.pushUrl to PlayerPage episodeUrl=%{public}s ruleSourceId=%{public}d',
       selected.episode.url.length > 0 ? 'ok' : 'empty', selectedSourceId)
+    if (preserveSourceSheet) {
+      this.preserveSourceSheetOnDisappear = true
+      this.showSourceSheet = true
+    }
     router.pushUrl({
       url: 'pages/player/PlayerPage',
       params: {
@@ -492,6 +491,11 @@ export struct DetailPage {
         sourceName: this.sourceName,
         historyPositionMs: historyPositionMs
       }
+    }).catch((err: Error) => {
+      if (preserveSourceSheet) {
+        this.preserveSourceSheetOnDisappear = false
+      }
+      logger.error('router.pushUrl PlayerPage failed: %{public}s', err.message)
     })
   }
 
@@ -582,25 +586,18 @@ export struct DetailPage {
     return item
   }
 
-  private async onCollectMenuSelect(type: number): Promise<void> {
-    if (type === CollectType.none) {
-      try {
-        const animeItem = this.buildAnimeItem()
-        await this.collectController.deleteCollect(animeItem)
-        this.currentCollectType = CollectType.none
-        this.showCollectMenu = false
-      } catch (err) {
-        logger.error('Delete collect failed: %{public}s', err instanceof Error ? err.message : String(err))
-      }
-      return
-    }
+  private async toggleCollect(): Promise<void> {
     try {
       const animeItem = this.buildAnimeItem()
-      await this.collectController.addCollect(animeItem, type)
-      this.currentCollectType = type
-      this.showCollectMenu = false
+      if (CollectType.isFavorite(this.currentCollectType)) {
+        await this.collectController.deleteCollect(animeItem)
+        this.currentCollectType = CollectType.none
+      } else {
+        await this.collectController.addCollect(animeItem, CollectType.favorite)
+        this.currentCollectType = CollectType.favorite
+      }
     } catch (err) {
-      logger.error('onCollectMenuSelect failed: %{public}s', err instanceof Error ? err.message : String(err))
+      logger.error('toggleCollect failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -671,12 +668,11 @@ export struct DetailPage {
 
   private buildCollectIcon(): HdsNavigationIconOptions {
     return {
-      icon: this.currentCollectType > CollectType.none ?
+      icon: CollectType.isFavorite(this.currentCollectType) ?
         CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart'),
-      label: this.currentCollectType > CollectType.none ?
-        CollectType.getLabel(this.currentCollectType) : '收藏',
+      label: CollectType.isFavorite(this.currentCollectType) ? '已收藏' : '收藏',
       action: () => {
-        this.showCollectMenu = true
+        this.toggleCollect()
       }
     }
   }
@@ -702,6 +698,14 @@ export struct DetailPage {
 
   private buildDetailTitleBarOptions(): HdsNavigationTitleBarOptions {
     const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle()
+    const collectIconColor: ResourceColor = CollectType.isFavorite(this.currentCollectType) ?
+      $r('app.color.status_error') : $r('sys.color.icon_primary')
+    if (style.originalStyle?.contentStyle?.menuStyle) {
+      style.originalStyle.contentStyle.menuStyle.iconColor = collectIconColor
+    }
+    if (style.scrollEffectStyle?.contentStyle?.menuStyle) {
+      style.scrollEffectStyle.contentStyle.menuStyle.iconColor = collectIconColor
+    }
     if (style.scrollEffectOpts) {
       style.scrollEffectOpts.blurEffectiveStartOffset = LengthMetrics.vp(0)
       style.scrollEffectOpts.blurEffectiveEndOffset = LengthMetrics.vp(80)

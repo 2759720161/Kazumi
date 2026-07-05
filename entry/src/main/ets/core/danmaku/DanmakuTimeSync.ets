@@ -456,6 +456,9 @@ export class DanmakuTimeSync {
 
   private isSourceEnabled(source: string): boolean {
     const normalized = source.toLowerCase()
+    if (normalized.length === 0 || normalized === 'local') {
+      return true
+    }
     if (normalized.indexOf('bilibili') >= 0 || normalized.indexOf('bili') >= 0) {
       return this.settings.biliBiliSource
     }

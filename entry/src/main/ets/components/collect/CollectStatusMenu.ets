@@ -6,11 +6,11 @@ export struct CollectStatusMenu {
   @Link isVisible: boolean
   onSelect?: (type: number) => void
 
-  private readonly menuItems: string[] = ['未追', '在看', '想看', '搁置', '看过', '抛弃']
+  private readonly menuItems: string[] = ['未收藏', '收藏']
 
   build() {
     Column() {
-      Text('收藏状态')
+      Text('收藏')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
@@ -21,18 +21,18 @@ export struct CollectStatusMenu {
         Row() {
           SymbolGlyph(CollectType.getIcon(index ?? 0))
             .fontSize(18)
-            .fontColor([(index ?? 0) === this.currentType ? $r('app.color.tab_icon_selected') :
+            .fontColor([(index ?? 0) === CollectType.normalize(this.currentType) ? $r('app.color.tab_icon_selected') :
               $r('app.color.text_primary')])
 
           Text(label)
             .fontSize(16)
-            .fontColor((index ?? 0) === this.currentType ? $r('app.color.tab_icon_selected') :
+            .fontColor((index ?? 0) === CollectType.normalize(this.currentType) ? $r('app.color.tab_icon_selected') :
               $r('app.color.text_primary'))
-            .fontWeight((index ?? 0) === this.currentType ? FontWeight.Medium : FontWeight.Normal)
+            .fontWeight((index ?? 0) === CollectType.normalize(this.currentType) ? FontWeight.Medium : FontWeight.Normal)
             .margin({ left: 12 })
             .layoutWeight(1)
 
-          if ((index ?? 0) === this.currentType) {
+          if ((index ?? 0) === CollectType.normalize(this.currentType)) {
             SymbolGlyph($r('sys.symbol.checkmark'))
               .fontSize(16)
               .fontColor([$r('app.color.tab_icon_selected')])
@@ -43,11 +43,11 @@ export struct CollectStatusMenu {
         .padding({ left: 16, right: 16 })
         .alignItems(VerticalAlign.Center)
         .borderRadius(10)
-        .backgroundColor((index ?? 0) === this.currentType ?
+        .backgroundColor((index ?? 0) === CollectType.normalize(this.currentType) ?
           $r('app.color.category_menu_item_selected') : $r('app.color.color_transparent'))
         .margin({ bottom: 2 })
         .onClick(() => {
-          if ((index ?? 0) !== this.currentType && this.onSelect) {
+          if ((index ?? 0) !== CollectType.normalize(this.currentType) && this.onSelect) {
             this.onSelect!(index ?? 0)
           }
           this.isVisible = false

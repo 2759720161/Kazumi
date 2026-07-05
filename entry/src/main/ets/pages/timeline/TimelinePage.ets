@@ -5,7 +5,7 @@ import { TimelineAnimeCard } from '../../components/timeline/TimelineAnimeCard'
 import { TIMELINE_WEEKDAY_LABELS } from '../../components/timeline/TimelineWeekdayHdsTabs'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
-import { router } from '@kit.ArkUI'
+import { router, curves } from '@kit.ArkUI'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -25,6 +25,13 @@ import {
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle
 } from '../../utils/HdsPageStyle'
+import {
+  BOTTOM_TAB_AUTO_HIDE_DEFAULT,
+  getBottomTabHideDistance,
+  requestBottomTabAnimation,
+  resolveBottomTabOffsetByDelta,
+  resolveBottomTabSnapTarget
+} from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('TimelinePage')
 const WEEKDAY_TAB_COUNT: number = 7
@@ -44,6 +51,8 @@ export struct TimelinePage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
+  @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State selectedWeekdayIndex: number = 0
   @State seasonString: string = ''
   @State calendar: AnimeItem[][] = []
@@ -113,6 +122,12 @@ export struct TimelinePage {
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
         .clip(false)
+        .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
+          this.updateBottomTabOffset(yOffset)
+        })
+        .onScrollStop(() => {
+          this.snapBottomTabOffset()
+        })
       }
       .width('100%')
       .height('100%')
@@ -154,6 +169,42 @@ export struct TimelinePage {
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+  }
+
+  private updateBottomTabOffset(deltaY: number): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const currentOffset = this.contentScroller.currentOffset()
+    if (currentOffset.yOffset <= 0) {
+      requestBottomTabAnimation(false)
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const nextOffset = resolveBottomTabOffsetByDelta(deltaY, this.bottomTabOffset, maxOffset)
+    if (Math.abs(nextOffset - this.bottomTabOffset) >= 0.5) {
+      this.bottomTabOffset = nextOffset
+      requestBottomTabAnimation(resolveBottomTabSnapTarget(nextOffset, maxOffset) > 0)
+    }
+  }
+
+  private snapBottomTabOffset(): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const targetOffset = resolveBottomTabSnapTarget(this.bottomTabOffset, maxOffset)
+    if (Math.abs(targetOffset - this.bottomTabOffset) < 0.5) {
+      return
+    }
+    const shouldHide = targetOffset > 0
+    requestBottomTabAnimation(shouldHide)
+    if (!shouldHide) {
+      this.bottomTabOffset = 0
+    }
   }
 
   @Builder
@@ -226,7 +277,7 @@ export struct TimelinePage {
               onSelected: (selectedIndex: number) => {
                 this.getUIContext().animateTo({
                   duration: 250,
-                  curve: Curve.Friction
+      curve: curves.springMotion()
                 }, () => {
                   this.selectedWeekdayIndex = selectedIndex
                 })
@@ -559,8 +610,7 @@ export struct TimelinePage {
     if (this.calendar.length < WEEKDAY_TAB_COUNT) {
       return []
     }
-    const apiIndex = weekdayIndex === 6 ? 0 : weekdayIndex + 1
-    return this.calendar[apiIndex]
+    return this.calendar[weekdayIndex]
   }
 
   private async loadCalendar(): Promise<void> {
@@ -605,13 +655,17 @@ export struct TimelinePage {
         const mirrorResult = await BangumiApi.fetchCalendarBySeason(
           AnimeSeason.getSeasonDateRange(year, quarter)[0],
           AnimeSeason.getSeasonDateRange(year, quarter)[1])
-        const hasData = mirrorResult.some((arr: AnimeItem[]) => arr.length > 0)
-        if (hasData) {
+        if (BangumiApi.isCalendarResultUseful(mirrorResult)) {
           result = mirrorResult
         } else {
-          result = await BangumiApi.searchByAirDateRange(
+          const fallbackResult = await BangumiApi.searchByAirDateRange(
             AnimeSeason.getSeasonDateRange(year, quarter)[0],
             AnimeSeason.getSeasonDateRange(year, quarter)[1])
+          if (BangumiApi.hasCalendarItems(fallbackResult)) {
+            result = fallbackResult
+          } else {
+            result = mirrorResult
+          }
         }
       }
       this.calendar = result
@@ -699,7 +753,7 @@ struct WeekdayTabItem {
         Text(this.label)
           .fontSize(14)
           .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-          .fontColor(this.isSelected() ? '#E6000000' : '#99000000')
+          .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Clip })
           .textAlign(TextAlign.Center)

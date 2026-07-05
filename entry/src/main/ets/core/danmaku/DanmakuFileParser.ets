@@ -71,7 +71,7 @@ export class DanmakuFileParser {
         }
 
         const parts = pValue.split(',')
-        if (parts.length < 3) {
+        if (parts.length < 4) {
           continue
         }
 
@@ -81,15 +81,17 @@ export class DanmakuFileParser {
         }
 
         const typeValue = parseInt(parts[1], 10)
-        const colorValue = parseInt(parts[2], 10)
+        const fontSizeValue = parseFloat(parts[2])
+        const colorValue = parseInt(parts[3], 10)
         const color = DanmakuFileParser.normalizeColorFromInt(colorValue)
+        const fontSize = isNaN(fontSizeValue) ? 25 : fontSizeValue
 
         const danmakuType = DanmakuFileParser.mapBilibiliType(typeValue)
         items.push(new DanmakuItem(
           text,
           Math.round(timeSec * 1000),
           color,
-          25,
+          fontSize,
           danmakuType,
           'Local'
         ))

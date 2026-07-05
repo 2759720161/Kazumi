@@ -7,6 +7,12 @@ import { Logger } from '../utils/Logger'
 const logger = new Logger('UserDownloadFolder')
 const OWN_FOLDER_URI_PREFIX = 'file://docs/storage/Users/currentUser/Download/'
 
+class LocalDanmakuCandidate {
+  fileName: string = ''
+  uri: string = ''
+  format: string = ''
+}
+
 export class UserDownloadFolder {
   private static ownFolderPath: string = ''
   private static folderActivated: boolean = false
@@ -74,6 +80,8 @@ export class UserDownloadFolder {
     }
 
     const records: LocalVideoRecord[] = []
+    const danmakuCandidates: Map<string, LocalDanmakuCandidate> = new Map()
+    const videoMatchKeys: string[] = []
     try {
       const listFileOptions: ListFileOptions = {
         recursion: true
@@ -81,7 +89,7 @@ export class UserDownloadFolder {
       const filenames = fileIo.listFileSync(folderPath, listFileOptions)
       for (let i = 0; i < filenames.length; i++) {
         const relativePath = UserDownloadFolder.normalizeRelativePath(filenames[i])
-        if (relativePath.length === 0 || !UserDownloadFolder.isVideoFile(relativePath)) {
+        if (relativePath.length === 0) {
           continue
         }
 
@@ -94,11 +102,33 @@ export class UserDownloadFolder {
           continue
         }
 
-        const record = new LocalVideoRecord()
-        record.fileUri = new fileUri.FileUri(filePath).toString()
-        record.fileName = UserDownloadFolder.getFileName(relativePath)
-        record.fileSize = stat.size
-        records.push(record)
+        if (UserDownloadFolder.isVideoFile(relativePath)) {
+          const record = new LocalVideoRecord()
+          record.fileUri = new fileUri.FileUri(filePath).toString()
+          record.fileName = UserDownloadFolder.getFileName(relativePath)
+          record.fileSize = stat.size
+          records.push(record)
+          videoMatchKeys.push(UserDownloadFolder.buildMatchKey(relativePath))
+        } else if (UserDownloadFolder.isDanmakuFile(relativePath)) {
+          const candidate = new LocalDanmakuCandidate()
+          candidate.fileName = UserDownloadFolder.getFileName(relativePath)
+          candidate.uri = new fileUri.FileUri(filePath).toString()
+          candidate.format = UserDownloadFolder.getDanmakuFormatLabel(relativePath)
+          const key = UserDownloadFolder.buildMatchKey(relativePath)
+          if (!danmakuCandidates.has(key)) {
+            danmakuCandidates.set(key, candidate)
+          }
+        }
+      }
+
+      for (let i = 0; i < records.length; i++) {
+        const candidate = danmakuCandidates.get(videoMatchKeys[i])
+        if (candidate === undefined) {
+          continue
+        }
+        records[i].danmakuFileName = candidate.fileName
+        records[i].danmakuUri = candidate.uri
+        records[i].danmakuFormat = candidate.format
       }
       logger.info('扫描Download包名目录视频: %{public}d', records.length)
     } catch (err) {
@@ -123,12 +153,53 @@ export class UserDownloadFolder {
       lowerPath.endsWith('.mov') || lowerPath.endsWith('.wmv') || lowerPath.endsWith('.3gp')
   }
 
+  private static isDanmakuFile(path: string): boolean {
+    const lowerPath = path.toLowerCase()
+    return lowerPath.endsWith('.xml') || lowerPath.endsWith('.json') || lowerPath.endsWith('.ass')
+  }
+
+  private static buildMatchKey(path: string): string {
+    const directory = UserDownloadFolder.getDirName(path).toLowerCase()
+    const baseName = UserDownloadFolder.removeExtension(UserDownloadFolder.getFileName(path)).toLowerCase()
+    return directory + '/' + baseName
+  }
+
+  private static getDirName(path: string): string {
+    const slashIndex = path.lastIndexOf('/')
+    if (slashIndex > 0) {
+      return path.substring(0, slashIndex)
+    }
+    return ''
+  }
+
   private static getFileName(path: string): string {
     const slashIndex = path.lastIndexOf('/')
     if (slashIndex >= 0 && slashIndex < path.length - 1) {
       return path.substring(slashIndex + 1)
     }
     return path
+  }
+
+  private static removeExtension(fileName: string): string {
+    const dotIndex = fileName.lastIndexOf('.')
+    if (dotIndex > 0) {
+      return fileName.substring(0, dotIndex)
+    }
+    return fileName
+  }
+
+  private static getDanmakuFormatLabel(path: string): string {
+    const lowerPath = path.toLowerCase()
+    if (lowerPath.endsWith('.xml')) {
+      return 'B站 XML'
+    }
+    if (lowerPath.endsWith('.json')) {
+      return '弹弹 JSON'
+    }
+    if (lowerPath.endsWith('.ass')) {
+      return 'ASS'
+    }
+    return '弹幕'
   }
 
   private static getBundleName(): string {

@@ -33,6 +33,12 @@ export class PluginSearchService {
     return this.pluginStates
   }
 
+  restoreStates(states: PluginSearchState[]): void {
+    this.searchEpoch++
+    this.pluginStates = states.slice()
+    this.notifyStateChange(this.searchEpoch)
+  }
+
   async searchAll(keyword: string): Promise<void> {
     const currentEpoch = ++this.searchEpoch
     const enabledRules = await this.ruleStore.getEnabled()

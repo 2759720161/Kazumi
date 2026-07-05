@@ -24,7 +24,8 @@ export class CollectController {
   }
 
   async addCollect(animeItem: AnimeItem, type: number): Promise<void> {
-    if (type === CollectType.none) {
+    const normalizedType = CollectType.normalize(type)
+    if (normalizedType === CollectType.none) {
       await this.deleteCollect(animeItem)
       return
     }
@@ -32,7 +33,7 @@ export class CollectController {
     try {
       const isExisting = await this.favoriteStore.isFavorite(animeItem.getUniqueId())
       if (isExisting) {
-        await this.favoriteStore.updateCollectType(animeItem.getUniqueId(), type)
+        await this.favoriteStore.updateCollectType(animeItem.getUniqueId(), normalizedType)
       } else {
         const item = new CollectedBangumi()
         item.animeId = animeItem.getUniqueId()
@@ -45,13 +46,13 @@ export class CollectController {
         item.animeUrl = animeItem.url
         item.sourceName = animeItem.sourceName
         item.sourceId = animeItem.sourceId
-        item.collectType = type
+        item.collectType = normalizedType
         item.createdAt = Date.now()
         await this.favoriteStore.addCollected(item)
       }
 
       CollectChangeSignal.notifyChanged()
-      logger.info('addCollect: %{public}s -> type %{public}d', animeItem.name, type)
+      logger.info('addCollect: %{public}s -> type %{public}d', animeItem.name, normalizedType)
     } catch (err) {
       logger.error('addCollect failed: %{public}s', err instanceof Error ? err.message : String(err))
       throw new Error('addCollect failed')
@@ -82,7 +83,7 @@ export class CollectController {
 
   async updateCollectType(animeId: string, type: number): Promise<void> {
     try {
-      await this.favoriteStore.updateCollectType(animeId, type)
+      await this.favoriteStore.updateCollectType(animeId, CollectType.normalize(type))
       CollectChangeSignal.notifyChanged()
       logger.info('updateCollectType: %{public}s -> type %{public}d', animeId, type)
     } catch (err) {

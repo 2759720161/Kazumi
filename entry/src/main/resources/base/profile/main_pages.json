@@ -10,8 +10,8 @@
     "pages/history/HistoryPage",
     "pages/settings/DanmakuSettingsPage",
     "pages/settings/DanmakuBlockRulesPage",
-    "pages/settings/RuleDebugPage",
     "pages/settings/RuleShopPage",
+    "pages/settings/ThirdPartyPage",
     "pages/player/LocalPlayerPage"
   ]
 }

@@ -22,6 +22,13 @@ import {
   buildImmersiveTitleBarStyle,
   buildTitleBarOptions
 } from '../../utils/HdsPageStyle'
+import {
+  BOTTOM_TAB_AUTO_HIDE_DEFAULT,
+  getBottomTabHideDistance,
+  requestBottomTabAnimation,
+  resolveBottomTabOffsetByDelta,
+  resolveBottomTabSnapTarget
+} from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('HomePage')
 
@@ -30,6 +37,8 @@ export struct HomePage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
+  @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
+  @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State isLoading: boolean = true
   @State hasLoadError: boolean = false
   @State heroList: RecommendCardModel[] = []
@@ -143,6 +152,12 @@ export struct HomePage {
       .scrollBar(BarState.Off)
       .clip(false)
       .id('homeScrollContainer')
+      .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
+        this.updateBottomTabOffset(yOffset)
+      })
+      .onScrollStop(() => {
+        this.snapBottomTabOffset()
+      })
     }
     .width('100%')
     .height('100%')
@@ -297,5 +312,41 @@ export struct HomePage {
 
   private getHomeBottomSpacerHeight(): number {
     return getBottomSpacerHeight(this.bottomSafeHeight)
+  }
+
+  private updateBottomTabOffset(deltaY: number): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const currentOffset = this.scroller.currentOffset()
+    if (currentOffset.yOffset <= 0) {
+      requestBottomTabAnimation(false)
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const nextOffset = resolveBottomTabOffsetByDelta(deltaY, this.bottomTabOffset, maxOffset)
+    if (Math.abs(nextOffset - this.bottomTabOffset) >= 0.5) {
+      this.bottomTabOffset = nextOffset
+      requestBottomTabAnimation(resolveBottomTabSnapTarget(nextOffset, maxOffset) > 0)
+    }
+  }
+
+  private snapBottomTabOffset(): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const targetOffset = resolveBottomTabSnapTarget(this.bottomTabOffset, maxOffset)
+    if (Math.abs(targetOffset - this.bottomTabOffset) < 0.5) {
+      return
+    }
+    const shouldHide = targetOffset > 0
+    requestBottomTabAnimation(shouldHide)
+    if (!shouldHide) {
+      this.bottomTabOffset = 0
+    }
   }
 }

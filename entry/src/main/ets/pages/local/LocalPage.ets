@@ -1,4 +1,4 @@
-import { router } from '@kit.ArkUI'
+import { router, curves } from '@kit.ArkUI'
 import { common } from '@kit.AbilityKit'
 import {
   HdsNavigation,
@@ -11,7 +11,7 @@ import {
   HdsTabs,
   hdsMaterial
 } from '@kit.UIDesignKit'
-import { LocalFilePicker, LocalVideoResult } from '../../services/LocalFilePicker'
+import { LocalFilePicker } from '../../services/LocalFilePicker'
 import { LocalVideoThumbnailStore } from '../../services/LocalVideoThumbnailStore'
 import { LocalVideoRecord } from '../../models/LocalVideoRecord'
 import { LocalVideoHistoryStore } from '../../store/LocalVideoHistoryStore'
@@ -23,9 +23,16 @@ import {
   getBottomSpacerHeight,
   buildTitleBarOptions
 } from '../../utils/HdsPageStyle'
+import {
+  BOTTOM_TAB_AUTO_HIDE_DEFAULT,
+  getBottomTabHideDistance,
+  requestBottomTabAnimation,
+  resolveBottomTabOffsetByDelta,
+  resolveBottomTabSnapTarget
+} from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('LocalPage')
-const LOCAL_TAB_LABELS: string[] = ['包名文件夹', '历史记录']
+const LOCAL_TAB_LABELS: string[] = ['本地目录', '历史记录']
 const LOCAL_TAB_BAR_HEIGHT: number = 40
 const LOCAL_TAB_ITEM_WIDTH: number = 128
 
@@ -35,6 +42,8 @@ export struct LocalPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(LOCAL_VIDEO_HISTORY_VERSION_KEY) @Watch('onLocalHistoryVersionChanged') localHistoryVersion: number = 0
+  @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
+  @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State localHistory: LocalVideoRecord[] = []
   @State ownFolderVideos: LocalVideoRecord[] = []
   @State ownFolderScanned: boolean = false
@@ -66,7 +75,7 @@ export struct LocalPage {
   }
 
   onLocalHistoryVersionChanged(): void {
-    this.loadLocalHistory()
+    this.refreshLocalHistoryBindings()
   }
 
   onActiveChanged(): void {
@@ -89,7 +98,6 @@ export struct LocalPage {
               this.OwnFolderSection()
             } else {
               this.RecentSection()
-              this.DanmakuInfoSection()
               if (this.localHistory.length > 0) {
                 this.LocalDataSection()
               }
@@ -109,6 +117,12 @@ export struct LocalPage {
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
         .clip(false)
+        .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
+          this.updateBottomTabOffset(yOffset)
+        })
+        .onScrollStop(() => {
+          this.snapBottomTabOffset()
+        })
       }
       .width('100%')
       .height('100%')
@@ -157,7 +171,7 @@ export struct LocalPage {
               onSelected: (selectedIndex: number) => {
                 this.getUIContext().animateTo({
                   duration: 220,
-                  curve: Curve.Friction
+      curve: curves.springMotion()
                 }, () => {
                   this.selectedLocalTabIndex = selectedIndex
                 })
@@ -178,6 +192,42 @@ export struct LocalPage {
     .height(LOCAL_TAB_BAR_HEIGHT)
     .margin({ top: getTopSpacerHeight(this.topSafeHeight) })
     .zIndex(30)
+  }
+
+  private updateBottomTabOffset(deltaY: number): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const currentOffset = this.scroller.currentOffset()
+    if (currentOffset.yOffset <= 0) {
+      requestBottomTabAnimation(false)
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const nextOffset = resolveBottomTabOffsetByDelta(deltaY, this.bottomTabOffset, maxOffset)
+    if (Math.abs(nextOffset - this.bottomTabOffset) >= 0.5) {
+      this.bottomTabOffset = nextOffset
+      requestBottomTabAnimation(resolveBottomTabSnapTarget(nextOffset, maxOffset) > 0)
+    }
+  }
+
+  private snapBottomTabOffset(): void {
+    if (!this.bottomTabAutoHide) {
+      this.bottomTabOffset = 0
+      return
+    }
+    const maxOffset = getBottomTabHideDistance(this.bottomSafeHeight)
+    const targetOffset = resolveBottomTabSnapTarget(this.bottomTabOffset, maxOffset)
+    if (Math.abs(targetOffset - this.bottomTabOffset) < 0.5) {
+      return
+    }
+    const shouldHide = targetOffset > 0
+    requestBottomTabAnimation(shouldHide)
+    if (!shouldHide) {
+      this.bottomTabOffset = 0
+    }
   }
 
   @Builder
@@ -256,31 +306,17 @@ export struct LocalPage {
           .margin({ top: 12 })
         }
 
-        Row({ space: 10 }) {
-          Button('继续播放')
-            .layoutWeight(1)
-            .height(40)
-            .fontSize(15)
-            .fontColor(Color.White)
-            .backgroundColor($r('app.color.accent_blue'))
-            .borderRadius(12)
+        Button('继续播放')
+          .width('100%')
+          .height(40)
+          .fontSize(15)
+          .fontColor(Color.White)
+          .backgroundColor($r('app.color.accent_blue'))
+          .borderRadius(12)
+          .margin({ top: 16 })
           .onClick(() => {
             this.openHistoryRecord(this.localHistory[0])
           })
-
-          Button('选择新视频')
-            .layoutWeight(1)
-            .height(40)
-            .fontSize(15)
-            .fontColor($r('app.color.text_primary'))
-            .backgroundColor($r('app.color.button_ghost_bg'))
-            .borderRadius(12)
-            .onClick(() => {
-              this.pickAndOpenVideo()
-            })
-        }
-        .width('100%')
-        .margin({ top: 16 })
       } else {
         Stack() {
           Circle()
@@ -307,15 +343,6 @@ export struct LocalPage {
           .lineHeight(20)
           .margin({ top: 8, bottom: 16 })
 
-        Button('选择视频文件')
-          .height(42)
-          .fontSize(15)
-          .fontColor(Color.White)
-          .backgroundColor($r('app.color.accent_blue'))
-          .borderRadius(14)
-          .onClick(() => {
-            this.pickAndOpenVideo()
-          })
       }
     }
     .width('100%')
@@ -333,66 +360,6 @@ export struct LocalPage {
   }
 
   @Builder
-  private QuickActionRow(): void {
-    Row({ space: 8 }) {
-      this.QuickActionItem($r('sys.symbol.folder_badge_plus'), '选择视频', '打开本地文件', true, () => {
-        this.pickAndOpenVideo()
-      })
-      this.QuickActionItem($r('sys.symbol.play_fill'), '播放记录',
-        this.localHistory.length > 0 ? this.localHistory.length + ' 条' : '暂无记录', false, () => {})
-      this.QuickActionItem($r('sys.symbol.barrage_on'), '弹幕',
-        this.getDanmakuHistoryCount() > 0 ? this.getDanmakuHistoryCount() + ' 条已关联' : 'XML / JSON / ASS', false,
-        () => {})
-    }
-    .width('100%')
-  }
-
-  @Builder
-  private QuickActionItem(symbol: Resource, title: string, subtitle: string, highlighted: boolean, action: () => void): void {
-    Row({ space: 8 }) {
-      Stack() {
-        Circle()
-          .width(30)
-          .height(30)
-          .fill(highlighted ? $r('app.color.accent_blue') : $r('app.color.button_ghost_bg'))
-          .opacity(highlighted ? 0.18 : 1)
-        SymbolGlyph(symbol)
-          .fontSize(18)
-          .fontColor([highlighted ? $r('app.color.accent_blue') : $r('sys.color.icon_secondary')])
-      }
-      .width(32)
-      .height(32)
-
-      Column() {
-        Text(title)
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(subtitle)
-          .fontSize(11)
-          .fontColor($r('app.color.text_hint'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 2 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-    }
-    .layoutWeight(1)
-    .height(58)
-    .padding({ left: 10, right: 8 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .alignItems(VerticalAlign.Center)
-    .onClick(() => {
-      action()
-    })
-  }
-
-  @Builder
   private OwnFolderSection(): void {
     Column() {
       if (this.ownFolderVideos.length > 0) {
@@ -404,25 +371,34 @@ export struct LocalPage {
         .width('100%')
       } else {
         Column() {
+          SymbolGlyph($r('sys.symbol.folder_badge_plus'))
+            .fontSize(92)
+            .fontColor([$r('app.color.accent_blue')])
+            .margin({ bottom: 22 })
+
           Text(this.buildOwnFolderEmptyTitle())
-            .fontSize(15)
-            .fontWeight(FontWeight.Medium)
+            .fontSize(22)
+            .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Center)
           Text(this.buildOwnFolderEmptySubtitle())
-            .fontSize(13)
+            .fontSize(14)
             .fontColor($r('app.color.text_secondary'))
             .textAlign(TextAlign.Center)
-            .lineHeight(19)
-            .margin({ top: 6 })
+            .lineHeight(24)
+            .margin({ top: 18 })
+          Text(this.buildOwnFolderDanmakuHint())
+            .fontSize(13)
+            .fontColor($r('app.color.text_hint'))
+            .textAlign(TextAlign.Center)
+            .lineHeight(21)
+            .margin({ top: 14 })
         }
         .width('100%')
-        .height(96)
+        .height(420)
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .padding({ left: 16, right: 16 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.card_background'))
-        .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+        .padding({ left: 28, right: 28 })
       }
     }
     .width('100%')
@@ -450,24 +426,35 @@ export struct LocalPage {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
-        Text(this.formatFileSize(record.fileSize))
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .margin({ top: 5 })
+        Blank()
+          .layoutWeight(1)
+        Row() {
+          Text(this.formatFileSize(record.fileSize))
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .layoutWeight(1)
+          this.TagPill(this.buildDanmakuStatusText(record), record.danmakuFileName.length > 0)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
       }
       .layoutWeight(1)
+      .height(58)
       .alignItems(HorizontalAlign.Start)
+      .justifyContent(FlexAlign.Start)
 
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(16)
         .fontColor([$r('sys.color.icon_secondary')])
+        .margin({ top: 21 })
     }
     .width('100%')
+    .height(106)
     .padding({ left: 12, right: 10, top: 12, bottom: 12 })
     .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .alignItems(VerticalAlign.Center)
+    .alignItems(VerticalAlign.Top)
     .onClick(() => {
       this.openOwnFolderVideo(record)
     })
@@ -478,22 +465,34 @@ export struct LocalPage {
     Column() {
       if (this.localHistory.length === 0) {
         Column() {
+          SymbolGlyph($r('sys.symbol.play_fill'))
+            .fontSize(92)
+            .fontColor([$r('app.color.accent_blue')])
+            .margin({ bottom: 22 })
+
           Text('还没有播放记录')
-            .fontSize(15)
-            .fontWeight(FontWeight.Medium)
+            .fontSize(22)
+            .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Center)
           Text('播放过的视频会显示在这里')
             .fontSize(14)
             .fontColor($r('app.color.text_secondary'))
-            .margin({ top: 6 })
+            .textAlign(TextAlign.Center)
+            .lineHeight(24)
+            .margin({ top: 18 })
+          Text('本地视频的播放进度、封面和弹幕绑定\n会在播放后自动保存')
+            .fontSize(13)
+            .fontColor($r('app.color.text_hint'))
+            .textAlign(TextAlign.Center)
+            .lineHeight(21)
+            .margin({ top: 14 })
         }
         .width('100%')
-        .height(104)
+        .height(420)
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .borderRadius(12)
-        .backgroundColor($r('app.color.card_background'))
-        .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+        .padding({ left: 28, right: 28 })
       } else {
         Column({ space: 8 }) {
           ForEach(this.localHistory, (record: LocalVideoRecord) => {
@@ -547,6 +546,7 @@ export struct LocalPage {
             })
         }
         .width('100%')
+        .alignItems(VerticalAlign.Top)
 
         Row() {
           Text(this.buildProgressText(record))
@@ -573,26 +573,38 @@ export struct LocalPage {
         }
 
         Row() {
-          if (record.danmakuFileName.length > 0) {
-            this.TagPill(this.buildDanmakuText(record), true)
+          Row() {
+            if (record.danmakuFileName.length > 0) {
+              this.HistoryDanmakuPill(this.buildDanmakuText(record), true)
+            } else {
+              this.HistoryDanmakuPill('未匹配弹幕', false)
+            }
           }
+          .layoutWeight(1)
+          .constraintSize({ minWidth: 0 })
+
           Text('上次播放 ' + this.formatLastPlayedAt(record.lastPlayedAt))
             .fontSize(11)
             .fontColor($r('app.color.text_hint'))
-            .margin({ left: record.danmakuFileName.length > 0 ? 8 : 0 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Clip })
+            .margin({ left: 8 })
         }
         .width('100%')
+        .alignItems(VerticalAlign.Center)
         .margin({ top: 8 })
       }
       .layoutWeight(1)
+      .height(82)
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
+    .height(106)
     .padding({ left: 12, right: 10, top: 12, bottom: 12 })
     .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .alignItems(VerticalAlign.Center)
+    .alignItems(VerticalAlign.Top)
     .onClick(() => {
       this.openHistoryRecord(record)
     })
@@ -611,46 +623,16 @@ export struct LocalPage {
   }
 
   @Builder
-  private DanmakuInfoSection(): void {
-    Column() {
-      Text('本地弹幕')
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .width('100%')
-      Text(this.buildDanmakuSummaryText())
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .margin({ top: 4, bottom: 12 })
-
-      Row({ space: 8 }) {
-        this.TagPill('B站 XML', true)
-        this.TagPill('弹弹 JSON', false)
-        this.TagPill('ASS', false)
-      }
+  private HistoryDanmakuPill(text: string, highlighted: boolean): void {
+    Text(text)
+      .fontSize(11)
+      .fontColor(highlighted ? $r('app.color.accent_blue') : $r('app.color.text_secondary'))
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
       .width('100%')
-
-      Row({ space: 8 }) {
-        this.TagPill('加载', false)
-        this.TagPill('替换', false)
-        this.TagPill('追加', false)
-        this.TagPill('时间校准', false)
-      }
-      .width('100%')
-      .margin({ top: 8 })
-
-      Text('进入播放器后点击弹幕相关按钮即可导入和校准')
-        .fontSize(12)
-        .fontColor($r('app.color.text_hint'))
-        .width('100%')
-        .margin({ top: 12 })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+      .borderRadius(8)
+      .backgroundColor(highlighted ? $r('app.color.button_ghost_bg') : Color.Transparent)
   }
 
   @Builder
@@ -784,37 +766,24 @@ export struct LocalPage {
     .width('100%')
   }
 
-  private async pickAndOpenVideo(): Promise<void> {
-    try {
-      const context = getContext(this) as common.UIAbilityContext
-      const videoResult: LocalVideoResult | null = await LocalFilePicker.pickVideoFile(context)
-      if (videoResult === null) {
-        return
-      }
-      router.pushUrl({
-        url: 'pages/player/LocalPlayerPage',
-        params: {
-          videoUri: videoResult.uri,
-          videoFileName: videoResult.fileName,
-          videoFileSize: videoResult.fileSize
-        }
-      })
-    } catch (err) {
-      logger.warn('打开本地视频失败: %{public}s', err instanceof Error ? err.message : String(err))
-    }
-  }
-
   private async openOwnFolderVideo(record: LocalVideoRecord): Promise<void> {
     if (!await LocalFilePicker.ensureReadableUri(record.fileUri)) {
-      logger.warn('包名文件夹视频不可读: %{public}s', record.fileName)
+      logger.warn('本地目录视频不可读: %{public}s', record.fileName)
       return
     }
+    const latestRecord = await this.resolveLatestOwnFolderRecord(record)
     router.pushUrl({
       url: 'pages/player/LocalPlayerPage',
       params: {
-        videoUri: record.fileUri,
-        videoFileName: record.fileName,
-        videoFileSize: record.fileSize
+        videoUri: latestRecord.fileUri,
+        videoFileName: latestRecord.fileName,
+        videoFileSize: latestRecord.fileSize,
+        historyPositionMs: latestRecord.positionMs,
+        danmakuUri: latestRecord.danmakuUri,
+        danmakuFileName: latestRecord.danmakuFileName,
+        danmakuOffsetMs: latestRecord.danmakuOffsetMs,
+        danmakuFormat: latestRecord.danmakuFormat,
+        danmakuCount: latestRecord.danmakuCount
       }
     })
   }
@@ -856,6 +825,13 @@ export struct LocalPage {
     } catch (err) {
       logger.warn('加载本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
       this.localHistory = []
+    }
+  }
+
+  private async refreshLocalHistoryBindings(): Promise<void> {
+    await this.loadLocalHistory()
+    if (this.ownFolderVideos.length > 0) {
+      this.ownFolderVideos = this.mergeOwnFolderHistoryBindings(this.ownFolderVideos, this.localHistory)
     }
   }
 
@@ -912,7 +888,7 @@ export struct LocalPage {
         return
       }
       this.hasScannedOwnDownloadFolder = true
-      this.ownFolderVideos = records
+      this.ownFolderVideos = this.mergeOwnFolderHistoryBindings(records, await this.localVideoHistoryStore.getAll())
       this.ownFolderScanned = true
       this.ownFolderScanFailed = false
       logger.info('读取用户Download包名目录完成: %{public}d', records.length)
@@ -947,10 +923,10 @@ export struct LocalPage {
           continue
         }
         if (!await LocalFilePicker.ensureReadableUri(record.fileUri)) {
-          logger.warn('跳过包名文件夹视频封面生成，文件暂不可读: %{public}s', record.fileName)
+          logger.warn('跳过本地目录视频封面生成，文件暂不可读: %{public}s', record.fileName)
           continue
         }
-        logger.info('开始生成包名文件夹视频封面: %{public}s', record.fileName)
+        logger.info('开始生成本地目录视频封面: %{public}s', record.fileName)
         const coverUri = await LocalVideoThumbnailStore.getInstance()
           .ensureThumbnail(record.fileUri, record.fileName, record.fileSize)
         if (coverUri.length === 0) {
@@ -962,10 +938,10 @@ export struct LocalPage {
         }
         this.ownFolderVideos[currentIndex].coverUri = coverUri
         this.ownFolderVideos = this.ownFolderVideos.slice()
-        logger.info('包名文件夹视频封面已更新: %{public}s', record.fileName)
+        logger.info('本地目录视频封面已更新: %{public}s', record.fileName)
       }
     } catch (err) {
-      logger.warn('生成包名文件夹视频封面失败: %{public}s', err instanceof Error ? err.message : String(err))
+      logger.warn('生成本地目录视频封面失败: %{public}s', err instanceof Error ? err.message : String(err))
     } finally {
       this.isGeneratingOwnFolderCovers = false
     }
@@ -979,6 +955,70 @@ export struct LocalPage {
       }
     }
     return -1
+  }
+
+  private mergeOwnFolderHistoryBindings(records: LocalVideoRecord[], historyRecords: LocalVideoRecord[]): LocalVideoRecord[] {
+    const historyMap: Map<string, LocalVideoRecord> = new Map()
+    for (let i = 0; i < historyRecords.length; i++) {
+      historyMap.set(this.buildLocalFileKey(historyRecords[i]), historyRecords[i])
+    }
+    for (let j = 0; j < records.length; j++) {
+      const historyRecord = historyMap.get(this.buildLocalFileKey(records[j]))
+      if (historyRecord === undefined) {
+        continue
+      }
+      records[j].fileKey = historyRecord.fileKey
+      records[j].coverUri = historyRecord.coverUri
+      records[j].durationMs = historyRecord.durationMs
+      records[j].positionMs = historyRecord.positionMs
+      if (historyRecord.danmakuFileName.length > 0 && historyRecord.danmakuUri.length > 0) {
+        records[j].danmakuFileName = historyRecord.danmakuFileName
+        records[j].danmakuUri = historyRecord.danmakuUri
+        records[j].danmakuOffsetMs = historyRecord.danmakuOffsetMs
+        records[j].danmakuFormat = historyRecord.danmakuFormat
+        records[j].danmakuCount = historyRecord.danmakuCount
+      }
+    }
+    return records
+  }
+
+  private async resolveLatestOwnFolderRecord(record: LocalVideoRecord): Promise<LocalVideoRecord> {
+    const historyRecord = await this.localVideoHistoryStore.getByFileKey(this.buildLocalFileKey(record))
+    if (historyRecord === null) {
+      return record
+    }
+    const merged = new LocalVideoRecord()
+    merged.fileKey = historyRecord.fileKey
+    merged.fileUri = record.fileUri
+    merged.fileName = record.fileName
+    merged.fileSize = record.fileSize
+    merged.coverUri = historyRecord.coverUri
+    merged.durationMs = historyRecord.durationMs
+    merged.positionMs = historyRecord.positionMs
+    merged.lastPlayedAt = historyRecord.lastPlayedAt
+    if (historyRecord.danmakuFileName.length > 0 && historyRecord.danmakuUri.length > 0) {
+      merged.danmakuFileName = historyRecord.danmakuFileName
+      merged.danmakuUri = historyRecord.danmakuUri
+      merged.danmakuOffsetMs = historyRecord.danmakuOffsetMs
+      merged.danmakuFormat = historyRecord.danmakuFormat
+      merged.danmakuCount = historyRecord.danmakuCount
+    } else {
+      merged.danmakuFileName = record.danmakuFileName
+      merged.danmakuUri = record.danmakuUri
+      merged.danmakuOffsetMs = record.danmakuOffsetMs
+      merged.danmakuFormat = record.danmakuFormat
+      merged.danmakuCount = record.danmakuCount
+    }
+    logger.info('打开本地目录视频使用最新历史: name=%{public}s position=%{public}d',
+      merged.fileName, merged.positionMs)
+    return merged
+  }
+
+  private buildLocalFileKey(record: LocalVideoRecord): string {
+    if (record.fileKey.length > 0) {
+      return record.fileKey
+    }
+    return record.fileUri + '|' + record.fileSize + '|' + record.fileName
   }
 
   private async deleteHistoryRecord(id: number): Promise<void> {
@@ -1030,25 +1070,25 @@ export struct LocalPage {
     return null
   }
 
-  private buildAddVideoIcon(): HdsNavigationIconOptions {
+  private buildRefreshLocalDirectoryIcon(): HdsNavigationIconOptions {
     return {
-      icon: $r('sys.symbol.folder_badge_plus'),
-      label: 'add local video',
+      icon: $r('sys.symbol.arrow_counterclockwise'),
+      label: 'refresh local directory',
       action: () => {
-        this.pickAndOpenVideo()
+        this.rescanOwnDownloadFolder()
       }
     }
   }
 
   private buildLocalTitle(): HdsNavigationTitle {
     return {
-      mainTitle: '本地'
+      mainTitle: '本地视频'
     }
   }
 
   private buildLocalMenu(): HdsNavigationMenuContentOptions {
     return {
-      value: [{ content: this.buildAddVideoIcon() }]
+      value: [{ content: this.buildRefreshLocalDirectoryIcon() }]
     }
   }
 
@@ -1060,7 +1100,7 @@ export struct LocalPage {
   }
 
   private buildLocalTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('本地')
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('本地视频')
     base.content = this.buildLocalTitleBarContent()
     if (base.style?.originalStyle?.backgroundStyle) {
       base.style.originalStyle.backgroundStyle.maskExtraHeight = LOCAL_TAB_BAR_HEIGHT
@@ -1106,17 +1146,24 @@ export struct LocalPage {
     if (this.ownFolderScanFailed) {
       return '目录暂不可访问'
     }
-    return '未发现视频'
+    return '本地目录空空如也'
   }
 
   private buildOwnFolderEmptySubtitle(): string {
     if (this.ownFolderScanning) {
-      return '正在读取 Download 包名目录'
+      return '正在读取本地目录'
     }
     if (this.ownFolderScanFailed) {
       return '请确认系统已授权或通过刷新重新激活目录'
     }
-    return '将视频放入 Download/包名 目录后刷新'
+    return '请将视频文件放入手机专属下载目录\n我的手机/Download/FanPlayer\n然后返回本页自动同步\n您也可以点击右上角按钮进行同步'
+  }
+
+  private buildOwnFolderDanmakuHint(): string {
+    if (this.ownFolderScanning || this.ownFolderScanFailed) {
+      return ''
+    }
+    return '弹幕文件可与视频同名放在同一目录\n支持 XML / JSON / ASS，扫描后自动匹配'
   }
 
   private formatFileSize(size: number): string {
@@ -1131,24 +1178,6 @@ export struct LocalPage {
     return gb.toFixed(gb >= 100 ? 0 : 1) + ' GB'
   }
 
-  private buildDanmakuSummaryText(): string {
-    const count = this.getDanmakuHistoryCount()
-    if (count <= 0) {
-      return '支持加载、替换、追加和时间校准'
-    }
-    return count + ' 条最近记录包含弹幕'
-  }
-
-  private getDanmakuHistoryCount(): number {
-    let count = 0
-    for (let i = 0; i < this.localHistory.length; i++) {
-      if (this.localHistory[i].danmakuFileName.length > 0) {
-        count++
-      }
-    }
-    return count
-  }
-
   private buildDanmakuText(record: LocalVideoRecord): string {
     let text = record.danmakuFormat.length > 0 ? record.danmakuFormat : '弹幕'
     if (record.danmakuCount > 0) {
@@ -1159,6 +1188,16 @@ export struct LocalPage {
     }
     text += ' · ' + record.danmakuFileName
     return text
+  }
+
+  private buildDanmakuStatusText(record: LocalVideoRecord): string {
+    if (record.danmakuFileName.length > 0) {
+      if (record.danmakuCount > 0) {
+        return '已匹配弹幕 · ' + record.danmakuCount + ' 条'
+      }
+      return '已匹配弹幕'
+    }
+    return '未匹配弹幕'
   }
 
   private formatLastPlayedAt(timestamp: number): string {
@@ -1272,7 +1311,7 @@ struct LocalSegmentTabItem {
       Text(this.label)
         .fontSize(14)
         .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.isSelected() ? '#E6000000' : '#99000000')
+        .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Clip })
         .textAlign(TextAlign.Center)

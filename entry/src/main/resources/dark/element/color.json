@@ -226,7 +226,7 @@
     },
     {
       "name": "panel_dark_bg",
-      "value": "#D9E6EEF8"
+      "value": "#D90B1220"
     },
     {
       "name": "overlay_control_bg",
@@ -299,6 +299,22 @@
     {
       "name": "tag_chip_bg",
       "value": "#1AFFFFFF"
+    },
+    {
+      "name": "bottom_bar_surface",
+      "value": "#D9111C2C"
+    },
+    {
+      "name": "hero_gradient_mid",
+      "value": "#CC0B1220"
+    },
+    {
+      "name": "hero_gradient_dark",
+      "value": "#66000000"
+    },
+    {
+      "name": "hero_gradient_start",
+      "value": "#22000000"
     }
   ]
 }

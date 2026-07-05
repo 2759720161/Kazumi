@@ -46,6 +46,13 @@ export class LocalVideoHistoryStore {
       if (record.coverUri.length === 0 && existing.coverUri.length > 0) {
         record.coverUri = existing.coverUri;
       }
+      if (record.danmakuFileName.length === 0 && record.danmakuUri.length === 0 && existing.danmakuUri.length > 0) {
+        record.danmakuFileName = existing.danmakuFileName;
+        record.danmakuUri = existing.danmakuUri;
+        record.danmakuOffsetMs = existing.danmakuOffsetMs;
+        record.danmakuFormat = existing.danmakuFormat;
+        record.danmakuCount = existing.danmakuCount;
+      }
       const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
       predicates.equalTo(RdbConstants.COL_FILE_KEY, fileKey);
       const values: relationalStore.ValuesBucket = {

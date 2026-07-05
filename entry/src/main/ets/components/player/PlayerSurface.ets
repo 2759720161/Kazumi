@@ -192,8 +192,17 @@ export struct PlayerSurface {
   }
 
   private onPlaybackOptionsChange(): void {
-    if (this.videoUrl.length > 0 && this.arePlaybackOptionsReady() && !this.hasEngine) {
-      logger.info('Playback options became ready, preparing player');
+    if (this.videoUrl.length === 0 || !this.arePlaybackOptionsReady()) {
+      return
+    }
+    if (this.hasEngine && this.playerEngine !== null) {
+      logger.info('Playback options changed, re-preparing player')
+      this.playerEngine.release()
+      this.playerEngine = null
+      this.hasEngine = false
+      this.initPlayer()
+    } else {
+      logger.info('Playback options became ready, preparing player')
       this.initPlayer();
     }
   }

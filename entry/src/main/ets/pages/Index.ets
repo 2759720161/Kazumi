@@ -11,6 +11,9 @@ import {
   hdsMaterial
 } from '@kit.UIDesignKit'
 import { SymbolGlyphModifier } from '@kit.ArkUI'
+import { Logger } from '../utils/Logger'
+
+const logger = new Logger('Index')
 
 @Entry
 @Component
@@ -46,7 +49,7 @@ struct Index {
         .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '片库'))
 
         TabContent() {
-          LocalPage()
+          LocalPage({ isActive: this.currentTab === 3 })
         }
         .tabBar(this.bottomTabStyle($r('sys.symbol.folder'), $r('sys.symbol.folder_fill'), '本地'))
 
@@ -63,6 +66,7 @@ struct Index {
       .width('100%')
       .height('100%')
       .onChange((index: number) => {
+        logger.info('Main tab changed: %{public}d', index)
         this.currentTab = index
       })
     }

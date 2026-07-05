@@ -17,6 +17,7 @@ export class AVPlayerEngine implements IPlayerEngine {
   private pendingInitialPlayAfterSeek: boolean = false
   private pendingInitialSeekMs: number = -1
   private initialSeekFallbackTimer: number = -1
+  private progressPollingTimer: number = -1
   private localSourceFile: fileIo.File | null = null
 
   setSurfaceId(surfaceId: string): void {
@@ -156,26 +157,32 @@ export class AVPlayerEngine implements IPlayerEngine {
         case 'playing':
           this.state.playing = true
           this.state.buffering = false
+          this.startProgressPolling()
           break
         case 'paused':
           this.state.playing = false
+          this.stopProgressPolling()
           break
         case 'completed':
           this.state.playing = false
           this.state.completed = true
+          this.stopProgressPolling()
           break
         case 'stopped':
           this.state.playing = false
+          this.stopProgressPolling()
           break
         case 'released':
           this.clearPrepareTimeout()
           this.clearInitialSeekState()
           this.state.playing = false
+          this.stopProgressPolling()
           break
         case 'error':
           this.clearPrepareTimeout()
           this.clearInitialSeekState()
           this.state.playing = false
+          this.stopProgressPolling()
           this.state.error = 'Player error'
           break
         default:
@@ -240,6 +247,10 @@ export class AVPlayerEngine implements IPlayerEngine {
   }
 
   private handleSeekDone(seekDoneTime: number): void {
+    if (seekDoneTime >= 0) {
+      this.state.positionMs = seekDoneTime
+      this.notifyStateChange()
+    }
     if (!this.pendingInitialPlayAfterSeek) {
       return
     }
@@ -261,6 +272,7 @@ export class AVPlayerEngine implements IPlayerEngine {
         this.avPlayer.play()
         this.state.playing = true
         this.state.stateName = 'playing'
+        this.startProgressPolling()
         this.notifyStateChange()
       } catch (e) {
         this.state.error = 'play error'
@@ -275,6 +287,7 @@ export class AVPlayerEngine implements IPlayerEngine {
         this.avPlayer.pause()
         this.state.playing = false
         this.state.stateName = 'paused'
+        this.stopProgressPolling()
         this.notifyStateChange()
       } catch (e) {
         this.state.error = 'pause error'
@@ -295,6 +308,8 @@ export class AVPlayerEngine implements IPlayerEngine {
 
   seek(positionMs: number): void {
     if (this.avPlayer) {
+      this.state.positionMs = positionMs
+      this.notifyStateChange()
       this.avPlayer.seek(positionMs)
     }
   }
@@ -392,6 +407,7 @@ export class AVPlayerEngine implements IPlayerEngine {
   release(): void {
     this.clearPrepareTimeout()
     this.clearInitialSeekState()
+    this.stopProgressPolling()
     if (this.avPlayer) {
       try {
         this.avPlayer.release()
@@ -449,9 +465,51 @@ export class AVPlayerEngine implements IPlayerEngine {
     this.pendingInitialSeekMs = -1
   }
 
+  private startProgressPolling(): void {
+    if (this.progressPollingTimer >= 0) {
+      return
+    }
+    this.progressPollingTimer = setInterval(() => {
+      this.pollPlayerProgress()
+    }, 1000)
+  }
+
+  private stopProgressPolling(): void {
+    if (this.progressPollingTimer >= 0) {
+      clearInterval(this.progressPollingTimer)
+      this.progressPollingTimer = -1
+    }
+  }
+
+  private pollPlayerProgress(): void {
+    if (this.avPlayer === null) {
+      this.stopProgressPolling()
+      return
+    }
+    try {
+      const currentTime = this.avPlayer.currentTime
+      const duration = this.avPlayer.duration
+      let changed = false
+      if (currentTime >= 0 && currentTime !== this.state.positionMs) {
+        this.state.positionMs = currentTime
+        changed = true
+      }
+      if (duration > 0 && duration !== this.state.durationMs) {
+        this.state.durationMs = duration
+        changed = true
+      }
+      if (changed) {
+        this.notifyStateChange()
+      }
+    } catch (_err) {
+      logger.warn('AVPlayer progress polling failed')
+    }
+  }
+
   private failPlayback(message: string): void {
     this.clearPrepareTimeout()
     this.clearInitialSeekState()
+    this.stopProgressPolling()
     this.state.error = message
     this.state.stateName = 'error'
     this.state.playing = false

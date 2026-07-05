@@ -1,6 +1,6 @@
 export class RdbConstants {
   static readonly DB_NAME: string = 'kazumi_main.db'
-  static readonly DB_VERSION: number = 8
+  static readonly DB_VERSION: number = 9
   static readonly DB_SECURITY_LEVEL: number = 1
 
   static readonly TABLE_RULE_SOURCE: string = 'rule_source'
@@ -60,6 +60,7 @@ export class RdbConstants {
   static readonly COL_FILE_URI: string = 'file_uri'
   static readonly COL_FILE_NAME: string = 'file_name'
   static readonly COL_FILE_SIZE: string = 'file_size'
+  static readonly COL_COVER_URI: string = 'cover_uri'
   static readonly COL_LAST_PLAYED_AT: string = 'last_played_at'
   static readonly COL_DANMAKU_FILE_NAME: string = 'danmaku_file_name'
   static readonly COL_DANMAKU_URI: string = 'danmaku_uri'

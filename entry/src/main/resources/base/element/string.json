@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "FanPlayer"
+    },
+    {
+      "name": "read_download_reason",
+      "value": "Used to scan and read video files downloaded by the app in the Download directory"
     }
   ]
 }

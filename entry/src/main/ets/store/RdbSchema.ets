@@ -93,6 +93,7 @@ export class RdbSchema {
       `${RdbConstants.COL_FILE_URI} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_FILE_NAME} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_FILE_SIZE} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_COVER_URI} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_LAST_PLAYED_AT} INTEGER NOT NULL DEFAULT 0, ` +

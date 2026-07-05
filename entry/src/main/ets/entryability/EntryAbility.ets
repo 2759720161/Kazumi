@@ -7,6 +7,7 @@ import { PreferencesStore } from '../store/PreferencesStore';
 import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
+import { UserDownloadFolder } from '../services/UserDownloadFolder';
 
 const logger = new Logger('EntryAbility');
 
@@ -28,7 +29,6 @@ export default class EntryAbility extends UIAbility {
       logger.error('Failed to set colorMode: %{public}s', msg);
     }
     logger.info('Ability onCreate');
-
 
     this.initStores();
   }
@@ -116,12 +116,19 @@ export default class EntryAbility extends UIAbility {
     }
 
     try {
-
       FileStore.getInstance().init(this.context);
       logger.info('FileStore initialized');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to init FileStore: %{public}s', msg);
+    }
+
+    try {
+      await UserDownloadFolder.ensureOwnFolder(this.context);
+      logger.info('UserDownloadFolder initialized');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Failed to init UserDownloadFolder: %{public}s', msg);
     }
   }
 

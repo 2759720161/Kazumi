@@ -4,6 +4,7 @@ export class LocalVideoRecord {
   fileUri: string = ''
   fileName: string = ''
   fileSize: number = 0
+  coverUri: string = ''
   durationMs: number = 0
   positionMs: number = 0
   lastPlayedAt: number = 0

@@ -166,6 +166,16 @@ export class RdbMigration {
         await RdbMigration.rebuildLocalVideoHistoryWithFileKey(rdbManager);
         logger.info('Migration v8: rebuilt local_video_history with file_key uniqueness');
       }
+    },
+    {
+      version: 9,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.addColumnIfMissing(rdbManager,
+          RdbConstants.TABLE_LOCAL_VIDEO_HISTORY,
+          RdbConstants.COL_COVER_URI,
+          'TEXT NOT NULL DEFAULT \'\'');
+        logger.info('Migration v9: added cover_uri to local_video_history');
+      }
     }
   ];
 

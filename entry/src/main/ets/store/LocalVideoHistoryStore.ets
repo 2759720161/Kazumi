@@ -3,6 +3,7 @@ import { RdbManager } from './RdbManager';
 import { RdbConstants } from '../constants/RdbConstants';
 import { LocalVideoRecord } from '../models/LocalVideoRecord';
 import { Logger } from '../utils/Logger';
+import { LocalVideoHistoryChangeSignal } from './LocalVideoHistoryChangeSignal';
 
 const logger = new Logger('LocalVideoHistoryStore');
 
@@ -36,6 +37,15 @@ export class LocalVideoHistoryStore {
     record.fileKey = fileKey;
     const existing = await this.getByFileKey(fileKey);
     if (existing !== null) {
+      if (record.positionMs <= 0 && existing.positionMs > 0) {
+        record.positionMs = existing.positionMs;
+      }
+      if (record.durationMs <= 0 && existing.durationMs > 0) {
+        record.durationMs = existing.durationMs;
+      }
+      if (record.coverUri.length === 0 && existing.coverUri.length > 0) {
+        record.coverUri = existing.coverUri;
+      }
       const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
       predicates.equalTo(RdbConstants.COL_FILE_KEY, fileKey);
       const values: relationalStore.ValuesBucket = {
@@ -43,6 +53,7 @@ export class LocalVideoHistoryStore {
         file_uri: record.fileUri,
         file_name: record.fileName,
         file_size: record.fileSize,
+        cover_uri: record.coverUri,
         duration_ms: record.durationMs,
         position_ms: record.positionMs,
         last_played_at: Date.now(),
@@ -52,13 +63,16 @@ export class LocalVideoHistoryStore {
         danmaku_format: record.danmakuFormat,
         danmaku_count: record.danmakuCount
       };
-      return await this.rdbManager.update(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values, predicates);
+      const rows = await this.rdbManager.update(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values, predicates);
+      LocalVideoHistoryChangeSignal.notifyChanged();
+      return rows;
     } else {
       const values: relationalStore.ValuesBucket = {
         file_key: fileKey,
         file_uri: record.fileUri,
         file_name: record.fileName,
         file_size: record.fileSize,
+        cover_uri: record.coverUri,
         duration_ms: record.durationMs,
         position_ms: record.positionMs,
         last_played_at: Date.now(),
@@ -69,19 +83,45 @@ export class LocalVideoHistoryStore {
         danmaku_count: record.danmakuCount,
         created_at: Date.now()
       };
-      return await this.rdbManager.insert(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values);
+      const id = await this.rdbManager.insert(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values);
+      LocalVideoHistoryChangeSignal.notifyChanged();
+      return id;
     }
   }
 
   async deleteById(id: number): Promise<number> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
     predicates.equalTo(RdbConstants.COL_ID, id);
-    return await this.rdbManager.delete(predicates);
+    const rows = await this.rdbManager.delete(predicates);
+    if (rows > 0) {
+      LocalVideoHistoryChangeSignal.notifyChanged();
+    }
+    return rows;
+  }
+
+  async updateCoverUri(fileKey: string, coverUri: string): Promise<number> {
+    if (fileKey.length === 0 || coverUri.length === 0) {
+      return 0;
+    }
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
+    predicates.equalTo(RdbConstants.COL_FILE_KEY, fileKey);
+    const values: relationalStore.ValuesBucket = {
+      cover_uri: coverUri
+    };
+    const rows = await this.rdbManager.update(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values, predicates);
+    if (rows > 0) {
+      LocalVideoHistoryChangeSignal.notifyChanged();
+    }
+    return rows;
   }
 
   async clearAll(): Promise<number> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
-    return await this.rdbManager.delete(predicates);
+    const rows = await this.rdbManager.delete(predicates);
+    if (rows > 0) {
+      LocalVideoHistoryChangeSignal.notifyChanged();
+    }
+    return rows;
   }
 
   private parseResultSet(resultSet: relationalStore.ResultSet): LocalVideoRecord[] {
@@ -99,6 +139,7 @@ export class LocalVideoHistoryStore {
           record.fileUri = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_FILE_URI));
           record.fileName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_FILE_NAME));
           record.fileSize = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_FILE_SIZE));
+          record.coverUri = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_COVER_URI));
           record.durationMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_DURATION_MS));
           record.positionMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_POSITION_MS));
           record.lastPlayedAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_LAST_PLAYED_AT));

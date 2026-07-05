@@ -5,6 +5,7 @@ import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode } from '..
 import { DanmakuManager } from '../../core/danmaku/DanmakuManager'
 import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
 import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker'
+import { LocalVideoThumbnailStore } from '../../services/LocalVideoThumbnailStore'
 import { DanmakuSettingsPanelContent } from '../../components/player/DanmakuSettingsPanel'
 import { DanmakuSettingsSidePanel } from '../../components/player/DanmakuSettingsSidePanel'
 import { AspectModePanel } from '../../components/player/AspectModePanel'
@@ -47,11 +48,13 @@ export struct LocalPlayerPage {
   @State showMoreMenu: boolean = false
   @State showHud: boolean = false
   @State hudText: string = ''
+  @State playbackErrorText: string = ''
   @State danmakuFileName: string = ''
   @State currentAspectMode: VideoAspectMode = VideoAspectMode.contain
   @State showAspectModePanel: boolean = false
   @State showDanmakuSettingsPanel: boolean = false
   @State showDanmakuSettingsSheet: boolean = false
+  @State showDanmakuManageSheet: boolean = false
   @State danmakuSettingsOpenVersion: number = 0
   @State showDanmakuLoadDialog: boolean = false
   @State showDanmakuOffsetPanel: boolean = false
@@ -68,6 +71,7 @@ export struct LocalPlayerPage {
   private wasPlayingBeforeDrag: boolean = false
   private lastHistorySaveMs: number = 0
   private historySeekMs: number = -1
+  private lastKnownPositionMs: number = 0
   private videoFileSize: number = 0
   private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
 
@@ -96,7 +100,12 @@ export struct LocalPlayerPage {
       if (typeof videoUri === 'string') this.videoUri = videoUri
       if (typeof videoFileName === 'string') this.videoFileName = videoFileName
       if (typeof videoFileSize === 'number') this.videoFileSize = videoFileSize
-      if (typeof historyPositionMs === 'number') this.historySeekMs = historyPositionMs
+      if (typeof historyPositionMs === 'number') {
+        this.historySeekMs = historyPositionMs
+        if (historyPositionMs > 0) {
+          this.lastKnownPositionMs = historyPositionMs
+        }
+      }
       if (typeof danmakuUri === 'string') this.danmakuUri = danmakuUri
       if (typeof danmakuFileName === 'string') this.danmakuFileName = danmakuFileName
       if (typeof danmakuOffsetMs === 'number') this.danmakuOffsetMs = danmakuOffsetMs
@@ -172,6 +181,10 @@ export struct LocalPlayerPage {
       .width('100%')
       .height('100%')
       .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
+
+      if (this.showDanmakuManageSheet) {
+        this.DanmakuManageOverlay()
+      }
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -320,6 +333,10 @@ export struct LocalPlayerPage {
       this.HudView()
     }
 
+    if (this.playbackErrorText.length > 0 && !this.isFullScreen) {
+      this.PlaybackErrorOverlay()
+    }
+
     if (this.isFullScreen && this.showDanmakuSettingsPanel) {
       DanmakuSettingsSidePanel({
         showPanel: this.showDanmakuSettingsPanel,
@@ -407,8 +424,8 @@ export struct LocalPlayerPage {
           .layoutWeight(1)
       }
 
-      this.TopSymbolButton($r('sys.symbol.doc_text'), '加载弹幕', () => {
-        this.pickAndLoadLocalDanmaku()
+      this.TopSymbolButton($r('sys.symbol.doc_text'), '弹幕', () => {
+        this.openDanmakuManageSheet()
       })
 
       this.TopSymbolButton(this.showMoreMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
@@ -701,6 +718,49 @@ export struct LocalPlayerPage {
   }
 
   @Builder
+  private PlaybackErrorOverlay() {
+    Column() {
+      Text(this.playbackErrorText)
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_on_primary'))
+        .textAlign(TextAlign.Center)
+        .margin({ bottom: 12 })
+      Row({ space: 10 }) {
+        if (this.canAuthorizeCurrentVideo()) {
+          Button('重新授权')
+            .layoutWeight(1)
+            .height(38)
+            .fontSize(14)
+            .fontColor(Color.White)
+            .backgroundColor($r('app.color.accent_blue'))
+            .borderRadius(12)
+            .onClick(() => {
+              this.authorizeCurrentVideo()
+            })
+        }
+        Button('重新选择')
+          .layoutWeight(1)
+          .height(38)
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .borderRadius(12)
+          .onClick(() => {
+            this.pickVideoFile()
+          })
+      }
+      .width('76%')
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .backgroundColor('#99000000')
+    .zIndex(12)
+  }
+
+  @Builder
   private LocalInfoSection() {
     Column() {
       Row() {
@@ -743,33 +803,23 @@ export struct LocalPlayerPage {
         .alignItems(VerticalAlign.Center)
       }
 
-      Row() {
-        Button('选择视频')
+      Row({ space: 8 }) {
+        Button('弹幕')
           .height(36)
           .fontSize(14)
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+          .backgroundColor(this.danmakuFileName.length > 0 ? $r('app.color.accent_blue') : $r('app.color.button_ghost_bg'))
+          .fontColor(this.danmakuFileName.length > 0 ? Color.White : $r('app.color.text_primary'))
           .borderRadius(18)
-          .margin({ right: 8 })
           .onClick(() => {
-            this.pickVideoFile()
-          })
-
-        Button('加载弹幕')
-          .height(36)
-          .fontSize(14)
-          .backgroundColor($r('app.color.accent_blue'))
-          .fontColor(Color.White)
-          .borderRadius(18)
-          .margin({ right: 8 })
-          .onClick(() => {
-            this.pickAndLoadLocalDanmaku()
+            this.openDanmakuManageSheet()
           })
 
         if (this.danmakuFileName.length > 0) {
           Button('校准')
             .height(36)
             .fontSize(14)
+            .layoutWeight(1)
             .backgroundColor($r('app.color.button_ghost_bg'))
             .fontColor($r('app.color.text_primary'))
             .borderRadius(18)
@@ -777,6 +827,28 @@ export struct LocalPlayerPage {
               this.showDanmakuOffsetPanel = true
             })
         }
+
+        Button('比例')
+          .height(36)
+          .fontSize(14)
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(18)
+          .onClick(() => {
+            this.showAspectModePanel = true
+          })
+
+        Button('换视频')
+          .height(36)
+          .fontSize(14)
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_primary'))
+          .borderRadius(18)
+          .onClick(() => {
+            this.pickVideoFile()
+          })
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 8, bottom: 16 })
@@ -802,8 +874,8 @@ export struct LocalPlayerPage {
           this.toggleDanmaku()
           this.showMoreMenu = false
         })
-        this.MoreMenuItem('加载本地弹幕', () => {
-          this.pickAndLoadLocalDanmaku()
+        this.MoreMenuItem('弹幕', () => {
+          this.openDanmakuManageSheet()
           this.showMoreMenu = false
         })
         this.MoreMenuItem('弹幕设置', () => {
@@ -880,6 +952,125 @@ export struct LocalPlayerPage {
     .width('100%')
     .height(40)
     .padding({ left: 14, right: 14 })
+    .onClick(() => {
+      action()
+    })
+  }
+
+  @Builder
+  private DanmakuManageOverlay(): void {
+    Stack({ alignContent: Alignment.Bottom }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#66000000')
+        .onClick(() => {
+          this.showDanmakuManageSheet = false
+          this.startAutoHideTimer()
+        })
+
+      Column() {
+        Row() {
+          Text('弹幕')
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(20)
+            .fontColor([$r('sys.color.icon_secondary')])
+            .width(40)
+            .height(40)
+            .onClick(() => {
+              this.showDanmakuManageSheet = false
+              this.startAutoHideTimer()
+            })
+        }
+        .width('100%')
+        .height(44)
+        .alignItems(VerticalAlign.Center)
+
+        Text(this.buildCurrentDanmakuText())
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ bottom: 16 })
+
+        Column({ space: 10 }) {
+          this.DanmakuManageAction('加载弹幕', '选择 XML / JSON / ASS 文件', $r('sys.symbol.doc_text'), true, () => {
+            this.showDanmakuManageSheet = false
+            this.pickAndLoadLocalDanmaku()
+          })
+          this.DanmakuManageAction('弹幕设置', '显示密度、透明度、字号等', $r('sys.symbol.barrage_setting'), false, () => {
+            this.showDanmakuManageSheet = false
+            this.openDanmakuSettings()
+          })
+          if (this.danmakuFileName.length > 0) {
+            this.DanmakuManageAction('时间校准', '当前偏移 ' + this.formatOffset(this.danmakuOffsetMs), $r('sys.symbol.clock'), false, () => {
+              this.showDanmakuManageSheet = false
+              this.showDanmakuOffsetPanel = true
+            })
+          }
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .padding({ left: 18, right: 18, top: 12, bottom: this.bottomSafeHeight + 18 })
+      .borderRadius({ topLeft: 18, topRight: 18 })
+      .backgroundColor($r('app.color.card_background'))
+      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: -6 })
+    }
+    .width('100%')
+    .height('100%')
+    .zIndex(30)
+    .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseOut }))
+  }
+
+  @Builder
+  private DanmakuManageAction(title: string, subtitle: string, symbol: Resource, primary: boolean, action: () => void) {
+    Row({ space: 12 }) {
+      Stack() {
+        Circle()
+          .width(34)
+          .height(34)
+          .fill(primary ? $r('app.color.accent_blue') : $r('app.color.button_ghost_bg'))
+          .opacity(primary ? 0.18 : 1)
+        SymbolGlyph(symbol)
+          .fontSize(19)
+          .fontColor([primary ? $r('app.color.accent_blue') : $r('sys.color.icon_secondary')])
+      }
+      .width(36)
+      .height(36)
+
+      Column() {
+        Text(title)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(subtitle)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 3 })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
+    }
+    .width('100%')
+    .height(58)
+    .padding({ left: 12, right: 12 })
+    .borderRadius(12)
+    .backgroundColor($r('app.color.button_ghost_bg'))
+    .alignItems(VerticalAlign.Center)
     .onClick(() => {
       action()
     })
@@ -1039,6 +1230,9 @@ export struct LocalPlayerPage {
   private handlePlayerState(state: PlayerState): void {
     this.isPlaying = state.playing
     this.positionMs = state.positionMs
+    if (state.positionMs > 0) {
+      this.lastKnownPositionMs = state.positionMs
+    }
     this.durationMs = state.durationMs
     this.volume = state.volume
     this.speed = state.speed
@@ -1048,7 +1242,15 @@ export struct LocalPlayerPage {
       this.danmakuManager.onPlayerStateUpdate(state)
     }
 
-    if (this.videoUri.length > 0 && this.durationMs > 0) {
+    if (state.error.length > 0) {
+      logger.warn('Local playback error: %{public}s', state.error)
+      this.playbackErrorText = '本地文件访问失败，请重新授权或重新选择'
+      this.showHudText('本地文件访问失败')
+    } else if (this.playbackErrorText.length > 0 && state.playing) {
+      this.playbackErrorText = ''
+    }
+
+    if (this.videoUri.length > 0 && this.durationMs > 0 && this.lastKnownPositionMs > 0) {
       const now = Date.now()
       if (now - this.lastHistorySaveMs >= HISTORY_SAVE_INTERVAL_MS) {
         this.lastHistorySaveMs = now
@@ -1068,6 +1270,12 @@ export struct LocalPlayerPage {
   }
 
   private seekTo(positionMs: number): void {
+    this.positionMs = positionMs
+    if (positionMs > 0) {
+      this.lastKnownPositionMs = positionMs
+      this.lastHistorySaveMs = Date.now()
+      this.saveLocalHistory()
+    }
     if (this.hasEngine && this.playerEngine !== null) {
       this.playerEngine.seek(positionMs)
     }
@@ -1191,6 +1399,13 @@ export struct LocalPlayerPage {
     this.pauseAutoHideTimer()
   }
 
+  private openDanmakuManageSheet(): void {
+    logger.info('Open local danmaku manage sheet')
+    this.showDanmakuManageSheet = true
+    this.showHudText('弹幕')
+    this.pauseAutoHideTimer()
+  }
+
   private closeDanmakuSettings(): void {
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
@@ -1276,6 +1491,7 @@ export struct LocalPlayerPage {
       this.videoUri = videoResult.uri
       this.videoFileName = videoResult.fileName
       this.videoFileSize = videoResult.fileSize
+      this.playbackErrorText = ''
       this.clearDanmakuState()
       const options = new PlaybackOptions()
       options.url = this.videoUri
@@ -1287,6 +1503,38 @@ export struct LocalPlayerPage {
       logger.error('选择视频文件失败: %{public}s', err instanceof Error ? err.message : String(err))
       this.showHudText('选择视频文件失败')
     }
+  }
+
+  private async authorizeCurrentVideo(): Promise<void> {
+    if (this.videoUri.length === 0) {
+      return
+    }
+    try {
+      const context = getContext(this) as common.UIAbilityContext
+      const authorized = await LocalFilePicker.ensureReadableUri(this.videoUri) ||
+        await LocalFilePicker.authorizeExistingUri(context, this.videoUri)
+      if (!authorized) {
+        this.showHudText('授权失败')
+        return
+      }
+      this.playbackErrorText = ''
+      const options = new PlaybackOptions()
+      options.url = this.videoUri
+      options.isLocalFile = true
+      options.localFileSize = this.videoFileSize
+      if (this.lastKnownPositionMs > 0) {
+        options.startPositionMs = this.lastKnownPositionMs
+      }
+      this.playbackOptions = options
+      this.showHudText('授权成功')
+    } catch (err) {
+      logger.warn('重新授权本地视频失败: %{public}s', err instanceof Error ? err.message : String(err))
+      this.showHudText('授权失败')
+    }
+  }
+
+  private canAuthorizeCurrentVideo(): boolean {
+    return this.videoUri.length > 0
   }
 
   private showHudText(text: string): void {
@@ -1340,10 +1588,32 @@ export struct LocalPlayerPage {
       return
     }
     try {
+      if (this.playerEngine !== null) {
+        const latestState = this.playerEngine.getState()
+        if (latestState.positionMs > this.positionMs) {
+          this.positionMs = latestState.positionMs
+        }
+        if (latestState.positionMs > this.lastKnownPositionMs) {
+          this.lastKnownPositionMs = latestState.positionMs
+        }
+        if (latestState.durationMs > this.durationMs) {
+          this.durationMs = latestState.durationMs
+        }
+      }
+      if (this.positionMs <= 0 && this.lastKnownPositionMs > 0) {
+        this.positionMs = this.lastKnownPositionMs
+      }
+      if (this.durationMs > 0 && this.positionMs <= 0) {
+        logger.info('Skip local history save with zero position: name=%{public}s duration=%{public}d',
+          this.videoFileName, this.durationMs)
+        return
+      }
       const record = new LocalVideoRecord()
       record.fileUri = this.videoUri
       record.fileName = this.videoFileName
       record.fileSize = this.videoFileSize
+      record.coverUri = await LocalVideoThumbnailStore.getInstance()
+        .ensureThumbnail(this.videoUri, this.videoFileName, this.videoFileSize)
       record.durationMs = this.durationMs
       record.positionMs = this.positionMs
       record.lastPlayedAt = Date.now()
@@ -1353,6 +1623,8 @@ export struct LocalPlayerPage {
       record.danmakuFormat = this.danmakuLoadedFormat
       record.danmakuCount = this.danmakuLoadedCount
       record.createdAt = Date.now()
+      logger.info('Save local history: name=%{public}s position=%{public}d duration=%{public}d',
+        this.videoFileName, this.positionMs, this.durationMs)
       await this.localVideoHistoryStore.upsert(record)
     } catch (err) {
       logger.warn('保存本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
@@ -1363,25 +1635,37 @@ export struct LocalPlayerPage {
     if (this.danmakuUri.length === 0 || this.danmakuFileName.length === 0 || this.danmakuManager === null) {
       return
     }
-    const fileResult = LocalFilePicker.readDanmakuFileByUri(this.danmakuUri, this.danmakuFileName)
-    if (fileResult === null) {
-      this.showHudText('弹幕文件需要重新授权')
+    LocalFilePicker.ensureReadableUri(this.danmakuUri).then((readable: boolean) => {
+      if (!readable) {
+        this.showHudText('弹幕文件需要重新选择')
+        this.clearDanmakuState()
+        return
+      }
+      const fileResult = LocalFilePicker.readDanmakuFileByUri(this.danmakuUri, this.danmakuFileName)
+      if (fileResult === null) {
+        this.showHudText('弹幕恢复失败')
+        this.clearDanmakuState()
+        return
+      }
+      const parseResult: LocalDanmakuParseResult = DanmakuFileParser.parse(fileResult.fileName, fileResult.content)
+      if (parseResult.errorMessage.length > 0 || parseResult.items.length === 0) {
+        this.showHudText('弹幕恢复失败')
+        this.clearDanmakuState()
+        return
+      }
+      this.danmakuLoadedFormat = this.danmakuLoadedFormat.length > 0 ? this.danmakuLoadedFormat : this.formatFormatLabel(parseResult.format)
+      this.danmakuLoadedCount = parseResult.items.length
+      if (this.danmakuManager !== null) {
+        this.danmakuManager.loadLocalDanmaku(parseResult.items)
+        if (this.danmakuOffsetMs !== 0) {
+          this.danmakuManager.applyDanmakuOffset(this.danmakuOffsetMs)
+        }
+      }
+      logger.info('历史弹幕恢复成功: %{public}s count=%{public}d', this.danmakuFileName, parseResult.items.length)
+    }).catch((err: Error) => {
+      logger.warn('历史弹幕授权恢复失败: %{public}s', err.message)
       this.clearDanmakuState()
-      return
-    }
-    const parseResult: LocalDanmakuParseResult = DanmakuFileParser.parse(fileResult.fileName, fileResult.content)
-    if (parseResult.errorMessage.length > 0 || parseResult.items.length === 0) {
-      this.showHudText('弹幕恢复失败')
-      this.clearDanmakuState()
-      return
-    }
-    this.danmakuLoadedFormat = this.danmakuLoadedFormat.length > 0 ? this.danmakuLoadedFormat : this.formatFormatLabel(parseResult.format)
-    this.danmakuLoadedCount = parseResult.items.length
-    this.danmakuManager.loadLocalDanmaku(parseResult.items)
-    if (this.danmakuOffsetMs !== 0) {
-      this.danmakuManager.applyDanmakuOffset(this.danmakuOffsetMs)
-    }
-    logger.info('历史弹幕恢复成功: %{public}s count=%{public}d', this.danmakuFileName, parseResult.items.length)
+    })
   }
 
   private clearDanmakuState(): void {
@@ -1419,6 +1703,21 @@ export struct LocalPlayerPage {
       return 'ASS'
     }
     return format.toUpperCase()
+  }
+
+  private buildCurrentDanmakuText(): string {
+    if (this.danmakuFileName.length === 0) {
+      return '未加载弹幕，支持 B站 XML / 弹弹 JSON / ASS'
+    }
+    let text = this.danmakuLoadedFormat.length > 0 ? this.danmakuLoadedFormat : '本地弹幕'
+    if (this.danmakuLoadedCount > 0) {
+      text += ' · ' + this.danmakuLoadedCount + ' 条'
+    }
+    if (this.danmakuOffsetMs !== 0) {
+      text += ' · ' + this.formatOffset(this.danmakuOffsetMs)
+    }
+    text += ' · ' + this.danmakuFileName
+    return text
   }
 
   private formatTime(ms: number): string {

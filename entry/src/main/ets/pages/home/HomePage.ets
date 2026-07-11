@@ -6,7 +6,9 @@ import { TagTopicSection } from '../../components/recommend/TagTopicSection'
 import { LoadingOverlay } from '../../components/common/LoadingOverlay'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
+import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
 import { router } from '@kit.ArkUI'
+import { deviceInfo } from '@kit.BasicServicesKit'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -17,10 +19,13 @@ import {
   TitleBarContentOptions
 } from '@kit.UIDesignKit'
 import {
+  getEffectiveTopSafeHeight,
   getTopSpacerHeight,
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle,
-  buildTitleBarOptions
+  buildTitleBarOptions,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
@@ -31,6 +36,14 @@ import {
 } from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('HomePage')
+const HOME_TITLE_TAG_BAR_HEIGHT: number = 44
+const HOME_TITLE_ROW_HEIGHT: number = 72
+const HOME_TITLE_TAG_LEFT_MARGIN: number = 16
+const HOME_TITLE_MENU_RESERVED_WIDTH: number = 110
+const HOME_TITLE_TAG_VISUAL_OFFSET_Y: number = -5
+const HOME_STICKY_TAG_PIN_HYSTERESIS: number = 8
+const HOME_TAG_SWITCH_PIN_GUARD_MS: number = 450
+const HOME_STICKY_TAG_HEIGHT: number = 30
 
 @Component
 export struct HomePage {
@@ -39,6 +52,8 @@ export struct HomePage {
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
+  @StorageLink('isHdsTabsEnabled') isHdsTabsEnabled: boolean = true
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State isLoading: boolean = true
   @State hasLoadError: boolean = false
   @State heroList: RecommendCardModel[] = []
@@ -49,10 +64,18 @@ export struct HomePage {
   @State seasonLabel: string = ''
   @State tagLoading: boolean = false
   @State selectedTag: string = ''
+  @State seasonalLoading: boolean = false
+  @State highScoreLoading: boolean = false
+  @State heroVersion: number = 0
+  @State tagBarPinned: boolean = false
 
   private vm: RecommendViewModel = new RecommendViewModel()
   private scroller: Scroller = new Scroller()
   private loadToken: number = 0
+  private tagSwitchInProgress: boolean = false
+  private tagSwitchPinGuardUntil: number = 0
+  private tagPinScrollThreshold: number = -1
+  private tagRequestVersion: number = 0
 
   aboutToAppear(): void {
     this.loadRecommend()
@@ -61,6 +84,9 @@ export struct HomePage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       this.HomeNavigationContent()
+      if (this.tagBarPinned) {
+        this.StickyTitleTagBar()
+      }
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -77,15 +103,16 @@ export struct HomePage {
   @Builder
   private HomeNavigationContent() {
     HdsNavigation() {
-      Scroll(this.scroller) {        Column({ space: 20 }) {
-          if (this.heroList.length === 0) {
+      Scroll(this.scroller) {
+        Column({ space: 20 }) {
+          if (this.heroList.length === 0 && !this.shouldShowInitialSkeleton()) {
             Blank()
               .height(this.getHomeTopSpacerHeight())
               .width('100%')
           }
 
-          if (this.isLoading && this.heroList.length === 0 && this.trendingList.length === 0) {
-            LoadingOverlay({ message: '加载推荐内容...' })
+          if (this.shouldShowInitialSkeleton()) {
+            this.InitialSkeletonContent()
           } else if (this.hasLoadError && this.heroList.length === 0 && this.trendingList.length === 0) {
             ErrorRetry({
               message: '无法加载推荐内容，请检查网络连接',
@@ -97,7 +124,8 @@ export struct HomePage {
             if (this.heroList.length > 0) {
               HeroBanner({
                 items: this.heroList,
-                topInset: this.getHomeTopSpacerHeight()
+                topInset: this.getHomeTopSpacerHeight(),
+                version: this.heroVersion
               })
                 .width('100%')
             }
@@ -118,6 +146,8 @@ export struct HomePage {
                 items: this.seasonalList,
                 showRank: true
               })
+            } else if (this.seasonalLoading) {
+              this.PosterRailSkeleton(this.seasonLabel.length > 0 ? this.seasonLabel : '本季新番', '正在放送')
             }
 
             if (this.highScoreList.length > 0) {
@@ -127,14 +157,20 @@ export struct HomePage {
                 items: this.highScoreList,
                 showRank: true
               })
+            } else if (this.highScoreLoading) {
+              this.PosterRailSkeleton('高分佳作', '评分人数充足的口碑作品')
             }
 
             TagTopicSection({
               items: this.tagTopicList,
               selectedTag: this.selectedTag,
               isLoading: this.tagLoading,
+              tagBarPinned: this.tagBarPinned,
               onTagSelect: (tag: string) => {
                 this.handleTagSelect(tag)
+              },
+              onTagBarAreaChange: (top: number, height: number) => {
+                this.handleTagBarAreaChange(top, height)
               }
             })
           }
@@ -154,9 +190,11 @@ export struct HomePage {
       .id('homeScrollContainer')
       .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
         this.updateBottomTabOffset(yOffset)
+        this.refreshTagBarPinnedState()
       })
       .onScrollStop(() => {
         this.snapBottomTabOffset()
+        this.refreshTagBarPinnedState()
       })
     }
     .width('100%')
@@ -174,17 +212,17 @@ export struct HomePage {
     const token = ++this.loadToken
     this.isLoading = true
     this.hasLoadError = false
+    this.seasonalLoading = true
+    this.highScoreLoading = true
     this.heroList = []
     this.trendingList = []
     this.seasonalList = []
     this.highScoreList = []
-    this.seasonLabel = this.vm.seasonLabel
+    this.heroVersion = 0
+    this.seasonLabel = this.vm.seasonLabel.length > 0 ? this.vm.seasonLabel : '本季新番'
     try {
       let hero: RecommendCardModel[] = []
       let trending: RecommendCardModel[] = []
-      let seasonal: RecommendCardModel[] = []
-      let highScore: RecommendCardModel[] = []
-      let seasonLabel: string = this.vm.seasonLabel
 
       try {
         trending = await this.vm.loadHomeTrending()
@@ -198,37 +236,19 @@ export struct HomePage {
         logger.warn('buildHomeHeroFromTrending failed')
       }
 
-      await Promise.all([
-        this.vm.loadHomeSeasonal()
-          .then((items: RecommendCardModel[]) => {
-            seasonal = items
-            seasonLabel = this.vm.seasonLabel
-          })
-          .catch((err: Error) => {
-            logger.warn('loadHomeSeasonal failed')
-          }),
-        this.vm.loadHomeHighScore()
-          .then((items: RecommendCardModel[]) => {
-            highScore = items
-          })
-          .catch((err: Error) => {
-            logger.warn('loadHomeHighScore failed')
-          })
-      ])
-
       if (token !== this.loadToken) {
         return
       }
 
       this.heroList = [...hero]
       this.trendingList = [...trending]
-      this.seasonalList = [...seasonal]
-      this.highScoreList = [...highScore]
-      this.seasonLabel = seasonLabel
-      this.hasLoadError = hero.length === 0 &&
-        trending.length === 0 &&
-        seasonal.length === 0 &&
-        highScore.length === 0
+      this.heroVersion++
+      this.hasLoadError = hero.length === 0 && trending.length === 0
+      this.isLoading = false
+
+      this.loadSeasonalSection(token)
+      this.loadHighScoreSection(token)
+      this.enrichHeroSection(token)
     } catch (err) {
       logger.error('loadRecommend failed: %{public}s', err instanceof Error ? err.message : String(err))
       this.hasLoadError = true
@@ -239,20 +259,191 @@ export struct HomePage {
     }
   }
 
+  private shouldShowInitialSkeleton(): boolean {
+    return this.isLoading && this.heroList.length === 0 && this.trendingList.length === 0
+  }
+
+  private async loadSeasonalSection(token: number): Promise<void> {
+    try {
+      const items = await this.vm.loadHomeSeasonal()
+      if (token !== this.loadToken) {
+        return
+      }
+      this.seasonalList = [...items]
+      this.seasonLabel = this.vm.seasonLabel
+    } catch (err) {
+      logger.warn('loadHomeSeasonal failed')
+    } finally {
+      if (token === this.loadToken) {
+        this.seasonalLoading = false
+      }
+    }
+  }
+
+  private async loadHighScoreSection(token: number): Promise<void> {
+    try {
+      const items = await this.vm.loadHomeHighScore()
+      if (token !== this.loadToken) {
+        return
+      }
+      this.highScoreList = [...items]
+    } catch (err) {
+      logger.warn('loadHomeHighScore failed')
+    } finally {
+      if (token === this.loadToken) {
+        this.highScoreLoading = false
+      }
+    }
+  }
+
+  private async enrichHeroSection(token: number): Promise<void> {
+    try {
+      const items = await this.vm.enrichHomeHeroList()
+      if (token !== this.loadToken) {
+        return
+      }
+      this.heroList = [...items]
+      this.heroVersion++
+    } catch (err) {
+      logger.warn('enrichHomeHeroList failed')
+    }
+  }
+
+  @Builder
+  private InitialSkeletonContent() {
+    Column({ space: 20 }) {
+      this.HeroSkeleton()
+      this.PosterRailSkeleton('热门番组', '近期讨论度最高')
+      this.PosterRailSkeleton(this.seasonLabel.length > 0 ? this.seasonLabel : '本季新番', '正在放送')
+      this.PosterRailSkeleton('高分佳作', '评分人数充足的口碑作品')
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private HeroSkeleton() {
+    Stack({ alignContent: Alignment.BottomStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          direction: GradientDirection.Bottom,
+          colors: [
+            [$r('app.color.card_background'), 0],
+            [$r('app.color.page_background'), 1]
+          ]
+        })
+
+      Row() {
+        Column({ space: 10 }) {
+          this.SkeletonBlock('76%', 28, 8)
+          this.SkeletonBlock('92%', 16, 8)
+          this.SkeletonBlock('64%', 16, 8)
+          Row({ space: 8 }) {
+            this.SkeletonBlock(58, 22, 11)
+            this.SkeletonBlock(72, 22, 11)
+          }
+        }
+        .layoutWeight(1)
+        .padding({ left: 20, right: 10 })
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Start)
+
+        Column() {
+          this.SkeletonBlock(this.getSkeletonPosterWidth(), Math.round(this.getSkeletonPosterWidth() * 4 / 3), 12)
+        }
+        .margin({ right: 18 })
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ top: this.getHomeTopSpacerHeight() + 24, bottom: 48 })
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .height(this.getHeroSkeletonHeight())
+  }
+
+  @Builder
+  private PosterRailSkeleton(title: string, subtitle: string) {
+    Column({ space: 8 }) {
+      Row() {
+        Column({ space: 2 }) {
+          Text(title)
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+
+          Text(subtitle)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16 })
+
+      Scroll() {
+        Row({ space: 10 }) {
+          ForEach([0, 1, 2, 3], (_: number, index?: number) => {
+            Column({ space: 8 }) {
+              this.SkeletonBlock(this.getRailSkeletonCardWidth(), Math.round(this.getRailSkeletonCardWidth() * 4 / 3), 12)
+              this.SkeletonBlock('88%', 16, 8)
+              this.SkeletonBlock('62%', 16, 8)
+            }
+            .width(this.getRailSkeletonCardWidth())
+            .height(this.getRailSkeletonCardHeight())
+            .alignItems(HorizontalAlign.Start)
+          }, (_: number, index?: number) => 'home_rail_skeleton_' + title + '_' + (index ?? 0).toString())
+        }
+        .height(this.getRailSkeletonCardHeight())
+        .padding({ left: 16, right: 16 })
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.None)
+      .width('100%')
+    }
+    .width('100%')
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  @Builder
+  private SkeletonBlock(widthValue: string | number, heightValue: number, radiusValue: number) {
+    Column()
+      .width(widthValue)
+      .height(heightValue)
+      .borderRadius(radiusValue)
+      .backgroundColor($r('app.color.skeleton_background'))
+  }
+
   private async handleTagSelect(tag: string): Promise<void> {
+    const requestVersion = ++this.tagRequestVersion
+    if (this.tagBarPinned) {
+      this.tagSwitchInProgress = true
+      this.tagSwitchPinGuardUntil = Date.now() + HOME_TAG_SWITCH_PIN_GUARD_MS
+    }
     this.selectedTag = tag
 
     if (tag.length === 0) {
       this.tagTopicList = []
+      this.tagSwitchInProgress = false
+      this.tagLoading = false
+      this.tagSwitchPinGuardUntil = Date.now() + HOME_TAG_SWITCH_PIN_GUARD_MS
       return
     }
 
     this.tagLoading = true
     try {
       await this.vm.loadByTag(tag)
-      this.tagTopicList = this.vm.tagTopicList
+      if (requestVersion === this.tagRequestVersion && this.selectedTag === tag) {
+        this.tagTopicList = this.vm.tagTopicList
+      }
     } finally {
-      this.tagLoading = false
+      if (requestVersion === this.tagRequestVersion) {
+        this.tagLoading = false
+        this.tagSwitchInProgress = false
+        this.tagSwitchPinGuardUntil = Date.now() + HOME_TAG_SWITCH_PIN_GUARD_MS
+      }
     }
   }
 
@@ -288,7 +479,7 @@ export struct HomePage {
 
   private buildHomeTitle(): HdsNavigationTitle {
     return {
-      mainTitle: '首页'
+      mainTitle: this.tagBarPinned ? '' : '首页'
     }
   }
 
@@ -300,10 +491,75 @@ export struct HomePage {
   }
 
   private buildHomeTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('首页')
-    base.style = buildImmersiveTitleBarStyle()
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('首页', this.hdsMaterialLevel)
+    base.style = buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     base.content = this.buildHomeTitleBarContent()
     return base
+  }
+
+  @Builder
+  private StickyTitleTagBar() {
+    Row() {
+      Stack({ alignContent: Alignment.Start }) {
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(RECOMMEND_GENRE_TAGS, (tag: string, index?: number) => {
+              this.StickyTagChip(tag)
+            }, (tag: string, index?: number) => 'home_sticky_tag_' + tag)
+          }
+          .constraintSize({ minWidth: '100%' })
+          .height('100%')
+          .alignItems(VerticalAlign.Center)
+          .justifyContent(FlexAlign.Center)
+          .padding({ left: 0, right: 12 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .fadingEdge(true)
+        .edgeEffect(EdgeEffect.Spring)
+        .width('100%')
+        .height(HOME_TITLE_TAG_BAR_HEIGHT)
+      }
+      .width('100%')
+      .height(HOME_TITLE_TAG_BAR_HEIGHT)
+    }
+    .width(this.getStickyTitleTagBarWidth())
+    .height(HOME_TITLE_ROW_HEIGHT)
+    .margin({ left: HOME_TITLE_TAG_LEFT_MARGIN, top: getEffectiveTopSafeHeight(this.topSafeHeight) })
+    .alignItems(VerticalAlign.Center)
+    .translate({ y: HOME_TITLE_TAG_VISUAL_OFFSET_Y })
+    .zIndex(60)
+    .backgroundColor(Color.Transparent)
+  }
+
+  @Builder
+  private StickyTagChip(tag: string) {
+    this.FallbackStickyTagChip(tag)
+  }
+
+  @Builder
+  private FallbackStickyTagChip(tag: string) {
+    Row({ space: 5 }) {
+      if (this.tagLoading && tag === this.selectedTag) {
+        LoadingProgress()
+          .width(12)
+          .height(12)
+          .color(Color.White)
+      }
+
+      Text(tag)
+        .fontSize(13)
+        .fontColor(tag === this.selectedTag ? Color.White : $r('app.color.text_primary'))
+        .fontWeight(tag === this.selectedTag ? FontWeight.Medium : FontWeight.Normal)
+    }
+      .height(30)
+      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+      .borderRadius(16)
+      .backgroundColor(tag === this.selectedTag ? $r('app.color.accent_blue') : $r('app.color.tag_chip_bg'))
+      .animation({ duration: 140, curve: Curve.EaseOut })
+      .onClick(() => {
+        this.handleTagSelect(tag === this.selectedTag ? '' : tag)
+      })
   }
 
   private getHomeTopSpacerHeight(): number {
@@ -312,6 +568,48 @@ export struct HomePage {
 
   private getHomeBottomSpacerHeight(): number {
     return getBottomSpacerHeight(this.bottomSafeHeight)
+  }
+
+  private getHeroSkeletonHeight(): number {
+    if (this.screenWidthVp >= 840) {
+      return 360 + this.getHomeTopSpacerHeight()
+    } else if (this.screenWidthVp >= 600) {
+      return 340 + this.getHomeTopSpacerHeight()
+    }
+    return 300 + this.getHomeTopSpacerHeight()
+  }
+
+  private getStickyTitleTagBarWidth(): number {
+    const width = this.screenWidthVp > 0 ? this.screenWidthVp : 360
+    return Math.max(150, width - HOME_TITLE_MENU_RESERVED_WIDTH - HOME_TITLE_TAG_LEFT_MARGIN)
+  }
+
+  private getStickyTagChipWidth(tag: string): number {
+    return Math.max(58, tag.length * 15 + (this.tagLoading && tag === this.selectedTag ? 38 : 28))
+  }
+
+  private getSkeletonPosterWidth(): number {
+    if (this.screenWidthVp >= 1200) {
+      return 198
+    } else if (this.screenWidthVp >= 840) {
+      return 192
+    } else if (this.screenWidthVp >= 600) {
+      return 180
+    }
+    return 122
+  }
+
+  private getRailSkeletonCardWidth(): number {
+    if (this.screenWidthVp >= 840) {
+      return 156
+    } else if (this.screenWidthVp >= 600) {
+      return 132
+    }
+    return 112
+  }
+
+  private getRailSkeletonCardHeight(): number {
+    return Math.round(this.getRailSkeletonCardWidth() * 4 / 3) + 44
   }
 
   private updateBottomTabOffset(deltaY: number): void {
@@ -347,6 +645,34 @@ export struct HomePage {
     requestBottomTabAnimation(shouldHide)
     if (!shouldHide) {
       this.bottomTabOffset = 0
+    }
+  }
+
+  private handleTagBarAreaChange(top: number, _height: number): void {
+    const pinLine = this.getHomeTopSpacerHeight()
+    if (!this.tagBarPinned && top <= pinLine) {
+      const offset = this.scroller.currentOffset()
+      this.tagPinScrollThreshold = Math.max(0, offset.yOffset + top - pinLine)
+      this.tagBarPinned = true
+    }
+  }
+
+  private refreshTagBarPinnedState(): void {
+    const offset = this.scroller.currentOffset()
+    if (offset.yOffset <= 0 && this.tagBarPinned) {
+      this.tagBarPinned = false
+      this.tagPinScrollThreshold = -1
+      return
+    }
+    if (!this.tagBarPinned || this.tagPinScrollThreshold < 0) {
+      return
+    }
+    if (this.tagSwitchInProgress || Date.now() < this.tagSwitchPinGuardUntil) {
+      return
+    }
+    if (offset.yOffset < this.tagPinScrollThreshold - HOME_STICKY_TAG_PIN_HYSTERESIS) {
+      this.tagBarPinned = false
+      this.tagPinScrollThreshold = -1
     }
   }
 }

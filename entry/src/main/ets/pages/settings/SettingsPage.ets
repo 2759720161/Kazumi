@@ -14,7 +14,14 @@ import {
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildTitleBarOptions
+  buildTitleBarOptions,
+  HDS_MATERIAL_LEVEL_ADAPTIVE,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  HDS_MATERIAL_LEVEL_EXQUISITE,
+  HDS_MATERIAL_LEVEL_GENTLE,
+  HDS_MATERIAL_LEVEL_SMOOTH,
+  PREFS_KEY_HDS_MATERIAL_LEVEL,
+  getHdsMaterialLevelLabel
 } from '../../utils/HdsPageStyle'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
@@ -27,9 +34,18 @@ import {
   resolveBottomTabSnapTarget
 } from '../../utils/BottomTabAutoHide'
 import {
+  PLAYER_AUTO_FULLSCREEN_DEFAULT,
+  PREFS_KEY_PLAYER_AUTO_FULLSCREEN
+} from '../../utils/PlayerAutoFullscreen'
+import {
   ADVANCED_OPTIONS_UNLOCKED_KEY,
-  ADVANCED_OPTIONS_UNLOCK_TAP_COUNT
+  ADVANCED_OPTIONS_UNLOCK_TAP_COUNT,
+  HIDE_LOCAL_PAGE_KEY,
+  PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
+  PLAYER_DEBUG_OPTIONS_UNLOCK_TAP_COUNT,
+  PLAYER_DEBUG_OPTIONS_UNLOCK_WINDOW_MS
 } from '../../utils/AdvancedOptionsUnlock'
+import { AppConstants } from '../../constants/AppConstants'
 
 const logger = new Logger('SettingsPage')
 
@@ -48,6 +64,7 @@ struct SponsorDialog {
         .margin({ bottom: 18 })
 
       Image($r('app.media.sponsor_qr'))
+        .draggable(false)
         .width('100%')
         .height(300)
         .objectFit(ImageFit.Contain)
@@ -87,6 +104,7 @@ struct SponsorDialog {
 export struct SettingsPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
+  @StorageLink('screenWidthVp') screenWidthVp: number = 0
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabShowAnimation') bottomTabShowAnimation: boolean = BOTTOM_TAB_SHOW_ANIMATION_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
@@ -97,16 +115,23 @@ export struct SettingsPage {
   @State mpvHwdecMode: string = 'auto'
   @State mpvHlsAdFilter: boolean = true
   @State mpvSegAllowImg: boolean = true
+  @State mpvDetailEnhancerQuality: number = -1
+  @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @State snifferTimeout: number = 15
   @State rules: RuleSource[] = []
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private scroller: Scroller = new Scroller()
 
   @State colorMode: number = -1
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State showPlayerEngineMenu: boolean = false
   @State showMpvHwdecMenu: boolean = false
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = false
+  @StorageLink(HIDE_LOCAL_PAGE_KEY) hideLocalPage: boolean = false
+  @StorageLink(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY) playerDebugOptionsUnlocked: boolean = false
   @State versionTapCount: number = 0
+  @State playerEngineTapCount: number = 0
+  private playerEngineFirstTapTime: number = 0
   private sponsorDialogController: CustomDialogController | null = new CustomDialogController({
     builder: SponsorDialog(),
     customStyle: true,
@@ -165,7 +190,8 @@ export struct SettingsPage {
     }
     .width('100%')
     .height('100%')
-    .titleBar(buildTitleBarOptions('我的'))
+    .mode(NavigationMode.Stack)
+    .titleBar(buildTitleBarOptions('我的', this.hdsMaterialLevel))
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
     .hideBackButton(true)
@@ -317,6 +343,18 @@ export struct SettingsPage {
           this.NavigationItem($r('sys.symbol.clock'), '历史记录', '查看播放历史', '', () => {
             router.pushUrl({ url: 'pages/history/HistoryPage' })
           })
+
+          this.ItemDivider()
+
+          this.NavigationItem(
+            $r('sys.symbol.arrow_2_circlepath'),
+            '观看历史同步',
+            '通过 WebDAV 同步多设备观看记录',
+            '',
+            () => {
+              router.pushUrl({ url: 'pages/settings/WebDavSyncPage' })
+            }
+          )
         }
       }
       .width('100%')
@@ -343,6 +381,18 @@ export struct SettingsPage {
         .width('100%')
         .height(56)
         .padding({ left: 16, right: 16 })
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
+          '横屏自动全屏',
+          '手机横屏进入全屏，转回竖屏退出',
+          this.playerAutoFullscreen,
+          (isOn: boolean) => {
+            this.setPlayerAutoFullscreen(isOn)
+          }
+        )
 
         if (this.defaultPlayerEngine === 'mpv') {
           this.ItemDivider()
@@ -371,6 +421,25 @@ export struct SettingsPage {
           this.ToggleItem($r('sys.symbol.doc_text'), '伪装分片处理', '允许图片扩展名的视频分片', this.mpvSegAllowImg, (isOn: boolean) => {
             this.setMpvSegAllowImg(isOn)
           })
+
+          this.ItemDivider()
+
+          this.ToggleItem($r('sys.symbol.wand_and_stars'), '视频画质增强', 'AI 细节增强与超分辨率缩放', this.mpvDetailEnhancerQuality >= 0, (isOn: boolean) => {
+            this.setDetailEnhancerEnabled(isOn)
+          })
+
+          if (this.mpvDetailEnhancerQuality >= 0) {
+            this.ItemDivider()
+
+            Row() {
+              this.SettingIcon($r('sys.symbol.gearshape'))
+              this.SettingTitle('画质增强档位', '档位越高效果越好，性能消耗越大')
+              this.DetailEnhancerPicker()
+            }
+            .width('100%')
+            .height(56)
+            .padding({ left: 16, right: 16 })
+          }
         }
       }
       .width('100%')
@@ -400,6 +469,17 @@ export struct SettingsPage {
 
         this.ItemDivider()
 
+        Row() {
+          this.SettingIcon($r('sys.symbol.wand_and_stars'))
+          this.SettingTitle('沉浸光感等级', '调整 HDS 材质光感强度')
+          this.HdsMaterialLevelPicker()
+        }
+        .width('100%')
+        .height(56)
+        .padding({ left: 16, right: 16 })
+
+        this.ItemDivider()
+
         this.ToggleItem(
           $r('sys.symbol.arrow_down_right_and_arrow_up_left'),
           '滑动隐藏底栏',
@@ -421,7 +501,6 @@ export struct SettingsPage {
             this.setBottomTabShowAnimation(isOn)
           }
         )
-
         if (this.showAdvancedPlayerOptions) {
           this.ItemDivider()
 
@@ -442,6 +521,18 @@ export struct SettingsPage {
           .width('100%')
           .height(64)
           .padding({ left: 16, right: 16 })
+
+          this.ItemDivider()
+
+          this.ToggleItem(
+            $r('sys.symbol.eye_slash'),
+            '隐藏本地页面',
+            '隐藏底部悬浮页签中的本地页',
+            this.hideLocalPage,
+            (isOn: boolean) => {
+              this.setHideLocalPage(isOn)
+            }
+          )
         }
       }
       .width('100%')
@@ -524,7 +615,7 @@ export struct SettingsPage {
         .width('100%')
       Text(this.defaultPlayerEngine === 'mpv' ? '当前使用 mpv' : '当前使用 AVPlayer')
         .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
@@ -565,7 +656,7 @@ export struct SettingsPage {
       if (value.length > 0) {
         Text(value)
           .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor($r('app.color.text_primary'))
           .margin({ left: 10, right: 6 })
       }
 
@@ -611,9 +702,9 @@ export struct SettingsPage {
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
         .layoutWeight(1)
-      Text('1.0.0')
+      Text(AppConstants.APP_VERSION)
         .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
     }
     .width('100%')
     .height(64)
@@ -635,7 +726,7 @@ export struct SettingsPage {
         .layoutWeight(1)
       Text('626493332')
         .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
     }
     .width('100%')
     .height(64)
@@ -692,13 +783,13 @@ export struct SettingsPage {
       Text(this.defaultPlayerEngine === 'mpv' ? 'mpv' : 'AVPlayer')
         .fontSize(15)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.End)
         .layoutWeight(1)
 
-      if (this.showAdvancedPlayerOptions) {
+      if (this.playerDebugOptionsUnlocked) {
         Text('▼')
           .fontSize(12)
           .fontColor($r('app.color.text_primary'))
@@ -710,12 +801,13 @@ export struct SettingsPage {
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
     .onClick(() => {
-      if (!this.showAdvancedPlayerOptions) {
+      if (!this.playerDebugOptionsUnlocked) {
+        this.handlePlayerEngineDebugTap()
         return
       }
       this.showPlayerEngineMenu = true
     })
-    .bindMenu(this.showAdvancedPlayerOptions && this.showPlayerEngineMenu, this.PlayerEngineMenuContent, {
+    .bindMenu(this.playerDebugOptionsUnlocked && this.showPlayerEngineMenu, this.PlayerEngineMenuContent, {
       placement: Placement.Bottom,
       showInSubWindow: false,
       onDisappear: () => {
@@ -730,13 +822,13 @@ export struct SettingsPage {
       Text(this.mpvHwdecMode === 'auto' ? '自动' : (this.mpvHwdecMode === 'no' ? '关闭' : '打开'))
         .fontSize(15)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.End)
         .layoutWeight(1)
 
-      if (this.showAdvancedPlayerOptions) {
+      if (this.playerDebugOptionsUnlocked) {
         Text('▼')
           .fontSize(12)
           .fontColor($r('app.color.text_primary'))
@@ -748,12 +840,12 @@ export struct SettingsPage {
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
     .onClick(() => {
-      if (!this.showAdvancedPlayerOptions) {
+      if (!this.playerDebugOptionsUnlocked) {
         return
       }
       this.showMpvHwdecMenu = true
     })
-    .bindMenu(this.showAdvancedPlayerOptions && this.showMpvHwdecMenu, this.MpvHwdecMenuContent, {
+    .bindMenu(this.playerDebugOptionsUnlocked && this.showMpvHwdecMenu, this.MpvHwdecMenuContent, {
       placement: Placement.Bottom,
       showInSubWindow: false,
       onDisappear: () => {
@@ -768,7 +860,7 @@ export struct SettingsPage {
       Text(this.colorMode === 0 ? '深色' : (this.colorMode === 1 ? '浅色' : '跟随'))
         .fontSize(15)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.End)
@@ -846,6 +938,99 @@ export struct SettingsPage {
   }
 
   @Builder
+  HdsMaterialLevelPicker(): void {
+    Row() {
+      Text(getHdsMaterialLevelLabel(this.hdsMaterialLevel))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+        .layoutWeight(1)
+
+      Text('▼')
+        .fontSize(12)
+        .fontColor($r('app.color.text_primary'))
+        .margin({ left: 8 })
+    }
+    .width(112)
+    .height(38)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(12)
+    .bindMenu(this.HdsMaterialLevelMenuContent, {
+      placement: Placement.Bottom,
+      showInSubWindow: false
+    })
+  }
+
+  @Builder
+  HdsMaterialLevelMenuContent(): void {
+    Menu() {
+      this.SettingsMenuOption('精致', this.hdsMaterialLevel === HDS_MATERIAL_LEVEL_EXQUISITE, () => {
+        this.setHdsMaterialLevel(HDS_MATERIAL_LEVEL_EXQUISITE)
+      })
+      this.SettingsMenuOption('柔和', this.hdsMaterialLevel === HDS_MATERIAL_LEVEL_GENTLE, () => {
+        this.setHdsMaterialLevel(HDS_MATERIAL_LEVEL_GENTLE)
+      })
+      this.SettingsMenuOption('平滑', this.hdsMaterialLevel === HDS_MATERIAL_LEVEL_SMOOTH, () => {
+        this.setHdsMaterialLevel(HDS_MATERIAL_LEVEL_SMOOTH)
+      })
+      this.SettingsMenuOption('自适应', this.hdsMaterialLevel === HDS_MATERIAL_LEVEL_ADAPTIVE, () => {
+        this.setHdsMaterialLevel(HDS_MATERIAL_LEVEL_ADAPTIVE)
+      })
+    }
+    .width(160)
+    .fontColor($r('app.color.text_primary'))
+    .radius(20)
+  }
+
+  @Builder
+  DetailEnhancerPicker(): void {
+    Row() {
+      Text(this.getDetailEnhancerLabel(this.mpvDetailEnhancerQuality))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+        .layoutWeight(1)
+
+      Text('▼')
+        .fontSize(12)
+        .fontColor($r('app.color.text_primary'))
+        .margin({ left: 8 })
+    }
+    .width(112)
+    .height(38)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(12)
+    .bindMenu(this.DetailEnhancerMenuContent, {
+      placement: Placement.Bottom,
+      showInSubWindow: false
+    })
+  }
+
+  @Builder
+  DetailEnhancerMenuContent(): void {
+    Menu() {
+      this.SettingsMenuOption('低 (快速)', this.mpvDetailEnhancerQuality === 1, () => {
+        this.setDetailEnhancerQuality(1)
+      })
+      this.SettingsMenuOption('中 (均衡)', this.mpvDetailEnhancerQuality === 2, () => {
+        this.setDetailEnhancerQuality(2)
+      })
+      this.SettingsMenuOption('高 (最佳)', this.mpvDetailEnhancerQuality === 3, () => {
+        this.setDetailEnhancerQuality(3)
+      })
+    }
+    .width(160)
+    .fontColor($r('app.color.text_primary'))
+    .radius(20)
+  }
+
+  @Builder
   SettingsMenuOption(label: string, selected: boolean, action: () => void): void {
     MenuItem() {
       Row() {
@@ -873,10 +1058,18 @@ export struct SettingsPage {
       this.enabledRuleCount = this.rules.filter((r: RuleSource) => r.enabled).length
 
       const prefs = PreferencesStore.getInstance()
+      this.showAdvancedPlayerOptions = await prefs.getBoolean(
+        ADVANCED_OPTIONS_UNLOCKED_KEY,
+        this.showAdvancedPlayerOptions
+      )
+      this.playerDebugOptionsUnlocked = await prefs.getBoolean(
+        PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
+        this.playerDebugOptionsUnlocked
+      )
       this.allowHttpRequests = await prefs.getBoolean('allow_http_requests', false)
       let savedPlayerEngine = await prefs.getString('defaultPlayerEngine', 'mpv')
       let savedHwdecMode = await prefs.getString('mpvHwdecMode', 'auto')
-      if (!this.showAdvancedPlayerOptions) {
+      if (!this.playerDebugOptionsUnlocked) {
         if (savedPlayerEngine !== 'mpv') {
           savedPlayerEngine = 'mpv'
           await prefs.setString('defaultPlayerEngine', savedPlayerEngine)
@@ -890,6 +1083,11 @@ export struct SettingsPage {
       this.mpvHwdecMode = savedHwdecMode
       this.mpvHlsAdFilter = await prefs.getBoolean('mpvHlsAdFilter', true)
       this.mpvSegAllowImg = await prefs.getBoolean('mpvSegAllowImg', true)
+      this.mpvDetailEnhancerQuality = await prefs.getNumber('mpvDetailEnhancerQuality', -1)
+      this.playerAutoFullscreen = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_AUTO_FULLSCREEN,
+        PLAYER_AUTO_FULLSCREEN_DEFAULT
+      )
       this.bottomTabAutoHide = await prefs.getBoolean(
         PREFS_KEY_BOTTOM_TAB_AUTO_HIDE,
         BOTTOM_TAB_AUTO_HIDE_DEFAULT
@@ -901,6 +1099,8 @@ export struct SettingsPage {
       this.snifferTimeout = await prefs.getNumber('snifferTimeoutMs', 15000) / 1000
       const savedColorMode = await prefs.getNumber('colorMode', ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET)
       this.colorMode = this.normalizeColorMode(savedColorMode)
+      this.hdsMaterialLevel = await prefs.getString(PREFS_KEY_HDS_MATERIAL_LEVEL, HDS_MATERIAL_LEVEL_DEFAULT)
+      AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, this.hdsMaterialLevel)
 
       this.refreshUpdatableCount(token)
     } catch (err) {
@@ -933,7 +1133,32 @@ export struct SettingsPage {
     if (this.versionTapCount >= ADVANCED_OPTIONS_UNLOCK_TAP_COUNT) {
       this.showAdvancedPlayerOptions = true
       this.versionTapCount = 0
+      PreferencesStore.getInstance().setBoolean(ADVANCED_OPTIONS_UNLOCKED_KEY, true).catch((err: Error) => {
+        logger.error('Persist advanced options unlocked failed: %{public}s', err instanceof Error ? err.message : String(err))
+      })
       logger.info('Advanced player settings unlocked from version info')
+    }
+  }
+
+  private handlePlayerEngineDebugTap(): void {
+    const now = Date.now()
+    if (this.playerEngineFirstTapTime === 0 ||
+      now - this.playerEngineFirstTapTime > PLAYER_DEBUG_OPTIONS_UNLOCK_WINDOW_MS) {
+      this.playerEngineFirstTapTime = now
+      this.playerEngineTapCount = 1
+    } else {
+      this.playerEngineTapCount += 1
+    }
+    logger.info('Player debug tap count: %{public}d', this.playerEngineTapCount)
+    if (this.playerEngineTapCount >= PLAYER_DEBUG_OPTIONS_UNLOCK_TAP_COUNT) {
+      this.playerDebugOptionsUnlocked = true
+      this.playerEngineTapCount = 0
+      this.playerEngineFirstTapTime = 0
+      PreferencesStore.getInstance().setBoolean(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY, true).catch((err: Error) => {
+        logger.error('Persist player debug options unlocked failed: %{public}s',
+          err instanceof Error ? err.message : String(err))
+      })
+      logger.info('Player debug settings unlocked from player engine taps')
     }
   }
 
@@ -982,6 +1207,47 @@ export struct SettingsPage {
     }
   }
 
+  private async setDetailEnhancerEnabled(enabled: boolean): Promise<void> {
+    this.mpvDetailEnhancerQuality = enabled ? 2 : -1
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setNumber('mpvDetailEnhancerQuality', this.mpvDetailEnhancerQuality)
+    } catch (err) {
+      logger.error('Set detail enhancer enabled failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setDetailEnhancerQuality(quality: number): Promise<void> {
+    this.mpvDetailEnhancerQuality = quality
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setNumber('mpvDetailEnhancerQuality', quality)
+    } catch (err) {
+      logger.error('Set detail enhancer quality failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private getDetailEnhancerLabel(quality: number): string {
+    if (quality === 1) {
+      return '低'
+    }
+    if (quality === 3) {
+      return '高'
+    }
+    return '中'
+  }
+
+  private async setPlayerAutoFullscreen(enabled: boolean): Promise<void> {
+    this.playerAutoFullscreen = enabled
+    AppStorage.setOrCreate('playerAutoFullscreen', enabled)
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setBoolean(PREFS_KEY_PLAYER_AUTO_FULLSCREEN, enabled)
+    } catch (err) {
+      logger.error('Set player auto fullscreen failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
   private async setBottomTabAutoHide(enabled: boolean): Promise<void> {
     this.bottomTabAutoHide = enabled
     if (!enabled) {
@@ -1002,6 +1268,27 @@ export struct SettingsPage {
       await prefs.setBoolean(PREFS_KEY_BOTTOM_TAB_SHOW_ANIMATION, enabled)
     } catch (err) {
       logger.error('Set bottom tab show animation failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setHdsMaterialLevel(level: string): Promise<void> {
+    this.hdsMaterialLevel = level
+    AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, level)
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setString(PREFS_KEY_HDS_MATERIAL_LEVEL, level)
+    } catch (err) {
+      logger.error('Set hds material level failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setHideLocalPage(enabled: boolean): Promise<void> {
+    this.hideLocalPage = enabled
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setBoolean(HIDE_LOCAL_PAGE_KEY, enabled)
+    } catch (err) {
+      logger.error('Set hide local page failed: %{public}s', JSON.stringify(err))
     }
   }
 

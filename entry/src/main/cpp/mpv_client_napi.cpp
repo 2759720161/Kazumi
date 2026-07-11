@@ -6,6 +6,7 @@
 #include "mpv_client_wrapper.h"
 #include "ohos_surface_helper.h"
 #include "mpv_event_handler.h"
+#include "video_processing_helper.h"
 #include "napi/native_api.h"
 
 #ifndef DECLARE_NAPI_FUNCTION
@@ -221,6 +222,95 @@ static napi_value NativeOnEvent(napi_env env, napi_callback_info info)
     return result;
 }
 
+static napi_value NativeVpCreate(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t qualityLevel;
+    napi_get_value_int32(env, args[0], &qualityLevel);
+
+    int32_t ret = vp_create(qualityLevel);
+
+    napi_value result;
+    napi_create_int32(env, ret, &result);
+    return result;
+}
+
+static napi_value NativeVpSetOutputSurface(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    char surfaceId[256] = {0};
+    napi_get_value_string_utf8(env, args[0], surfaceId, sizeof(surfaceId), nullptr);
+
+    int32_t ret = vp_set_output_surface(surfaceId);
+
+    napi_value result;
+    napi_create_int32(env, ret, &result);
+    return result;
+}
+
+static napi_value NativeVpGetInputSurfaceId(napi_env env, napi_callback_info info)
+{
+    char inputSurfaceId[256] = {0};
+    int32_t ret = vp_get_input_surface_id(inputSurfaceId, sizeof(inputSurfaceId));
+
+    napi_value result;
+    if (ret == 0 && strlen(inputSurfaceId) > 0) {
+        napi_create_string_utf8(env, inputSurfaceId, NAPI_AUTO_LENGTH, &result);
+    } else {
+        napi_get_null(env, &result);
+    }
+    return result;
+}
+
+static napi_value NativeVpSetQualityLevel(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t qualityLevel;
+    napi_get_value_int32(env, args[0], &qualityLevel);
+
+    int32_t ret = vp_set_quality_level(qualityLevel);
+
+    napi_value result;
+    napi_create_int32(env, ret, &result);
+    return result;
+}
+
+static napi_value NativeVpStart(napi_env env, napi_callback_info info)
+{
+    int32_t ret = vp_start();
+
+    napi_value result;
+    napi_create_int32(env, ret, &result);
+    return result;
+}
+
+static napi_value NativeVpStop(napi_env env, napi_callback_info info)
+{
+    int32_t ret = vp_stop();
+
+    napi_value result;
+    napi_create_int32(env, ret, &result);
+    return result;
+}
+
+static napi_value NativeVpDestroy(napi_env env, napi_callback_info info)
+{
+    vp_destroy();
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports)
 {
@@ -235,6 +325,13 @@ static napi_value Init(napi_env env, napi_value exports)
         DECLARE_NAPI_FUNCTION("nativeSetSurfaceId", NativeSetSurfaceId),
         DECLARE_NAPI_FUNCTION("nativeApiVersion", NativeApiVersion),
         DECLARE_NAPI_FUNCTION("nativeOnEvent", NativeOnEvent),
+        DECLARE_NAPI_FUNCTION("nativeVpCreate", NativeVpCreate),
+        DECLARE_NAPI_FUNCTION("nativeVpSetOutputSurface", NativeVpSetOutputSurface),
+        DECLARE_NAPI_FUNCTION("nativeVpGetInputSurfaceId", NativeVpGetInputSurfaceId),
+        DECLARE_NAPI_FUNCTION("nativeVpSetQualityLevel", NativeVpSetQualityLevel),
+        DECLARE_NAPI_FUNCTION("nativeVpStart", NativeVpStart),
+        DECLARE_NAPI_FUNCTION("nativeVpStop", NativeVpStop),
+        DECLARE_NAPI_FUNCTION("nativeVpDestroy", NativeVpDestroy),
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

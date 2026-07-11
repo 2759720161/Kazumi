@@ -24,30 +24,33 @@ export struct PlayerSurface {
   @State xComponentOffsetY: number = 0;
   private playerEngine: IPlayerEngine | null = null;
   private hasEngine: boolean = false;
+  private isDestroyed: boolean = false;
+  private pendingPrepareTimer: number = -1;
   private xComponentController: XComponentController = new XComponentController();
   private engineType: string = 'mpv';
   onPlayerReady?: () => void;
   onStateChange?: (state: PlayerState) => void;
   onEngineReady?: (engine: IPlayerEngine) => void;
+  onSurfaceReady?: (controller: XComponentController) => void;
 
   aboutToDisappear(): void {
-    if (this.hasEngine && this.playerEngine !== null) {
-      this.playerEngine.release();
-      this.playerEngine = null;
-      this.hasEngine = false;
-    }
+    this.isDestroyed = true;
+    this.releaseEngine();
   }
 
   build() {
     Stack() {
       XComponent({
         id: 'videoXComponent',
-        type: XComponentType.TEXTURE,
+        type: XComponentType.SURFACE,
         controller: this.xComponentController
       })
         .onLoad(async () => {
           this.surfaceId = this.xComponentController.getXComponentSurfaceId();
           logger.info('Surface created: %{public}s', this.surfaceId);
+          if (this.onSurfaceReady) {
+            this.onSurfaceReady(this.xComponentController);
+          }
           if (this.hasEngine && this.playerEngine !== null) {
             this.playerEngine.setSurfaceId(this.surfaceId)
             return
@@ -175,6 +178,22 @@ export struct PlayerSurface {
     }
   }
 
+  private cancelPendingPrepare(): void {
+    if (this.pendingPrepareTimer >= 0) {
+      clearTimeout(this.pendingPrepareTimer);
+      this.pendingPrepareTimer = -1;
+    }
+  }
+
+  private releaseEngine(): void {
+    this.cancelPendingPrepare();
+    if (this.hasEngine && this.playerEngine !== null) {
+      this.playerEngine.release();
+      this.playerEngine = null;
+      this.hasEngine = false;
+    }
+  }
+
   private onVideoUrlChange(): void {
     if (this.videoUrl.length > 0) {
       if (!this.arePlaybackOptionsReady()) {
@@ -182,11 +201,7 @@ export struct PlayerSurface {
         return;
       }
       logger.info('Video URL changed, re-preparing player');
-      if (this.hasEngine && this.playerEngine !== null) {
-        this.playerEngine.release();
-        this.playerEngine = null;
-        this.hasEngine = false;
-      }
+      this.releaseEngine();
       this.initPlayer();
     }
   }
@@ -197,9 +212,7 @@ export struct PlayerSurface {
     }
     if (this.hasEngine && this.playerEngine !== null) {
       logger.info('Playback options changed, re-preparing player')
-      this.playerEngine.release()
-      this.playerEngine = null
-      this.hasEngine = false
+      this.releaseEngine()
       this.initPlayer()
     } else {
       logger.info('Playback options became ready, preparing player')
@@ -234,6 +247,9 @@ export struct PlayerSurface {
     }
 
     this.playerEngine!.onStateChange((state: PlayerState) => {
+      if (this.isDestroyed) {
+        return
+      }
       if (state.videoWidth > 0 && state.videoHeight > 0 &&
         (state.videoWidth !== this.videoWidth || state.videoHeight !== this.videoHeight)) {
         this.videoWidth = state.videoWidth
@@ -260,16 +276,23 @@ export struct PlayerSurface {
       options.headers[key] = this.playbackOptions.headers[key]
     }
 
-    this.playerEngine!.prepare(options);
     this.hasEngine = true;
-
-    if (this.onEngineReady) {
-      this.onEngineReady(this.playerEngine!);
-    }
-
-    if (this.onPlayerReady) {
-      this.onPlayerReady();
-    }
+    const engine = this.playerEngine!
+    const engineReadyCb = this.onEngineReady
+    const playerReadyCb = this.onPlayerReady
+    this.pendingPrepareTimer = setTimeout(() => {
+      this.pendingPrepareTimer = -1;
+      if (this.isDestroyed) {
+        return;
+      }
+      engine.prepare(options);
+      if (engineReadyCb) {
+        engineReadyCb(engine);
+      }
+      if (playerReadyCb) {
+        playerReadyCb();
+      }
+    }, 0);
   }
 
   private async applyMpvSettings(engine: MpvPlayerEngine): Promise<void> {
@@ -278,9 +301,11 @@ export struct PlayerSurface {
       const hwdecMode = await prefs.getString('mpvHwdecMode', 'auto')
       const hlsAdFilter = await prefs.getBoolean('mpvHlsAdFilter', true)
       const segAllowImg = await prefs.getBoolean('mpvSegAllowImg', true)
+      const detailEnhancerQuality = await prefs.getNumber('mpvDetailEnhancerQuality', -1)
       engine.setHwdecMode(hwdecMode)
       engine.setHlsAdFilterEnabled(hlsAdFilter)
       engine.setSegAllowImgEnabled(segAllowImg)
+      engine.setDetailEnhancerQuality(detailEnhancerQuality)
     } catch (err) {
       logger.warn('applyMpvSettings failed, using defaults')
     }

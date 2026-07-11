@@ -28,6 +28,7 @@ else()
         mpv_client_wrapper.cpp
         mpv_event_handler.cpp
         ohos_surface_helper.cpp
+        video_processing_helper.cpp
         mpv_client_napi.cpp
     )
 
@@ -41,6 +42,10 @@ else()
     target_link_libraries(mpv_napi PRIVATE
         ${LIB_DIR}/libmpv.so
         ace_napi.z
+        hilog_ndk.z
+        video_processing
+        native_media_core
+        native_window
         libc++_shared.so
     )
 endif()

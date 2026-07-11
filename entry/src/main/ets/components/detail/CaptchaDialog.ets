@@ -62,6 +62,7 @@ export struct CaptchaDialog {
   private captchaWasFound: boolean = false
   private pageLoaded: boolean = false
   private watcherInjected: boolean = false
+  private submittedCaptcha: boolean = false
   private cookiesBeforeSubmit: string = ''
   onVerified?: () => void
   onCancelled?: () => void
@@ -71,6 +72,7 @@ export struct CaptchaDialog {
     this.captchaWasFound = false
     this.pageLoaded = false
     this.watcherInjected = false
+    this.submittedCaptcha = false
     this.captchaImageUrl = ''
     this.captchaCode = ''
     this.cookiesBeforeSubmit = ''
@@ -147,6 +149,7 @@ export struct CaptchaDialog {
 
       if (this.captchaImageUrl.length > 0) {
         Image(this.captchaImageUrl)
+          .draggable(false)
           .width('82%')
           .height(96)
           .objectFit(ImageFit.Contain)
@@ -412,8 +415,13 @@ export struct CaptchaDialog {
     }
     if (message === 'status:absent') {
       if (this.captchaWasFound) {
-        logger.info('Captcha disappeared: source=bridge')
-        this.handleVerified()
+        if (this.canAcceptCaptchaGone()) {
+          logger.info('Captcha disappeared: source=bridge')
+          this.handleVerified()
+        } else {
+          logger.info('Captcha disappeared before submit, ignored')
+          this.verifyHint = '当前页面未出现验证码，请返回后重试检索'
+        }
       } else {
         logger.info('Captcha bridge: status=absent (not yet found)')
       }
@@ -517,6 +525,7 @@ export struct CaptchaDialog {
         return
       }
 
+      this.submittedCaptcha = true
       this.state = CaptchaState.WAITING_DISAPPEAR
       this.verifyHint = '已提交验证码，等待验证结果'
       this.startAutoVerifyTimeout()
@@ -538,13 +547,7 @@ export struct CaptchaDialog {
   private handleCancel(): void {
     this.clearTimer()
     this.clearPollTimer()
-    const hadCookie = this.hasNewCookies()
     this.syncCookies(() => {
-      if (hadCookie && this.onVerified) {
-        logger.info('Captcha cancel but has new cookies, retrying as verified')
-        this.onVerified()
-        return
-      }
       if (this.onCancelled) {
         this.onCancelled()
       }
@@ -608,13 +611,8 @@ export struct CaptchaDialog {
     this.timeoutTimer = setTimeout(() => {
       logger.warn('Captcha auto verification timed out')
       this.timeoutTimer = -1
-      if (this.hasNewCookies()) {
-        logger.info('Captcha timeout but has new cookies, treating as verified')
-        this.handleVerified()
-        return
-      }
       this.state = CaptchaState.FAILED
-      this.verifyHint = '未检测到验证完成，请手动确认或重试'
+      this.verifyHint = '未检测到验证完成，请重新输入或关闭后重试'
     }, this.verifyTimeoutMs)
   }
 
@@ -658,13 +656,27 @@ export struct CaptchaDialog {
       }
 
       if (status.indexOf('absent') !== -1 && this.captchaWasFound) {
-        logger.info('Captcha disappeared: source=poll')
-        this.handleVerified()
+        if (this.canAcceptCaptchaGone()) {
+          logger.info('Captcha disappeared: source=poll')
+          this.handleVerified()
+        } else {
+          logger.info('Captcha absent before submit, waiting for manual retry')
+          this.verifyHint = '当前页面未出现验证码，请返回后重试检索'
+          this.scheduleCaptchaCheck(1000)
+        }
         return
       }
 
       this.scheduleCaptchaCheck(700)
     })
+  }
+
+  private canAcceptCaptchaGone(): boolean {
+    if (this.captchaType !== 1) {
+      return true
+    }
+    return this.submittedCaptcha || this.state === CaptchaState.SUBMITTING ||
+      this.state === CaptchaState.WAITING_DISAPPEAR
   }
 
   private buildXPathPresenceScript(xpath: string): string {

@@ -8,8 +8,7 @@ import {
   HdsNavigationMenuContentOptions,
   HdsNavigationTitle,
   TitleBarContentOptions,
-  HdsTabs,
-  hdsMaterial
+  HdsTabs
 } from '@kit.UIDesignKit'
 import { LocalFilePicker } from '../../services/LocalFilePicker'
 import { LocalVideoThumbnailStore } from '../../services/LocalVideoThumbnailStore'
@@ -21,7 +20,10 @@ import { Logger } from '../../utils/Logger'
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildTitleBarOptions
+  buildTitleBarOptions,
+  buildAdaptiveMaterialEffect,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
@@ -41,6 +43,8 @@ export struct LocalPage {
   @Prop @Watch('onActiveChanged') isActive: boolean = false
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
+  @StorageLink('screenWidthVp') screenWidthVp: number = 0
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @StorageLink(LOCAL_VIDEO_HISTORY_VERSION_KEY) @Watch('onLocalHistoryVersionChanged') localHistoryVersion: number = 0
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
@@ -50,10 +54,12 @@ export struct LocalPage {
   @State ownFolderScanFailed: boolean = false
   @State ownFolderScanning: boolean = false
   @State selectedLocalTabIndex: number = 0
-  @State showClearConfirm: boolean = false
   @State showDeleteConfirm: boolean = false
   @State pendingDeleteId: number = -1
   @State pendingDeleteFileName: string = ''
+  @State isEditMode: boolean = false
+  @State selectedIds: number[] = []
+  @State showBatchDeleteDialog: boolean = false
   private scroller: Scroller = new Scroller()
   private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
   private hasScannedOwnDownloadFolder: boolean = false
@@ -65,6 +71,14 @@ export struct LocalPage {
     if (this.isActive) {
       this.scanOwnDownloadFolderIfNeeded()
     }
+  }
+
+  onBackPress(): boolean {
+    if (this.isEditMode) {
+      this.exitEditMode()
+      return true
+    }
+    return false
   }
 
   onPageShow(): void {
@@ -82,6 +96,7 @@ export struct LocalPage {
     logger.info('Local page active changed: %{public}s', String(this.isActive))
     if (this.isActive) {
       this.scanOwnDownloadFolderIfNeeded()
+      this.ensureOwnFolderCovers()
     }
   }
 
@@ -99,7 +114,7 @@ export struct LocalPage {
             } else {
               this.RecentSection()
               if (this.localHistory.length > 0) {
-                this.LocalDataSection()
+
               }
             }
 
@@ -109,7 +124,7 @@ export struct LocalPage {
               .hitTestBehavior(HitTestMode.None)
           }
           .width('100%')
-          .height('100%')
+          .constraintSize({ minHeight: '100%' })
           .padding({ left: 12, right: 12 })
         }
         .width('100%')
@@ -123,22 +138,48 @@ export struct LocalPage {
         .onScrollStop(() => {
           this.snapBottomTabOffset()
         })
+        .gesture(
+          PanGesture({ direction: PanDirection.Horizontal, distance: 40 })
+            .onActionEnd((event: GestureEvent) => {
+              if (Math.abs(event.offsetX) < 30) {
+                return
+              }
+              if (event.offsetX < 0 && this.selectedLocalTabIndex < LOCAL_TAB_LABELS.length - 1) {
+                this.getUIContext().animateTo({
+                  duration: 220,
+                  curve: curves.springMotion()
+                }, () => {
+                  this.selectedLocalTabIndex += 1
+                })
+                this.scroller.scrollToIndex(0)
+              } else if (event.offsetX > 0 && this.selectedLocalTabIndex > 0) {
+                this.getUIContext().animateTo({
+                  duration: 220,
+                  curve: curves.springMotion()
+                }, () => {
+                  this.selectedLocalTabIndex -= 1
+                })
+                this.scroller.scrollToIndex(0)
+              }
+            })
+        )
       }
       .width('100%')
       .height('100%')
+      .mode(NavigationMode.Stack)
       .titleBar(this.buildLocalTitleBarOptions())
       .bindToScrollable([this.scroller])
       .titleMode(HdsNavigationTitleMode.MINI)
       .hideBackButton(true)
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
-      .bindSheet($$this.showClearConfirm, this.ClearConfirmSheet, {
-        height: 220,
+      .bindSheet($$this.showDeleteConfirm, this.DeleteConfirmSheet, {
+        height: 230,
         showClose: false,
         dragBar: false
       })
-      .bindSheet($$this.showDeleteConfirm, this.DeleteConfirmSheet, {
-        height: 230,
+      .bindSheet($$this.showBatchDeleteDialog, this.BatchDeleteSheet, {
+        height: 220,
         showClose: false,
         dragBar: false
       })
@@ -176,6 +217,9 @@ export struct LocalPage {
                   this.selectedLocalTabIndex = selectedIndex
                 })
                 this.scroller.scrollToIndex(0)
+                if (this.isEditMode) {
+                  this.exitEditMode()
+                }
               }
             })
           }
@@ -257,6 +301,7 @@ export struct LocalPage {
           Stack() {
             if (this.localHistory[0].coverUri.length > 0) {
               Image(this.localHistory[0].coverUri)
+                .draggable(false)
                 .width(96)
                 .height(60)
                 .objectFit(ImageFit.Cover)
@@ -409,6 +454,7 @@ export struct LocalPage {
     Row({ space: 12 }) {
       Stack() {
         Image(record.coverUri.length > 0 ? record.coverUri : $r('app.media.ic_placeholder'))
+          .draggable(false)
           .width(82)
           .height(58)
           .objectFit(ImageFit.Cover)
@@ -511,12 +557,14 @@ export struct LocalPage {
       Stack() {
         if (record.coverUri.length > 0) {
           Image(record.coverUri)
+            .draggable(false)
             .width(82)
             .height(58)
             .objectFit(ImageFit.Cover)
             .borderRadius(10)
         } else {
           Image($r('app.media.ic_placeholder'))
+            .draggable(false)
             .width(82)
             .height(58)
             .objectFit(ImageFit.Cover)
@@ -529,7 +577,7 @@ export struct LocalPage {
 
       Column() {
         Row() {
-          Text(record.fileName)
+           Text(record.fileName)
             .layoutWeight(1)
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
@@ -537,13 +585,16 @@ export struct LocalPage {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-          SymbolGlyph($r('sys.symbol.dot_grid_1x2'))
-            .fontSize(18)
-            .fontColor([$r('sys.color.icon_secondary')])
-            .padding({ left: 8, right: 4, top: 4, bottom: 4 })
-            .onClick(() => {
-              this.askDeleteRecord(record)
-            })
+          if (!this.isEditMode) {
+            SymbolGlyph($r('sys.symbol.dot_grid_1x2'))
+              .fontSize(18)
+              .fontColor([$r('sys.color.icon_secondary')])
+              .padding({ left: 8, right: 4, top: 4, bottom: 4 })
+              .hitTestBehavior(HitTestMode.Block)
+              .onClick(() => {
+                this.askDeleteRecord(record)
+              })
+          }
         }
         .width('100%')
         .alignItems(VerticalAlign.Top)
@@ -597,6 +648,16 @@ export struct LocalPage {
       .layoutWeight(1)
       .height(82)
       .alignItems(HorizontalAlign.Start)
+
+      if (this.isEditMode) {
+        SymbolGlyph(this.selectedIds.indexOf(record.id) >= 0 ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.checkmark_circle'))
+          .fontSize(24)
+          .fontColor([this.selectedIds.indexOf(record.id) >= 0 ? $r('sys.color.font_emphasize') : $r('app.color.text_secondary')])
+          .margin({ left: 8 })
+          .onClick(() => {
+            this.toggleSelect(record.id)
+          })
+      }
     }
     .width('100%')
     .height(106)
@@ -606,7 +667,11 @@ export struct LocalPage {
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     .alignItems(VerticalAlign.Top)
     .onClick(() => {
-      this.openHistoryRecord(record)
+      if (this.isEditMode) {
+        this.toggleSelect(record.id)
+      } else {
+        this.openHistoryRecord(record)
+      }
     })
   }
 
@@ -636,80 +701,51 @@ export struct LocalPage {
   }
 
   @Builder
-  private LocalDataSection(): void {
-    Column() {
-      Text('本地数据')
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .width('100%')
-      Row() {
-        Text('清空播放记录')
-          .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-        Blank()
-          .layoutWeight(1)
-        SymbolGlyph($r('sys.symbol.trash'))
-          .fontSize(17)
-          .fontColor([$r('app.color.status_error')])
-      }
-      .width('100%')
-      .height(44)
-      .padding({ left: 12, right: 12 })
-      .borderRadius(10)
-      .backgroundColor($r('app.color.button_ghost_bg'))
-      .margin({ top: 10 })
-      .onClick(() => {
-        this.showClearConfirm = true
-      })
-      Text('不会删除本地视频文件')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .margin({ top: 8 })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-  }
-
-  @Builder
   private DeleteConfirmSheet(): void {
     Column() {
       Text('删除这条播放记录？')
-        .fontSize(18)
+        .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-        .margin({ top: 22, bottom: 8 })
+        .width('100%')
+        .margin({ top: 28, bottom: 20 })
       Text(this.pendingDeleteFileName.length > 0 ? this.pendingDeleteFileName : '不会删除本地视频文件。')
-        .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .lineHeight(26)
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .margin({ bottom: 22 })
+        .width('100%')
+        .margin({ bottom: 26 })
 
-      Row({ space: 10 }) {
-        Button('取消')
+      Row() {
+        Text('取消')
           .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
+          .height(52)
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .borderRadius(12)
+          .textAlign(TextAlign.Center)
           .onClick(() => {
             this.showDeleteConfirm = false
             this.pendingDeleteId = -1
             this.pendingDeleteFileName = ''
           })
-        Button('删除')
+
+        Divider()
+          .vertical(true)
+          .height(34)
+          .color($r('app.color.divider_color'))
+          .margin({ left: 4, right: 4 })
+
+        Text('删除')
           .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
-          .fontColor(Color.White)
-          .backgroundColor($r('app.color.status_error'))
-          .borderRadius(12)
+          .height(52)
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.status_error'))
+          .textAlign(TextAlign.Center)
           .onClick(() => {
             const id = this.pendingDeleteId
             this.showDeleteConfirm = false
@@ -719,51 +755,67 @@ export struct LocalPage {
           })
       }
       .width('100%')
-      .padding({ left: 20, right: 20 })
+      .height(52)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: 10, right: 10 })
     }
     .width('100%')
+    .padding({ left: 20, right: 20, bottom: 14 })
   }
 
   @Builder
-  private ClearConfirmSheet(): void {
+  private BatchDeleteSheet(): void {
     Column() {
-      Text('清空播放记录？')
-        .fontSize(18)
+      Text('删除' + String(this.selectedIds.length) + '条播放记录？')
+        .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-        .margin({ top: 22, bottom: 8 })
+        .width('100%')
+        .margin({ top: 28, bottom: 20 })
       Text('这不会删除本地视频文件。')
-        .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ bottom: 22 })
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .lineHeight(26)
+        .width('100%')
+        .margin({ bottom: 26 })
 
-      Row({ space: 10 }) {
-        Button('取消')
+      Row() {
+        Text('取消')
           .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
+          .height(52)
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .borderRadius(12)
+          .textAlign(TextAlign.Center)
           .onClick(() => {
-            this.showClearConfirm = false
+            this.showBatchDeleteDialog = false
           })
-        Button('清空')
+
+        Divider()
+          .vertical(true)
+          .height(34)
+          .color($r('app.color.divider_color'))
+          .margin({ left: 4, right: 4 })
+
+        Text('删除')
           .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
-          .fontColor(Color.White)
-          .backgroundColor($r('app.color.status_error'))
-          .borderRadius(12)
+          .height(52)
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.status_error'))
+          .textAlign(TextAlign.Center)
           .onClick(() => {
-            this.showClearConfirm = false
-            this.clearAllHistory()
+            this.confirmBatchDelete()
           })
       }
       .width('100%')
-      .padding({ left: 20, right: 20 })
+      .height(52)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: 10, right: 10 })
     }
     .width('100%')
+    .padding({ left: 20, right: 20, bottom: 14 })
   }
 
   private async openOwnFolderVideo(record: LocalVideoRecord): Promise<void> {
@@ -832,6 +884,7 @@ export struct LocalPage {
     await this.loadLocalHistory()
     if (this.ownFolderVideos.length > 0) {
       this.ownFolderVideos = this.mergeOwnFolderHistoryBindings(this.ownFolderVideos, this.localHistory)
+      this.ensureOwnFolderCovers()
     }
   }
 
@@ -841,7 +894,7 @@ export struct LocalPage {
     }
     this.isGeneratingCovers = true
     try {
-      const maxGenerateCount = Math.min(this.localHistory.length, 12)
+      const maxGenerateCount = this.localHistory.length
       for (let i = 0; i < maxGenerateCount; i++) {
         const record = this.localHistory[i]
         if (record.coverUri.length > 0 || record.fileUri.length === 0 || record.fileKey.length === 0) {
@@ -913,7 +966,7 @@ export struct LocalPage {
     }
     this.isGeneratingOwnFolderCovers = true
     try {
-      const maxGenerateCount = Math.min(this.ownFolderVideos.length, 24)
+      const maxGenerateCount = this.ownFolderVideos.length
       for (let i = 0; i < maxGenerateCount; i++) {
         if (i >= this.ownFolderVideos.length) {
           break
@@ -1040,25 +1093,81 @@ export struct LocalPage {
     }
   }
 
-  private async clearAllHistory(): Promise<void> {
-    try {
-      for (let i = 0; i < this.localHistory.length; i++) {
-        await LocalFilePicker.revokeUriPermission(this.localHistory[i].fileUri)
-        if (this.localHistory[i].danmakuUri.length > 0) {
-          await LocalFilePicker.revokeUriPermission(this.localHistory[i].danmakuUri)
-        }
-      }
-      await this.localVideoHistoryStore.clearAll()
-      this.localHistory = []
-    } catch (err) {
-      logger.warn('清空本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
-    }
-  }
-
   private askDeleteRecord(record: LocalVideoRecord): void {
     this.pendingDeleteId = record.id
     this.pendingDeleteFileName = record.fileName
     this.showDeleteConfirm = true
+  }
+
+  private toggleSelect(id: number): void {
+    const idx: number = this.selectedIds.indexOf(id)
+    if (idx >= 0) {
+      const newIds: number[] = []
+      for (let i = 0; i < this.selectedIds.length; i++) {
+        if (this.selectedIds[i] !== id) {
+          newIds.push(this.selectedIds[i])
+        }
+      }
+      this.selectedIds = newIds
+    } else {
+      this.selectedIds = [...this.selectedIds, id]
+    }
+  }
+
+  private handleSelectAllOrExit(): void {
+    if (this.selectedIds.length === this.localHistory.length) {
+      this.selectedIds = []
+      return
+    }
+    const allIds: number[] = []
+    for (let i = 0; i < this.localHistory.length; i++) {
+      allIds.push(this.localHistory[i].id)
+    }
+    this.selectedIds = allIds
+  }
+
+  private exitEditMode(): void {
+    this.isEditMode = false
+    this.selectedIds = []
+  }
+
+  private async confirmBatchDelete(): Promise<void> {
+    this.showBatchDeleteDialog = false
+    const idsToDelete: number[] = [...this.selectedIds]
+    if (idsToDelete.length === 0) {
+      return
+    }
+    const shouldExit: boolean = idsToDelete.length >= this.localHistory.length
+    const removedRecords: LocalVideoRecord[] = []
+    for (let i = 0; i < idsToDelete.length; i++) {
+      const record = this.findHistoryRecordById(idsToDelete[i])
+      if (record !== null) {
+        removedRecords.push(record)
+      }
+    }
+    const nextHistory: LocalVideoRecord[] = []
+    for (let i = 0; i < this.localHistory.length; i++) {
+      if (idsToDelete.indexOf(this.localHistory[i].id) < 0) {
+        nextHistory.push(this.localHistory[i])
+      }
+    }
+    this.localHistory = nextHistory
+    this.selectedIds = []
+    if (shouldExit) {
+      this.exitEditMode()
+    }
+    try {
+      for (let i = 0; i < removedRecords.length; i++) {
+        await LocalFilePicker.revokeUriPermission(removedRecords[i].fileUri)
+        if (removedRecords[i].danmakuUri.length > 0) {
+          await LocalFilePicker.revokeUriPermission(removedRecords[i].danmakuUri)
+        }
+      }
+      await this.localVideoHistoryStore.deleteByIds(idsToDelete)
+    } catch (err) {
+      logger.warn('批量删除本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
+      await this.loadLocalHistory()
+    }
   }
 
   private findHistoryRecordById(id: number): LocalVideoRecord | null {
@@ -1081,12 +1190,58 @@ export struct LocalPage {
   }
 
   private buildLocalTitle(): HdsNavigationTitle {
+    if (this.isEditMode) {
+      return {
+        mainTitle: '已选择' + String(this.selectedIds.length) + '项',
+        subTitle: ''
+      }
+    }
     return {
       mainTitle: '本地视频'
     }
   }
 
   private buildLocalMenu(): HdsNavigationMenuContentOptions {
+    if (this.selectedLocalTabIndex === 1 && this.localHistory.length > 0) {
+      if (this.isEditMode) {
+        const cancelIcon: HdsNavigationIconOptions = {
+          icon: $r('sys.symbol.xmark'),
+          label: 'cancel',
+          action: () => {
+            this.exitEditMode()
+          }
+        }
+        const trashIcon: HdsNavigationIconOptions = {
+          icon: $r('sys.symbol.trash'),
+          label: 'delete',
+          action: () => {
+            if (this.selectedIds.length > 0) {
+              this.showBatchDeleteDialog = true
+            }
+          }
+        }
+        const selectAllIcon: HdsNavigationIconOptions = {
+          icon: $r('sys.symbol.checkmark_square_on_square'),
+          label: 'selectAll',
+          action: () => {
+            this.handleSelectAllOrExit()
+          }
+        }
+        return {
+          value: [{ content: cancelIcon }, { content: trashIcon }, { content: selectAllIcon }]
+        }
+      }
+      const editIcon: HdsNavigationIconOptions = {
+        icon: $r('sys.symbol.square_and_pencil'),
+        label: 'edit',
+        action: () => {
+          this.isEditMode = true
+        }
+      }
+      return {
+        value: [{ content: editIcon }, { content: this.buildRefreshLocalDirectoryIcon() }]
+      }
+    }
     return {
       value: [{ content: this.buildRefreshLocalDirectoryIcon() }]
     }
@@ -1100,7 +1255,7 @@ export struct LocalPage {
   }
 
   private buildLocalTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('本地视频')
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('本地视频', this.hdsMaterialLevel)
     base.content = this.buildLocalTitleBarContent()
     if (base.style?.originalStyle?.backgroundStyle) {
       base.style.originalStyle.backgroundStyle.maskExtraHeight = LOCAL_TAB_BAR_HEIGHT
@@ -1250,6 +1405,7 @@ export struct LocalPage {
 
 @Component
 struct LocalSegmentTabItem {
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @Prop label: string = ''
   @Prop index: number = 0
   @Prop selectedIndex: number = 0
@@ -1289,10 +1445,7 @@ struct LocalSegmentTabItem {
         },
         barBottomMargin: 0,
         barSideMargin: 0,
-        systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.IMMERSIVE,
-          materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
-        },
+        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
         lightColor: Color.Transparent
       })
     }

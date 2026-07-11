@@ -3,13 +3,14 @@ import { HistoryRecord } from '../../models/HistoryRecord'
 import { HistoryCard } from '../../components/history/HistoryCard'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
-import { router } from '@kit.ArkUI'
+import { promptAction, router } from '@kit.ArkUI'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { RuleSource } from '../../models/RuleSource'
 import { PluginSearchService } from '../../core/engine/PluginSearchService'
 import { SearchResultRef } from '../../models/PluginSearchState'
 import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { EpisodeData } from '../../models/EpisodeData'
+import { HistorySyncResult, HistorySyncService } from '../../services/HistorySyncService'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -23,8 +24,11 @@ import {
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildImmersiveTitleBarStyle
+  buildImmersiveTitleBarStyle,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
+import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../../utils/AdvancedOptionsUnlock'
 
 const logger = new Logger('HistoryPage')
 const CARD_MARGIN_H: number = 16
@@ -43,12 +47,22 @@ class HistoryEpisodeSelection {
   }
 }
 
+class HistoryMenuIconContent {
+  content: HdsNavigationIconOptions
+
+  constructor(content: HdsNavigationIconOptions) {
+    this.content = content
+  }
+}
+
 @Entry
 @Component
 export struct HistoryPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = false
   @State histories: HistoryRecord[] = []
   @State isLoading: boolean = true
   @State loadError: boolean = false
@@ -56,14 +70,21 @@ export struct HistoryPage {
   @State selectedIds: string[] = []
   @State showDeleteDialog: boolean = false
   @State historyRenderVersion: number = 0
+  @State isSyncing: boolean = false
   private historyStore: HistoryStore = new HistoryStore()
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private playbackSearchService: PluginSearchService = new PluginSearchService()
+  private historySyncService: HistorySyncService = HistorySyncService.getInstance()
   private scroller: Scroller = new Scroller()
   private isFirstAppear: boolean = true
 
   aboutToAppear(): void {
-    this.loadHistories()
+    this.loadHistories(this.histories.length === 0).then(() => {
+      this.syncHistoryIfAutoEnabled()
+    }).catch((err: Error) => {
+      logger.warn('Initial load histories failed: %{public}s', err.message)
+      this.syncHistoryIfAutoEnabled()
+    })
   }
 
   onPageShow(): void {
@@ -71,7 +92,7 @@ export struct HistoryPage {
       this.isFirstAppear = false
       return
     }
-    this.loadHistories()
+    this.loadHistories(this.histories.length === 0)
   }
 
   build() {
@@ -85,7 +106,7 @@ export struct HistoryPage {
               .height(getTopSpacerHeight(this.topSafeHeight))
               .width('100%')
             Column() {
-              ErrorRetry({ message: '暂时无法读取观看记录', onRetry: () => { this.loadHistories() } })
+              ErrorRetry({ message: '暂时无法读取观看记录', onRetry: () => { this.loadHistories(true) } })
             }
             .layoutWeight(1)
             .justifyContent(FlexAlign.Center)
@@ -96,63 +117,12 @@ export struct HistoryPage {
         } else if (this.histories.length === 0) {
           this.EmptyHistoryState()
         } else {
-          Row() {
-            Column() {
-              List({ space: 0, initialIndex: 0, scroller: this.scroller }) {
-                ListItem() {
-                  Column()
-                    .height(getTopSpacerHeight(this.topSafeHeight))
-                    .width('100%')
-                    .hitTestBehavior(HitTestMode.None)
-                }
-                .selectable(false)
-
-                ForEach(this.getRows(), (row: HistoryRecord[], rowIndex: number) => {
-                  ListItem() {
-                    Row({ space: GRID_GAP }) {
-                      ForEach(row, (record: HistoryRecord) => {
-                        HistoryCard({
-                          record: record,
-                          isEditMode: this.isEditMode,
-                          isSelected: this.selectedIds.indexOf(record.animeId) >= 0,
-                          onDelete: (animeId: string) => { this.deleteRecord(animeId) },
-                          onToggleSelect: (animeId: string) => { this.toggleSelect(animeId) },
-                          onOpen: (history: HistoryRecord) => { this.openHistoryRecord(history) }
-                        })
-                          .width(this.getCardWidth())
-                      }, (record: HistoryRecord) => this.buildRecordKey(record))
-                    }
-                    .width('100%')
-                    .justifyContent(FlexAlign.Center)
-                  }
-                  .padding({ left: CARD_MARGIN_H, right: CARD_MARGIN_H, top: CARD_MARGIN_V, bottom: CARD_MARGIN_V })
-                }, (row: HistoryRecord[], rowIndex: number) => this.buildRowKey(row, rowIndex))
-
-                ListItem() {
-                  Column()
-                    .width('100%')
-                    .height(getBottomSpacerHeight(this.bottomSafeHeight))
-                    .hitTestBehavior(HitTestMode.None)
-                }
-                .selectable(false)
-              }
-              .id('history_list_' + String(this.historyRenderVersion))
-              .width('100%')
-              .height('100%')
-              .scrollBar(BarState.Off)
-              .edgeEffect(EdgeEffect.Spring)
-            }
-            .width('100%')
-            .height('100%')
-            .constraintSize({ maxWidth: this.getContentMaxWidth() })
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
+          this.HistoryList()
         }
       }
       .width('100%')
       .height('100%')
+      .mode(NavigationMode.Stack)
       .titleBar(this.buildCustomTitleBarOptions())
       .bindToScrollable([this.scroller])
       .titleMode(HdsNavigationTitleMode.MINI)
@@ -167,6 +137,52 @@ export struct HistoryPage {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.page_background'))
+  }
+
+  @Builder
+  HistoryList() {
+    Scroll(this.scroller) {
+      Column() {
+        Column()
+          .height(getTopSpacerHeight(this.topSafeHeight))
+          .width('100%')
+          .hitTestBehavior(HitTestMode.None)
+
+        ForEach(this.getRows(), (row: HistoryRecord[], rowIndex: number) => {
+          Row({ space: GRID_GAP }) {
+            ForEach(row, (record: HistoryRecord) => {
+              HistoryCard({
+                record: record,
+                isEditMode: this.isEditMode,
+                isSelected: this.selectedIds.indexOf(record.animeId) >= 0,
+                onDelete: (animeId: string) => { this.deleteRecord(animeId) },
+                onToggleSelect: (animeId: string) => { this.toggleSelect(animeId) },
+                onOpen: (history: HistoryRecord) => { this.openHistoryRecord(history) }
+              })
+                .width(this.getCardWidth())
+            }, (record: HistoryRecord) => this.buildRecordKey(record))
+          }
+          .width('100%')
+          .justifyContent(FlexAlign.Start)
+          .padding({ left: CARD_MARGIN_H, right: CARD_MARGIN_H, top: CARD_MARGIN_V, bottom: CARD_MARGIN_V })
+        }, (row: HistoryRecord[], rowIndex: number) => this.buildRowKey(row, rowIndex))
+
+        Column()
+          .width('100%')
+          .height(getBottomSpacerHeight(this.bottomSafeHeight))
+          .hitTestBehavior(HitTestMode.None)
+      }
+      .width('100%')
+      .constraintSize({ minHeight: '100%' })
+      .justifyContent(FlexAlign.Start)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .id('history_list_' + String(this.historyRenderVersion))
+    .width('100%')
+    .height('100%')
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring)
+    .clip(false)
   }
 
   @Builder
@@ -241,7 +257,6 @@ export struct HistoryPage {
       }
       .width('100%')
       .height('100%')
-      .constraintSize({ maxWidth: this.getContentMaxWidth() })
     }
     .width('100%')
     .height('100%')
@@ -287,8 +302,10 @@ export struct HistoryPage {
   }
 
 
-  private async loadHistories(): Promise<void> {
-    this.isLoading = true
+  private async loadHistories(showLoading: boolean = true): Promise<void> {
+    if (showLoading) {
+      this.isLoading = true
+    }
     this.loadError = false
     try {
       this.histories = await this.historyStore.getAll()
@@ -298,7 +315,9 @@ export struct HistoryPage {
       logger.error('Load histories failed: %{public}s', JSON.stringify(err))
       this.loadError = true
     } finally {
-      this.isLoading = false
+      if (showLoading) {
+        this.isLoading = false
+      }
     }
   }
 
@@ -320,6 +339,9 @@ export struct HistoryPage {
     const removedRecord: HistoryRecord | null = this.removeHistoryRecordFromView(animeId)
     try {
       await this.historyStore.deleteByAnimeId(animeId)
+      if (this.showAdvancedPlayerOptions) {
+        await this.historySyncService.recordDeleted(animeId)
+      }
     } catch (err) {
       logger.error('Delete history failed: %{public}s', JSON.stringify(err))
       if (removedRecord !== null) {
@@ -506,41 +528,58 @@ export struct HistoryPage {
     Column() {
       Column() {
         Text('是否删除此视频？')
-          .fontSize(18)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .width('100%')
-          .margin({ bottom: 20 })
+          .margin({ bottom: 24 })
+
+        Text(this.selectedIds.length > 1 ?
+          `确定要删除这 ${this.selectedIds.length} 条观看记录吗？` : '确定要删除这条观看记录吗？')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .lineHeight(26)
+          .width('100%')
+          .margin({ bottom: 26 })
 
         Row() {
-          Button('取消')
+          Text('取消')
             .layoutWeight(1)
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.surface_button_bg'))
-            .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-            .border({ width: 0.5, color: $r('app.color.border_subtle') })
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Center)
             .onClick(() => {
               this.showDeleteDialog = false
             })
 
-          Button('删除')
+          Divider()
+            .vertical(true)
+            .height(34)
+            .color($r('app.color.divider_color'))
+            .margin({ left: 4, right: 4 })
+
+          Text('删除')
             .layoutWeight(1)
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.status_error'))
-            .fontColor($r('app.color.text_on_primary'))
-            .margin({ left: 12 })
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.status_error'))
+            .textAlign(TextAlign.Center)
             .onClick(() => {
               this.confirmDeleteSelected()
             })
         }
         .width('100%')
+        .height(52)
+        .alignItems(VerticalAlign.Center)
       }
-      .padding(24)
-      .borderRadius(16)
+      .width('100%')
+      .padding({ left: 30, right: 30, top: 30, bottom: 20 })
+      .borderRadius(34)
       .backgroundColor($r('app.color.card_background'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     }
     .width('100%')
@@ -548,21 +587,28 @@ export struct HistoryPage {
     .backgroundColor(0x66000000)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .padding({ left: 32, right: 32 })
+    .padding({ left: 20, right: 20, bottom: 28 })
+    .onClick(() => {
+      this.showDeleteDialog = false
+    })
   }
 
   private async confirmDeleteSelected(): Promise<void> {
     this.showDeleteDialog = false
     const idsToDelete: string[] = [...this.selectedIds]
-    const shouldExitEditMode: boolean = idsToDelete.length >= this.histories.length
-    const removedRecords: HistoryRecord[] = this.removeHistoryRecordsFromView(idsToDelete)
-    if (shouldExitEditMode) {
+    if (idsToDelete.length === 0) {
       this.exitEditMode()
-      this.bumpHistoryRenderVersion()
+      return
     }
+    const removedRecords: HistoryRecord[] = this.removeHistoryRecordsFromView(idsToDelete)
+    this.exitEditMode()
+    this.bumpHistoryRenderVersion()
     for (let i = 0; i < idsToDelete.length; i++) {
       try {
         await this.historyStore.deleteByAnimeId(idsToDelete[i])
+        if (this.showAdvancedPlayerOptions) {
+          await this.historySyncService.recordDeleted(idsToDelete[i])
+        }
       } catch (err) {
         logger.error('Delete history failed: %{public}s', JSON.stringify(err))
         const failedRecord: HistoryRecord | null = this.findHistoryRecordInList(removedRecords, idsToDelete[i])
@@ -693,19 +739,9 @@ export struct HistoryPage {
     }
     const totalPadding: number = CARD_MARGIN_H * 2
     const totalGaps: number = GRID_GAP * (cols - 1)
-    const available: number = Math.min(this.screenWidthVp, this.getContentMaxWidth()) - totalPadding - totalGaps
+    const available: number = this.screenWidthVp - totalPadding - totalGaps
     const cardW: number = Math.floor(available / cols)
     return cardW
-  }
-
-  private getContentMaxWidth(): number {
-    if (this.screenWidthVp >= 840) {
-      return 1000
-    }
-    if (this.screenWidthVp >= 600) {
-      return 1000
-    }
-    return this.screenWidthVp
   }
 
   private buildTitle(): HdsNavigationTitle {
@@ -722,9 +758,6 @@ export struct HistoryPage {
   }
 
   private buildMenu(): HdsNavigationMenuContentOptions {
-    if (this.histories.length === 0) {
-      return { value: [] }
-    }
     if (this.isEditMode) {
       const trashIcon: HdsNavigationIconOptions = {
         icon: $r('sys.symbol.trash'),
@@ -746,6 +779,22 @@ export struct HistoryPage {
         value: [{ content: trashIcon }, { content: selectAllIcon }]
       }
     }
+    const items: HistoryMenuIconContent[] = []
+    if (this.showAdvancedPlayerOptions) {
+      const syncIcon: HdsNavigationIconOptions = {
+        icon: $r('sys.symbol.arrow_counterclockwise'),
+        label: 'sync',
+        action: () => {
+          this.syncHistoryNow()
+        }
+      }
+      items.push(new HistoryMenuIconContent(syncIcon))
+    }
+    if (this.histories.length === 0) {
+      return {
+        value: items
+      }
+    }
     const editIcon: HdsNavigationIconOptions = {
       icon: $r('sys.symbol.square_and_pencil'),
       label: 'edit',
@@ -753,8 +802,48 @@ export struct HistoryPage {
         this.isEditMode = true
       }
     }
+    items.push(new HistoryMenuIconContent(editIcon))
     return {
-      value: [{ content: editIcon }]
+      value: items
+    }
+  }
+
+  private async syncHistoryIfAutoEnabled(): Promise<void> {
+    if (!this.showAdvancedPlayerOptions) {
+      return
+    }
+    try {
+      const config = await this.historySyncService.getConfig()
+      if (config.enabled && config.autoSync) {
+        await this.syncHistoryNow(false)
+      }
+    } catch (err) {
+      logger.warn('Auto sync history failed: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private async syncHistoryNow(showToast: boolean = true): Promise<void> {
+    if (!this.showAdvancedPlayerOptions) {
+      return
+    }
+    if (this.isSyncing) {
+      return
+    }
+    this.isSyncing = true
+    try {
+      const result: HistorySyncResult = await this.historySyncService.syncNow()
+      await this.loadHistories(false)
+      if (showToast) {
+        promptAction.showToast({ message: result.message + '，共 ' + String(result.mergedCount) + ' 条' })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '同步失败'
+      logger.warn('Sync history failed: %{public}s', msg)
+      if (showToast) {
+        promptAction.showToast({ message: msg })
+      }
+    } finally {
+      this.isSyncing = false
     }
   }
 
@@ -766,7 +855,7 @@ export struct HistoryPage {
   }
 
   private buildCustomTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle()
+    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     return {
       style: style,
       content: this.buildTitleBarContent(),

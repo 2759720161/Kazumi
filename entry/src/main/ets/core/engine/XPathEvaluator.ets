@@ -266,7 +266,7 @@ export class XPathEvaluator {
       selfStep.nodeTest = '*'
       path.steps.push(selfStep)
 
-      const rest = trimmed.substring(trimmed.startsWith('.//') ? 2 : 1)
+      const rest = trimmed.substring(1)
       const subPath = this._parsePath(rest)
       for (let i = 0; i < subPath.steps.length; i++) {
         path.steps.push(subPath.steps[i])
@@ -281,7 +281,7 @@ export class XPathEvaluator {
       parentStep.nodeTest = '*'
       path.steps.push(parentStep)
 
-      const rest = trimmed.substring(trimmed.startsWith('..//') ? 3 : 2)
+      const rest = trimmed.substring(2)
       const subPath = this._parsePath(rest)
       for (let i = 0; i < subPath.steps.length; i++) {
         path.steps.push(subPath.steps[i])

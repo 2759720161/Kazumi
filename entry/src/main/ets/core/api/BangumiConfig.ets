@@ -2,12 +2,15 @@ export class BangumiConfig {
   static readonly KAZUMI_POPULAR_URL: string = 'https://api.kazumi.fyi/kazumi/v1/popular/subjects';
   static readonly KAZUMI_CALENDAR_URL: string = 'https://api.kazumi.fyi/kazumi/v1/calendar/season';
   static readonly KAZUMI_BANGUMI_PROXY_BASE: string = 'https://api.kazumi.fyi';
+  static readonly BANGUMI_MIRROR_APP_ID: string = '';
+  static readonly BANGUMI_MIRROR_APP_KEY: string = '';
   static readonly BANGUMI_SUBJECT_DETAIL_BASES: string[] = [
     'https://api.kazumi.fyi',
     'https://bgmapi.anibt.net',
     'https://next.bgm.tv'
   ];
   static readonly BANGUMI_API_BASES: string[] = [
+    'https://api.kazumi.fyi',
     'https://bgmapi.anibt.net',
     'https://api.bgm.tv',
     'https://next.bgm.tv'

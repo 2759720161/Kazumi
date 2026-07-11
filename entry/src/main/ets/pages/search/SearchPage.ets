@@ -1,34 +1,51 @@
 import { AnimeItem } from '../../models/AnimeItem'
 import { AnimeCard } from '../../components/common/AnimeCard'
-import { BangumiApi } from '../../core/api/BangumiApi'
+import { BangumiApi, BangumiSearchProgressOptions } from '../../core/api/BangumiApi'
 import { SearchHistoryStore } from '../../store/SearchHistoryStore'
 import { SearchHistory } from '../../models/SearchHistory'
 import { Logger } from '../../utils/Logger'
-import { router } from '@kit.ArkUI'
+import { router, curves } from '@kit.ArkUI'
 import { deviceInfo } from '@kit.BasicServicesKit'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
   HdsNavigationTitleBarOptions,
   HdsTabs,
-  HdsTabsController,
-  hdsMaterial
+  HdsTabsController
 } from '@kit.UIDesignKit'
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildImmersiveTitleBarStyle
+  buildImmersiveTitleBarStyle,
+  buildAdaptiveMaterialEffect,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 
 const logger = new Logger('SearchPage')
 const SEARCH_BAR_HEIGHT: number = 42
 const SEARCH_BOTTOM_BAR_HEIGHT: number = 62
+const SEARCH_TAB_LABELS: string[] = ['标题', '标签']
+const SEARCH_TAB_BAR_HEIGHT: number = 40
+const SEARCH_TAB_ITEM_WIDTH: number = 96
 const SEARCH_BAR_HORIZONTAL_PADDING: number = 18
 const SEARCH_RESULT_GAP: number = 10
+const SEARCH_RESULT_TOP_GAP: number = 14
 const EXPLORE_KEYWORDS: string[] = [
   '葬送的芙莉莲', '擅长逃跑的殿下', '夏日重现', '孤独摇滚',
   '咒术回战', '间谍过家家', '辉夜大小姐', '跃动青春'
 ]
+const EXPLORE_TAGS: string[] = [
+  '原创', '漫画改', '日常', '奇幻',
+  '校园', '恋爱', '百合', '2024年4月'
+]
+
+class SearchQuery {
+  id: number = -1
+  keyword: string = ''
+  tag: string = ''
+  sort: string = 'heat'
+}
 
 @Entry
 @Component
@@ -37,22 +54,28 @@ export struct SearchPage {
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
   @StorageLink('isHdsTabsEnabled') isHdsTabsEnabled: boolean = true
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State searchKeyword: string = ''
   @State submittedKeyword: string = ''
   @State searchResults: AnimeItem[] = []
   @State searchHistory: SearchHistory[] = []
   @State isSearching: boolean = false
+  @State isLoadingMoreSearchResults: boolean = false
   @State hasSearched: boolean = false
   @State searchGlowOpacity: number = 0
   @State searchGlowScale: number = 0.82
   @State searchGlowOffsetX: number = 0
   @State searchGlowOffsetY: number = 0
+  @State selectedSearchTabIndex: number = 0
 
   private scroller: Scroller = new Scroller()
   private searchBarTabsController: HdsTabsController = new HdsTabsController()
   private searchHistoryStore: SearchHistoryStore = new SearchHistoryStore()
+  private searchRequestSerial: number = 0
+  private routeParamsApplied: boolean = false
 
   aboutToAppear(): void {
+    this.applyRouteParams()
     this.loadSearchHistory()
   }
 
@@ -61,33 +84,41 @@ export struct SearchPage {
   }
 
   build() {
-    HdsNavigation() {
-      Scroll(this.scroller) {
-        this.SearchContent()
+    Stack({ alignContent: Alignment.TopStart }) {
+      HdsNavigation() {
+        Scroll(this.scroller) {
+          this.SearchContent()
+        }
+        .width('100%')
+        .height('100%')
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Off)
+        .clip(false)
       }
       .width('100%')
       .height('100%')
-      .edgeEffect(EdgeEffect.Spring)
-      .scrollBar(BarState.Off)
-      .clip(false)
+      .mode(NavigationMode.Stack)
+      .titleBar(this.buildTitleBarOptions())
+      .bindToScrollable([this.scroller])
+      .titleMode(HdsNavigationTitleMode.MINI)
+      .hideBackButton(false)
+      .backgroundColor(Color.Transparent)
+      .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+      .linearGradient({
+        direction: GradientDirection.Bottom,
+        colors: [
+          [$r('app.color.home_bg_top'), 0],
+          [$r('app.color.page_background'), 0.34],
+          [$r('app.color.page_background'), 1]
+        ]
+      })
+
+      if (this.shouldShowSearchTabs()) {
+        this.SearchTabBar()
+      }
     }
     .width('100%')
     .height('100%')
-    .mode(NavigationMode.Stack)
-    .titleBar(this.buildTitleBarOptions())
-    .bindToScrollable([this.scroller])
-    .titleMode(HdsNavigationTitleMode.MINI)
-    .hideBackButton(false)
-    .backgroundColor(Color.Transparent)
-    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
-    .linearGradient({
-      direction: GradientDirection.Bottom,
-      colors: [
-        [$r('app.color.home_bg_top'), 0],
-        [$r('app.color.page_background'), 0.34],
-        [$r('app.color.page_background'), 1]
-      ]
-    })
   }
 
   @Builder
@@ -97,11 +128,10 @@ export struct SearchPage {
         .height(this.getSearchTopSpacerHeight())
         .width('100%')
 
-      if (this.isSearching) {
-        this.SearchLoadingView()
-      } else if (this.searchResults.length > 0) {
-        this.SearchResultHeader()
+      if (this.searchResults.length > 0) {
         this.SearchResultsView()
+      } else if (this.isSearching) {
+        this.SearchLoadingView()
       } else if (this.hasSearched) {
         this.SearchEmptyView()
       } else {
@@ -117,7 +147,7 @@ export struct SearchPage {
   @Builder
   private SearchBottomBar() {
     Row() {
-      if (this.isHdsTabsEnabled && deviceInfo.distributionOSApiVersion >= 60100) {
+      if (this.shouldUseHdsSearchField()) {
         this.HdsSearchField()
       } else {
         this.FallbackSearchField()
@@ -130,7 +160,52 @@ export struct SearchPage {
   }
 
   @Builder
+  private SearchTabBar() {
+    Row({ space: 8 }) {
+      ForEach(SEARCH_TAB_LABELS, (label: string, index?: number) => {
+        SearchSegmentTabItem({
+          label: label,
+          index: index ?? 0,
+          selectedIndex: this.selectedSearchTabIndex,
+          tabWidth: SEARCH_TAB_ITEM_WIDTH,
+          onSelected: (selectedIndex: number) => {
+            this.selectSearchTab(selectedIndex)
+          }
+        })
+      }, (label: string, index?: number) => `search_tab_${index}_${label}`)
+    }
+    .width('100%')
+    .height(SEARCH_TAB_BAR_HEIGHT)
+    .margin({ top: getTopSpacerHeight(this.topSafeHeight) + SEARCH_BOTTOM_BAR_HEIGHT })
+    .padding({ left: 12, right: 12 })
+    .alignItems(VerticalAlign.Center)
+    .justifyContent(FlexAlign.Start)
+    .zIndex(30)
+  }
+
+  @Builder
+  private MiniBarPlaceholder() {
+    Row()
+      .width(this.getSearchBarWidth())
+      .height(SEARCH_BAR_HEIGHT)
+      .backgroundColor(Color.Transparent)
+      .borderRadius(SEARCH_BAR_HEIGHT / 2)
+      .hitTestBehavior(HitTestMode.None)
+  }
+
+  @Builder
   private HdsSearchField() {
+    Stack({ alignContent: Alignment.Center }) {
+      this.HdsSearchFieldMaterial()
+      this.SearchInputContent(true)
+    }
+    .width(this.getSearchBarWidth())
+    .height(SEARCH_BAR_HEIGHT)
+    .clip(false)
+  }
+
+  @Builder
+  private HdsSearchFieldMaterial() {
     HdsTabs({ controller: this.searchBarTabsController }) {
       TabContent()
         .clip(false)
@@ -156,18 +231,16 @@ export struct SearchPage {
       },
       barBottomMargin: 0,
       barSideMargin: 0,
-      systemMaterialEffect: {
-        materialType: hdsMaterial.MaterialType.IMMERSIVE,
-        materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
-      },
+      systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
       miniBar: {
-        miniBarBuilder: () => {
-          this.SearchInputContent(true)
+        miniBarBuilder: (): void => {
+          this.MiniBarPlaceholder()
         },
         miniBarStyle: 1
       },
       lightColor: Color.Transparent
     })
+    .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
@@ -209,7 +282,7 @@ export struct SearchPage {
           .fontColor([$r('app.color.text_secondary')])
           .margin({ left: 14, right: 4 })
 
-        TextInput({ placeholder: '搜索动漫...', text: this.searchKeyword })
+        TextInput({ placeholder: this.getSearchPlaceholder(), text: this.searchKeyword })
           .layoutWeight(1)
           .height(SEARCH_BAR_HEIGHT)
           .fontSize(15)
@@ -235,10 +308,14 @@ export struct SearchPage {
           .justifyContent(FlexAlign.Center)
           .alignItems(VerticalAlign.Center)
           .onClick(() => {
+            this.searchRequestSerial += 1
             this.searchKeyword = ''
             this.searchResults = []
+            this.isSearching = false
+            this.isLoadingMoreSearchResults = false
             this.hasSearched = false
             this.submittedKeyword = ''
+            this.selectedSearchTabIndex = 0
           })
         }
       }
@@ -265,11 +342,33 @@ export struct SearchPage {
       this.SearchHistorySection()
       this.ExploreKeywordSection()
       Blank()
-        .height(this.getBottomSpacerHeight())
+        .height(this.isLoadingMoreSearchResults ? 12 : this.getBottomSpacerHeight())
         .width('100%')
+
+      if (this.isLoadingMoreSearchResults) {
+        this.SearchLoadingMoreView()
+      }
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 4 })
+  }
+
+  @Builder
+  private SearchLoadingMoreView() {
+    Row({ space: 8 }) {
+      LoadingProgress()
+        .width(18)
+        .height(18)
+        .color($r('app.color.accent_blue'))
+      Text('正在继续加载更多结果')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+    }
+    .width('100%')
+    .height(48)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .margin({ bottom: this.getBottomSpacerHeight() })
   }
 
   @Builder
@@ -312,7 +411,7 @@ export struct SearchPage {
   @Builder
   private ExploreKeywordSection() {
     Column() {
-      Text('探索关键词')
+      Text(this.selectedSearchTabIndex === 1 ? '探索标签' : '探索关键词')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
@@ -320,7 +419,7 @@ export struct SearchPage {
         .margin({ bottom: 12 })
 
       Flex({ wrap: FlexWrap.Wrap }) {
-        ForEach(EXPLORE_KEYWORDS, (keyword: string) => {
+        ForEach(this.getExploreKeywords(), (keyword: string) => {
           this.KeywordChip(keyword, `explore_${keyword}`)
         }, (keyword: string) => `explore_${keyword}`)
       }
@@ -357,12 +456,14 @@ export struct SearchPage {
         .margin({ right: 12 })
 
       Column() {
-        Text('输入番剧名称开始搜索')
+        Text(this.selectedSearchTabIndex === 1 ? '输入标签开始搜索' : '输入番剧名称开始搜索')
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .width('100%')
-        Text('搜索结果来自 Bangumi 元数据，可在详情页匹配播放源')
+        Text(this.selectedSearchTabIndex === 1 ?
+          '可输入百合、原创、漫画改等 Bangumi 标签' :
+          '搜索结果来自 Bangumi 元数据，可在详情页匹配播放源')
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))
           .width('100%')
@@ -383,46 +484,27 @@ export struct SearchPage {
   @Builder
   private SearchLoadingView() {
     Column() {
-      Row() {
-        LoadingProgress()
-          .width(22)
-          .height(22)
-          .color($r('app.color.loading_color'))
-        Text('正在搜索...')
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 10 })
-      }
-      .justifyContent(FlexAlign.Center)
-      .width('100%')
-      .height(96)
-      .borderRadius(18)
-      .backgroundColor($r('app.color.card_background'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 4 })
-  }
-
-  @Builder
-  private SearchResultHeader() {
-    Column() {
-      Text(`搜索“${this.submittedKeyword}”`)
-        .fontSize(20)
+      LoadingProgress()
+        .width(42)
+        .height(42)
+        .color($r('app.color.accent_blue'))
+      Text(this.selectedSearchTabIndex === 1 ? '正在搜索标签' : '正在搜索标题')
+        .fontSize(17)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-        .width('100%')
-      Text(`${this.searchResults.length} 个相关条目`)
+        .margin({ top: 16 })
+      Text(this.selectedSearchTabIndex === 1 ? '正在匹配相关 Bangumi 标签条目' : '正在从 Bangumi 元数据检索条目')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .margin({ top: 4 })
+        .textAlign(TextAlign.Center)
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .margin({ top: 6 })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 4, bottom: 12 })
-    .alignItems(HorizontalAlign.Start)
+    .height(220)
+    .justifyContent(FlexAlign.Center)
+    .padding({ left: 32, right: 32, top: SEARCH_RESULT_TOP_GAP })
   }
 
   @Builder
@@ -447,14 +529,14 @@ export struct SearchPage {
         }
         .width('100%')
         .margin({ bottom: SEARCH_RESULT_GAP })
-      }, (row: AnimeItem[], rowIndex?: number) => `search_row_${rowIndex}`)
+      }, (row: AnimeItem[], rowIndex?: number) => this.getSearchResultRowKey(row, rowIndex ?? 0))
 
       Blank()
         .height(this.getBottomSpacerHeight())
         .width('100%')
     }
     .width('100%')
-    .padding({ left: 16, right: 16, bottom: 8 })
+    .padding({ left: 16, right: 16, top: SEARCH_RESULT_TOP_GAP, bottom: 8 })
   }
 
   @Builder
@@ -504,7 +586,7 @@ export struct SearchPage {
   }
 
   private buildTitleBarOptions(): HdsNavigationTitleBarOptions {
-    return {
+    const options: HdsNavigationTitleBarOptions = {
       enableComponentSafeArea: false,
       avoidLayoutSafeArea: true,
       content: {
@@ -517,31 +599,121 @@ export struct SearchPage {
           }
         }
       },
-      style: buildImmersiveTitleBarStyle()
+      style: buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     }
+    if (options.style?.originalStyle?.backgroundStyle) {
+      options.style.originalStyle.backgroundStyle.maskExtraHeight = this.shouldShowSearchTabs() ? SEARCH_TAB_BAR_HEIGHT : 0
+    }
+    if (options.style?.scrollEffectStyle?.backgroundStyle) {
+      options.style.scrollEffectStyle.backgroundStyle.maskExtraHeight = this.shouldShowSearchTabs() ? SEARCH_TAB_BAR_HEIGHT : 0
+    }
+    return options
   }
 
-  private async doSearch(): Promise<void> {
+  private async doSearch(searchMode: number = this.selectedSearchTabIndex): Promise<void> {
     const trimmed = this.searchKeyword.trim()
     if (trimmed.length === 0) {
       return
     }
+    const requestSerial = this.searchRequestSerial + 1
+    this.searchRequestSerial = requestSerial
     this.isSearching = true
+    this.isLoadingMoreSearchResults = false
     this.hasSearched = true
     this.submittedKeyword = trimmed
     this.searchResults = []
     try {
       await this.searchHistoryStore.add(trimmed)
       this.searchHistory = await this.searchHistoryStore.getAll()
-      const results = await BangumiApi.searchAnime(trimmed)
+      const query = this.parseSearchQuery(trimmed)
+      let results: AnimeItem[] = []
+      if (query.id > 0) {
+        const item = await BangumiApi.getSubject(query.id)
+        results = item !== null ? [item] : []
+      } else {
+        const explicitTags: string[] = query.tag.length > 0 ? [query.tag] : []
+        const tags: string[] = searchMode === 1 && explicitTags.length === 0 ?
+          [query.keyword] : explicitTags
+        const keyword = tags.length > 0 ? '' : query.keyword
+        let hasShownProgressResults = false
+        logger.info('Search request mode=%{public}s keyword=%{public}s tags=%{public}s',
+          searchMode === 1 ? 'tag' : 'title', keyword.length > 0 ? keyword : '<empty>', tags.join(','))
+        const progressOptions = new BangumiSearchProgressOptions()
+        progressOptions.shouldContinue = (): boolean => {
+          return requestSerial === this.searchRequestSerial
+        }
+        progressOptions.onResults = (items: AnimeItem[]): void => {
+          if (requestSerial !== this.searchRequestSerial) {
+            return
+          }
+          this.searchResults = items
+          this.isSearching = false
+          this.isLoadingMoreSearchResults = true
+          if (!hasShownProgressResults) {
+            hasShownProgressResults = true
+            this.scroller.scrollEdge(Edge.Top)
+          }
+        }
+        results = await BangumiApi.searchAnimeProgressive(keyword, tags, query.sort, progressOptions)
+        if (results.length > 0 && !hasShownProgressResults) {
+          this.scroller.scrollEdge(Edge.Top)
+        }
+      }
+      if (requestSerial !== this.searchRequestSerial) {
+        logger.info('Ignore stale search response serial=%{public}d current=%{public}d',
+          requestSerial, this.searchRequestSerial)
+        return
+      }
       this.searchResults = results
-      logger.info('Search returned %{public}d results', results.length)
-      this.scroller.scrollEdge(Edge.Top)
+      this.isLoadingMoreSearchResults = false
+      logger.info('Search returned %{public}d results', this.searchResults.length)
+      if (results.length > 0 && query.id > 0) {
+        this.scroller.scrollEdge(Edge.Top)
+      }
     } catch (err) {
+      if (requestSerial !== this.searchRequestSerial) {
+        return
+      }
       logger.error('Search failed')
     } finally {
-      this.isSearching = false
+      if (requestSerial === this.searchRequestSerial) {
+        this.isSearching = false
+        this.isLoadingMoreSearchResults = false
+      }
     }
+  }
+
+  private parseSearchQuery(input: string): SearchQuery {
+    const result = new SearchQuery()
+    let keyword = input.trim()
+    const idMatch = keyword.match(/(?:^|\s)id:(\d+)(?=\s|$)/i)
+    if (idMatch !== null && idMatch.length > 1) {
+      result.id = Number(idMatch[1])
+      keyword = keyword.replace(/(?:^|\s)id:\d+(?=\s|$)/i, ' ')
+    }
+
+    const tagMatch = keyword.match(/(?:^|\s)tag:(\S+)(?=\s|$)/i)
+    if (tagMatch !== null && tagMatch.length > 1) {
+      result.tag = tagMatch[1]
+      keyword = keyword.replace(/(?:^|\s)tag:\S+(?=\s|$)/i, ' ')
+    }
+
+    const sortMatch = keyword.match(/(?:^|\s)sort:([\w-]+)(?=\s|$)/i)
+    if (sortMatch !== null && sortMatch.length > 1) {
+      result.sort = this.normalizeSearchSort(sortMatch[1])
+      keyword = keyword.replace(/(?:^|\s)sort:[\w-]+(?=\s|$)/i, ' ')
+    }
+
+    result.keyword = keyword.replace(/\s+/g, ' ').trim()
+    return result
+  }
+
+  private normalizeSearchSort(sort: string): string {
+    const value = sort.trim().toLowerCase()
+    if (value === 'rank' || value === 'match' || value === 'score') {
+      return value
+    }
+    return 'heat'
   }
 
   private async loadSearchHistory(): Promise<void> {
@@ -550,6 +722,37 @@ export struct SearchPage {
     } catch (err) {
       logger.warn('Load search history failed')
     }
+  }
+
+  private applyRouteParams(): void {
+    if (this.routeParamsApplied) {
+      return
+    }
+    this.routeParamsApplied = true
+    const params = router.getParams() as Record<string, Object> | null | undefined
+    if (params === null || params === undefined) {
+      return
+    }
+
+    let initialKeyword: string = ''
+    let initialSearchMode: number = -1
+    if (params['tag'] !== undefined) {
+      initialKeyword = params['tag'] as string
+      initialSearchMode = 1
+    } else if (params['keyword'] !== undefined) {
+      initialKeyword = params['keyword'] as string
+    }
+    if (params['searchMode'] !== undefined) {
+      initialSearchMode = params['searchMode'] as number
+    }
+
+    const trimmed = initialKeyword.trim()
+    if (trimmed.length === 0) {
+      return
+    }
+    this.selectedSearchTabIndex = initialSearchMode === 1 ? 1 : 0
+    this.searchKeyword = trimmed
+    this.doSearch(this.selectedSearchTabIndex)
   }
 
   private async clearSearchHistory(): Promise<void> {
@@ -588,11 +791,47 @@ export struct SearchPage {
   }
 
   private getSearchTopSpacerHeight(): number {
-    return getTopSpacerHeight(this.topSafeHeight) + SEARCH_BOTTOM_BAR_HEIGHT
+    return getTopSpacerHeight(this.topSafeHeight) + this.getSearchTopControlsHeight()
   }
 
   private getBottomSpacerHeight(): number {
     return getBottomSpacerHeight(this.bottomSafeHeight)
+  }
+
+  private shouldUseHdsSearchField(): boolean {
+    return this.isHdsTabsEnabled && deviceInfo.distributionOSApiVersion >= 60100
+  }
+
+  private getSearchTopControlsHeight(): number {
+    return SEARCH_BOTTOM_BAR_HEIGHT + (this.shouldShowSearchTabs() ? SEARCH_TAB_BAR_HEIGHT : 0)
+  }
+
+  private shouldShowSearchTabs(): boolean {
+    return this.hasSearched || this.isSearching
+  }
+
+  private getSearchPlaceholder(): string {
+    return this.selectedSearchTabIndex === 1 ? '搜索标签...' : '搜索动漫...'
+  }
+
+  private getExploreKeywords(): string[] {
+    return this.selectedSearchTabIndex === 1 ? EXPLORE_TAGS : EXPLORE_KEYWORDS
+  }
+
+  private selectSearchTab(selectedIndex: number): void {
+    if (selectedIndex === this.selectedSearchTabIndex) {
+      return
+    }
+    this.getUIContext().animateTo({
+      duration: 220,
+      curve: curves.springMotion()
+    }, () => {
+      this.selectedSearchTabIndex = selectedIndex
+    })
+    this.scroller.scrollEdge(Edge.Top)
+    if (this.searchKeyword.trim().length > 0) {
+      this.doSearch(selectedIndex)
+    }
   }
 
   private getSearchBarWidth(): number {
@@ -674,5 +913,105 @@ export struct SearchPage {
       rows.push(this.searchResults.slice(i, i + count))
     }
     return rows
+  }
+
+  private getSearchResultRowKey(row: AnimeItem[], rowIndex: number): string {
+    const parts: string[] = []
+    for (let i = 0; i < row.length; i++) {
+      parts.push(this.getSearchResultItemKey(row[i]))
+    }
+    return `search_row_${rowIndex}_${row.length}_${parts.join('_')}`
+  }
+
+  private getSearchResultItemKey(item: AnimeItem): string {
+    if (item.bangumiId > 0) {
+      return `id_${item.bangumiId}`
+    }
+    return `name_${item.name}_${item.originalName}_${item.airDate}`
+  }
+}
+
+@Component
+struct SearchSegmentTabItem {
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @Prop label: string = ''
+  @Prop index: number = 0
+  @Prop selectedIndex: number = 0
+  @Prop tabWidth: number = SEARCH_TAB_ITEM_WIDTH
+  onSelected?: (index: number) => void
+
+  build() {
+    Column() {
+      HdsTabs() {
+        TabContent()
+          .clip(false)
+          .tabBar(this.tabBarContentBuilder())
+          .width('100%')
+          .height('100%')
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.None)
+      }
+      .clip(false)
+      .hitTestBehavior(HitTestMode.None)
+      .align(Alignment.Center)
+      .height(SEARCH_TAB_BAR_HEIGHT)
+      .barWidth(this.tabWidth)
+      .barHeight(SEARCH_TAB_BAR_HEIGHT)
+      .barOverlap(true)
+      .barPosition(BarPosition.End)
+      .vertical(false)
+      .backgroundColor(Color.Transparent)
+      .shadow(undefined)
+      .barFloatingStyle({
+        barWidth: {
+          smallWidth: this.tabWidth,
+          mediumWidth: this.tabWidth,
+          largeWidth: this.tabWidth
+        },
+        gradientMask: {
+          maskColor: Color.Transparent
+        },
+        barBottomMargin: 0,
+        barSideMargin: 0,
+        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
+        lightColor: Color.Transparent
+      })
+    }
+    .backgroundColor(Color.Transparent)
+    .clip(false)
+    .width(this.tabWidth)
+    .height(SEARCH_TAB_BAR_HEIGHT)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
+  }
+
+  @Builder
+  tabBarContentBuilder(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Text(this.label)
+        .fontSize(14)
+        .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
+        .fontColor(this.isSelected() ? $r('app.color.text_primary') : Color.White)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Clip })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+    }
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.Transparent)
+    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
+    .onClick(() => {
+      this.selectTab()
+    })
+  }
+
+  private selectTab(): void {
+    this.onSelected?.(this.index)
+  }
+
+  private isSelected(): boolean {
+    return this.selectedIndex === this.index
   }
 }

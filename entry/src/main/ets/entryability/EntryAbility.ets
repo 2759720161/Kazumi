@@ -1,5 +1,7 @@
- import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { display, window } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import type { Callback } from '@kit.BasicServicesKit';
 import { preferences } from '@kit.ArkData';
 import { RdbManager } from '../store/RdbManager';
 
@@ -8,6 +10,7 @@ import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
 import { UserDownloadFolder } from '../services/UserDownloadFolder';
+import { HistorySyncService } from '../services/HistorySyncService';
 import {
   BOTTOM_TAB_ANIMATION_HIDDEN_KEY,
   BOTTOM_TAB_ANIMATION_TOKEN_KEY,
@@ -16,26 +19,58 @@ import {
   PREFS_KEY_BOTTOM_TAB_AUTO_HIDE,
   PREFS_KEY_BOTTOM_TAB_SHOW_ANIMATION
 } from '../utils/BottomTabAutoHide';
-import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../utils/AdvancedOptionsUnlock';
+import {
+  ADVANCED_OPTIONS_UNLOCKED_KEY,
+  HIDE_LOCAL_PAGE_KEY,
+  HIDE_LOCAL_PAGE_DEFAULT,
+  PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY
+} from '../utils/AdvancedOptionsUnlock';
+import {
+  PLAYER_AUTO_FULLSCREEN_DEFAULT,
+  PREFS_KEY_PLAYER_AUTO_FULLSCREEN
+} from '../utils/PlayerAutoFullscreen';
+import {
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
+} from '../utils/HdsPageStyle';
+import {
+  CONTINUATION_PAYLOAD_KEY,
+  CONTINUATION_RESTORE_PAYLOAD_KEY,
+  CONTINUATION_RESTORE_TOKEN_KEY,
+  CONTINUATION_SUPPORT_PAGE_STACK_KEY,
+  ContinuationState
+} from '../utils/ContinuationState';
 
 const logger = new Logger('EntryAbility');
 
 export default class EntryAbility extends UIAbility {
   private displayDensity: number = 3.0;
+  private pendingContinuationPayload: string = '';
+  private storesInitialized: boolean = false;
+  private appOpenHistorySyncRunning: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate('topSafeHeight', 0);
     AppStorage.setOrCreate('bottomSafeHeight', 0);
     AppStorage.setOrCreate('keyboardAvoidHeight', 0);
+    AppStorage.setOrCreate('playerFullScreen', false);
     AppStorage.setOrCreate('screenWidthVp', 0);
     AppStorage.setOrCreate('screenHeightVp', 0);
     AppStorage.setOrCreate('bottomTabAutoHide', BOTTOM_TAB_AUTO_HIDE_DEFAULT);
     AppStorage.setOrCreate('bottomTabShowAnimation', BOTTOM_TAB_SHOW_ANIMATION_DEFAULT);
+    AppStorage.setOrCreate('playerAutoFullscreen', PLAYER_AUTO_FULLSCREEN_DEFAULT);
+    AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, HDS_MATERIAL_LEVEL_DEFAULT);
     AppStorage.setOrCreate('bottomTabOffset', 0);
     AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
     AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);
     AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, false);
+    AppStorage.setOrCreate(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY, false);
+    AppStorage.setOrCreate(HIDE_LOCAL_PAGE_KEY, HIDE_LOCAL_PAGE_DEFAULT);
+    AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, '');
+    AppStorage.setOrCreate(CONTINUATION_RESTORE_PAYLOAD_KEY, '');
+    AppStorage.setOrCreate(CONTINUATION_RESTORE_TOKEN_KEY, 0);
     SettingsChangeSignal.initDanmakuVersion();
+    this.captureContinuationPayload(want);
 
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
@@ -58,7 +93,40 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     logger.info('Ability onWindowStageCreate');
+    this.setupMainWindowStage(windowStage);
+  }
 
+  onWindowStageRestore(windowStage: window.WindowStage): void {
+    logger.info('Ability onWindowStageRestore');
+    this.setupMainWindowStage(windowStage, true);
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    logger.info('Ability onNewWant launchReason: %{public}d', launchParam.launchReason ?? -1);
+    this.captureContinuationPayload(want);
+    if (this.pendingContinuationPayload.length > 0) {
+      ContinuationState.publishRestorePayload(this.pendingContinuationPayload);
+      this.pendingContinuationPayload = '';
+    }
+  }
+
+  onContinue(wantParam: Record<string, Object>): AbilityConstant.OnContinueResult {
+    logger.info('Ability onContinue');
+    try {
+      const payload = ContinuationState.getPayloadJson();
+      if (payload.length > 0) {
+        wantParam[CONTINUATION_PAYLOAD_KEY] = payload;
+      }
+      wantParam[CONTINUATION_SUPPORT_PAGE_STACK_KEY] = false;
+      return AbilityConstant.OnContinueResult.AGREE;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Ability onContinue failed: %{public}s', msg);
+      return AbilityConstant.OnContinueResult.REJECT;
+    }
+  }
+
+  private setupMainWindowStage(windowStage: window.WindowStage, restoreContinuation: boolean = false): void {
     const mainWindow = windowStage.getMainWindowSync();
     mainWindow.setWindowLayoutFullScreen(true);
     const sysBarProps: window.SystemBarProperties = {
@@ -70,10 +138,7 @@ export default class EntryAbility extends UIAbility {
     mainWindow.setWindowSystemBarProperties(sysBarProps);
     mainWindow.setWindowSystemBarEnable(['status', 'navigation']);
 
-    const currentDisplay: display.Display = display.getDefaultDisplaySync();
-    this.displayDensity = currentDisplay.densityPixels > 0 ? currentDisplay.densityPixels : 3.0;
-    AppStorage.setOrCreate('screenWidthVp', currentDisplay.width / this.displayDensity);
-    AppStorage.setOrCreate('screenHeightVp', currentDisplay.height / this.displayDensity);
+    this.updateDisplayMetricsAndOrientation(mainWindow);
     this.updateSystemSafeArea(mainWindow);
     mainWindow.on('avoidAreaChange', (data: window.AvoidAreaOptions) => {
       if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
@@ -84,13 +149,57 @@ export default class EntryAbility extends UIAbility {
       }
     });
 
+    try {
+      const foldCallback: Callback<display.FoldStatus> = (foldStatus: display.FoldStatus) => {
+        logger.info('Fold status changed: %{public}d', foldStatus);
+        this.updateDisplayMetricsAndOrientation(mainWindow);
+      };
+      display.on('foldStatusChange', foldCallback);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('Failed to register foldStatusChange listener: %{public}s', msg);
+    }
+
+    mainWindow.on('windowSizeChange', (data: window.Size) => {
+      logger.info('Window size changed: %{public}d x %{public}d', data.width, data.height);
+      this.updateDisplayMetricsAndOrientation(mainWindow);
+    });
+
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
         logger.error('Failed to load content: %{public}s', err.message);
         return;
       }
       logger.info('Succeeded in loading content.');
+      if (restoreContinuation && this.pendingContinuationPayload.length > 0) {
+        ContinuationState.publishRestorePayload(this.pendingContinuationPayload);
+        this.pendingContinuationPayload = '';
+      }
     });
+  }
+
+  private updateDisplayMetricsAndOrientation(mainWindow: window.Window): void {
+    const currentDisplay: display.Display = display.getDefaultDisplaySync();
+    this.displayDensity = currentDisplay.densityPixels > 0 ? currentDisplay.densityPixels : 3.0;
+    const displayWidthVp = currentDisplay.width / this.displayDensity;
+    const displayHeightVp = currentDisplay.height / this.displayDensity;
+    const shortSideVp = Math.min(displayWidthVp, displayHeightVp);
+    const currentDeviceType = deviceInfo.deviceType;
+    const isTabletDevice = currentDeviceType === 'tablet' || shortSideVp >= 600;
+    const screenWidthVp = isTabletDevice ? displayWidthVp : shortSideVp;
+    const screenHeightVp = isTabletDevice ? displayHeightVp : Math.max(displayWidthVp, displayHeightVp);
+    logger.info('Layout deviceType: %{public}s, display: %{public}d x %{public}d vp, tablet: %{public}s',
+      currentDeviceType, Math.round(displayWidthVp), Math.round(displayHeightVp), isTabletDevice ? 'true' : 'false');
+    AppStorage.setOrCreate('screenWidthVp', screenWidthVp);
+    AppStorage.setOrCreate('screenHeightVp', screenHeightVp);
+    if (AppStorage.get<boolean>('playerFullScreen') === true) {
+      return;
+    }
+    if (!isTabletDevice) {
+      mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT);
+    } else {
+      mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION);
+    }
   }
 
   onWindowStageDestroy(): void {
@@ -99,6 +208,7 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     logger.info('Ability onForeground');
+    this.syncHistoryOnAppOpen();
   }
 
   onBackground(): void {
@@ -127,9 +237,35 @@ export default class EntryAbility extends UIAbility {
         BOTTOM_TAB_SHOW_ANIMATION_DEFAULT
       );
       AppStorage.setOrCreate('bottomTabShowAnimation', bottomTabShowAnimation);
+      const playerAutoFullscreen = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_PLAYER_AUTO_FULLSCREEN,
+        PLAYER_AUTO_FULLSCREEN_DEFAULT
+      );
+      AppStorage.setOrCreate('playerAutoFullscreen', playerAutoFullscreen);
+      const hdsMaterialLevel = await PreferencesStore.getInstance().getString(
+        PREFS_KEY_HDS_MATERIAL_LEVEL,
+        HDS_MATERIAL_LEVEL_DEFAULT
+      );
+      AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, hdsMaterialLevel);
       AppStorage.setOrCreate('bottomTabOffset', 0);
       AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
       AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);
+
+      const advancedOptionsUnlocked = await PreferencesStore.getInstance().getBoolean(
+        ADVANCED_OPTIONS_UNLOCKED_KEY,
+        false
+      );
+      AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, advancedOptionsUnlocked);
+      const playerDebugOptionsUnlocked = await PreferencesStore.getInstance().getBoolean(
+        PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
+        false
+      );
+      AppStorage.setOrCreate(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY, playerDebugOptionsUnlocked);
+      const hideLocalPage = await PreferencesStore.getInstance().getBoolean(
+        HIDE_LOCAL_PAGE_KEY,
+        HIDE_LOCAL_PAGE_DEFAULT
+      );
+      AppStorage.setOrCreate(HIDE_LOCAL_PAGE_KEY, hideLocalPage);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to init Preferences: %{public}s', msg);
@@ -159,6 +295,30 @@ export default class EntryAbility extends UIAbility {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to init UserDownloadFolder: %{public}s', msg);
     }
+
+    this.storesInitialized = true;
+    this.syncHistoryOnAppOpen();
+  }
+
+  private async syncHistoryOnAppOpen(): Promise<void> {
+    if (!this.storesInitialized || this.appOpenHistorySyncRunning) {
+      return;
+    }
+    this.appOpenHistorySyncRunning = true;
+    try {
+      const syncService = HistorySyncService.getInstance();
+      const config = await syncService.getConfig();
+      if (!config.enabled || !config.autoSync) {
+        return;
+      }
+      await syncService.syncNow();
+      logger.info('App open history sync finished');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('App open history sync failed: %{public}s', msg);
+    } finally {
+      this.appOpenHistorySyncRunning = false;
+    }
   }
 
   private updateSystemSafeArea(mainWindow: window.Window): void {
@@ -169,6 +329,18 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to update system safe area: %{public}s', msg);
+    }
+  }
+
+  private captureContinuationPayload(want: Want): void {
+    const params = want.parameters;
+    if (params === undefined || params === null) {
+      return;
+    }
+    const payload = params[CONTINUATION_PAYLOAD_KEY];
+    if (typeof payload === 'string' && payload.length > 0) {
+      this.pendingContinuationPayload = payload;
+      logger.info('Captured continuation payload');
     }
   }
 

@@ -10,6 +10,7 @@ export struct DetailInfoPanel {
   @Link eps: number
   @State currentCover: string = ''
   @State coverKey: string = ''
+  isWideLayout: boolean = false
 
   aboutToAppear(): void {
     this.coverKey = this.buildCoverKey()
@@ -17,53 +18,81 @@ export struct DetailInfoPanel {
   }
 
   build() {
+    if (this.isWideLayout) {
+      this.WideLayout()
+    } else {
+      this.CompactLayout()
+    }
+  }
+
+  @Builder
+  private CompactLayout() {
     Row() {
       Image(this.currentCover.length > 0 ? this.currentCover : $r('app.media.ic_placeholder'))
+        .draggable(false)
         .width(118)
         .height(168)
         .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
         .borderRadius(14)
         .alt($r('app.media.ic_placeholder'))
-        .shadow({ radius: 18, color: $r('app.color.shadow_surface'), offsetY: 7 })
+        .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
         .onError(() => {
           this.tryNextCover()
         })
 
-      Column({ space: 10 }) {
-        Row({ space: 10 }) {
-          this.DashboardMetric(this.getRatingText(), '评分')
-
-          this.DashboardMetric(this.getRankText(), '排名')
-        }
-        .width('100%')
-        .height(79)
-
-        Row({ space: 10 }) {
-          this.EpisodeMetric()
-
-          this.VotesMetric()
-        }
-        .width('100%')
-        .height(79)
+      Column({ space: 8 }) {
+        this.PrimaryMetric()
+        this.DetailMetricDivider()
+        this.DetailMetricRow('排名', this.getRankText())
+        this.DetailMetricRow('集数', this.getEpisodeText())
+        this.DetailMetricRow('评分人数', this.getVotesText())
       }
       .layoutWeight(1)
       .height(168)
-      .margin({ left: 16 })
+      .justifyContent(FlexAlign.Center)
+      .margin({ left: 18 })
     }
     .width('100%')
-    .padding({ left: 18, right: 18, top: 18, bottom: 18 })
-    .borderRadius(22)
-    .backgroundColor($r('app.color.card_surface_blue'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: $r('app.color.border_specular') })
-    .shadow({ radius: 18, color: $r('app.color.shadow_surface'), offsetY: 7 })
+    .padding({ left: 2, right: 2, top: 2, bottom: 8 })
+    .backgroundColor($r('app.color.detail_info_panel_bg'))
+    .hitTestBehavior(HitTestMode.Transparent)
   }
 
   @Builder
-  private DashboardMetric(value: string, label: string) {
+  private WideLayout() {
+    Column({ space: 14 }) {
+      Image(this.currentCover.length > 0 ? this.currentCover : $r('app.media.ic_placeholder'))
+        .draggable(false)
+        .width('100%')
+        .aspectRatio(118 / 168)
+        .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
+        .borderRadius(12)
+        .alt($r('app.media.ic_placeholder'))
+        .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
+        .onError(() => {
+          this.tryNextCover()
+        })
+
+      Column({ space: 8 }) {
+        this.PrimaryMetric()
+        this.DetailMetricDivider()
+        this.DetailMetricRow('排名', this.getRankText())
+        this.DetailMetricRow('集数', this.getEpisodeText())
+        this.DetailMetricRow('评分人数', this.getVotesText())
+      }
+      .width('100%')
+      .padding({ left: 4, right: 4 })
+    }
+    .width('100%')
+    .padding({ left: 2, right: 2, top: 2, bottom: 8 })
+    .backgroundColor($r('app.color.detail_info_panel_bg'))
+  }
+
+  @Builder
+  private PrimaryMetric() {
     Column() {
-      Text(value)
-        .fontSize(this.getMetricFontSize(label))
+      Text(this.getRatingText())
+        .fontSize(30)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.rating_star'))
         .maxLines(1)
@@ -71,82 +100,54 @@ export struct DetailInfoPanel {
         .textAlign(TextAlign.Start)
         .width('100%')
 
+      Text('Bangumi 评分')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_subtitle'))
+        .maxLines(1)
+        .textAlign(TextAlign.Start)
+        .width('100%')
+        .margin({ top: 5 })
+    }
+    .width('100%')
+    .height(52)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private DetailMetricRow(label: string, value: string) {
+    Row() {
       Text(label)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_subtitle'))
         .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.Start)
-        .width('100%')
-        .margin({ top: 5 })
-    }
-    .layoutWeight(1)
-    .height(79)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Start)
-    .padding({ left: 12, right: 10 })
-    .borderRadius(14)
-    .backgroundColor($r('app.color.tag_chip_bg'))
-  }
+        .layoutWeight(1)
 
-  @Builder
-  private EpisodeMetric() {
-    Column() {
-      Text(this.eps > 0 ? `${this.eps}` : '未知')
-        .fontSize(21)
+      Text(value)
+        .fontSize(16)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.rating_star'))
+        .fontColor($r('app.color.text_title'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.Start)
-        .width('100%')
-
-      Text('集数')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_subtitle'))
-        .maxLines(1)
-        .textAlign(TextAlign.Start)
-        .width('100%')
-        .margin({ top: 5 })
     }
-    .layoutWeight(1)
-    .height(79)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Start)
-    .padding({ left: 12, right: 10 })
-    .borderRadius(14)
-    .backgroundColor($r('app.color.tag_chip_bg'))
+    .width('100%')
+    .height(24)
+    .alignItems(VerticalAlign.Center)
   }
 
   @Builder
-  private VotesMetric() {
-    Column() {
-      Text(this.getVotesText())
-        .fontSize(21)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.rating_star'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.Start)
-        .width('100%')
-
-      Text('评分人数')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_subtitle'))
-        .maxLines(1)
-        .textAlign(TextAlign.Start)
-        .width('100%')
-        .margin({ top: 5 })
-    }
-    .layoutWeight(1)
-    .height(79)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Start)
-    .padding({ left: 12, right: 10 })
-    .borderRadius(14)
-    .backgroundColor($r('app.color.tag_chip_bg'))
+  private DetailMetricDivider() {
+    Row()
+      .width('100%')
+      .height(1)
+      .backgroundColor($r('app.color.divider_blue'))
+      .opacity(0.72)
+      .margin({ top: 2, bottom: 2 })
   }
 
   private getVotesText(): string {
@@ -185,8 +186,8 @@ export struct DetailInfoPanel {
     return this.rank > 0 ? `#${this.rank}` : '-'
   }
 
-  private getMetricFontSize(label: string): number {
-    return 21
+  private getEpisodeText(): string {
+    return this.eps > 0 ? `${this.eps} 集` : '未知'
   }
 
   private buildCoverKey(): string {

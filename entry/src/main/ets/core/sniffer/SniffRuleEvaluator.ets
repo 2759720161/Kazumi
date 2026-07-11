@@ -49,6 +49,12 @@ export class SniffRuleEvaluator {
         priority: 20, enabled: true, sourceTag: 'builtin'
       },
       {
+        name: '7sefun_player_promote', category: 'promote_page', ruleType: 'domain_match',
+        patterns: ['7sefun.top/addons/dp/player/', '7sefun.top/addons/dp/player/index.php'],
+        action: 'promote', actionParams: {},
+        priority: 20, enabled: true, sourceTag: 'builtin'
+      },
+      {
         name: 'ad_domain_reject', category: 'filter', ruleType: 'domain_match',
         patterns: ['doubleclick.net', 'googleadservices.com', 'googlesyndication.com',
           'adnxs.com', 'adsrvr.org', 'pagead2.googlesyndication.com'],

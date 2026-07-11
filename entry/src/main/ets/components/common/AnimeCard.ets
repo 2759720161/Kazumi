@@ -13,6 +13,7 @@ export struct AnimeCard {
   @State currentCover: string = '';
   @State hasError: boolean = false;
   @State coverKey: string = '';
+  @State isPressed: boolean = false;
   onCardClick?: () => void;
 
   aboutToAppear(): void {
@@ -30,21 +31,23 @@ export struct AnimeCard {
   }
 
   build() {
-    Column() {
+    Column({ space: 8 }) {
       if (this.hasError && this.currentCover.length === 0) {
         Image($r('app.media.ic_placeholder'))
+          .draggable(false)
           .width('100%')
           .height(0)
           .aspectRatio(3 / 4)
           .objectFit(ImageFit.Contain)
-          .borderRadius({ topLeft: 8, topRight: 8 })
+          .borderRadius(12)
       } else {
         Image(this.currentCover.length > 0 ? this.currentCover : $r('app.media.ic_placeholder'))
+          .draggable(false)
           .width('100%')
           .height(0)
           .aspectRatio(3 / 4)
           .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
-          .borderRadius({ topLeft: 8, topRight: 8 })
+          .borderRadius(12)
           .alt($r('app.media.ic_placeholder'))
           .onError(() => {
             const urlPrefix = this.currentCover.length > 120 ?
@@ -56,24 +59,32 @@ export struct AnimeCard {
 
       Column() {
         Text(this.name)
-          .fontSize(13)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
+          .lineHeight(18)
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .textAlign(TextAlign.Start)
           .width('100%')
-          .padding({ left: 6, right: 6, top: 4 })
       }
-      .height(48)
-
+      .height(44)
       .alignItems(HorizontalAlign.Start)
     }
-    .borderRadius(8)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    .borderRadius(12)
+    .alignItems(HorizontalAlign.Start)
+    .scale({ x: this.isPressed ? 0.98 : 1, y: this.isPressed ? 0.98 : 1 })
+    .animation({ duration: 150 })
     .onClick(() => {
       if (this.onCardClick) {
         this.onCardClick();
+      }
+    })
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.isPressed = true
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.isPressed = false
       }
     })
   }

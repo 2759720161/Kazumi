@@ -3,14 +3,15 @@ export struct DetailTitleBlock {
   @Prop title: string = ''
   @Prop originalName: string = ''
   @Link airDate: string
+  isWideLayout: boolean = false
 
   build() {
     Column() {
       Text(this.getDisplayTitle())
-        .fontSize(31)
+        .fontSize(this.isWideLayout ? 28 : 31)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_title'))
-        .lineHeight(40)
+        .lineHeight(this.isWideLayout ? 36 : 40)
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
@@ -25,7 +26,7 @@ export struct DetailTitleBlock {
         .margin({ top: 8 })
     }
     .width('100%')
-    .padding({ left: 24, right: 24, bottom: 24 })
+    .padding(this.isWideLayout ? { bottom: 20 } : { left: 24, right: 24, bottom: 24 })
     .alignItems(HorizontalAlign.Start)
   }
 

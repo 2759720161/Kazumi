@@ -69,10 +69,35 @@ export class JSInjector {
     return false;
   }
 
+  function hasNestedMediaUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    var q = url.indexOf('?');
+    if (q < 0 || q >= url.length - 1) return false;
+    var parts = url.substring(q + 1).split('&');
+    var keys = ['url=', 'play=', 'src=', 'video=', 'videourl=', 'file=', 'source='];
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      var lowerPart = part.toLowerCase();
+      for (var k = 0; k < keys.length; k++) {
+        if (lowerPart.indexOf(keys[k]) === 0) {
+          var raw = part.substring(keys[k].length);
+          try { raw = decodeURIComponent(raw.replace(/\+/g, '%20')); } catch(e) {}
+          try { raw = decodeURIComponent(raw); } catch(e) {}
+          var values = raw.split(',');
+          for (var v = 0; v < values.length; v++) {
+            var nested = values[v].trim();
+            if (isVideoUrl(nested)) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   var iframes = document.querySelectorAll('iframe');
   for (var i = 0; i < iframes.length; i++) {
     var iframeSrc = iframes[i].src || iframes[i].getAttribute('src');
-    if (iframeSrc && isVideoUrl(iframeSrc)) {
+    if (iframeSrc && (isVideoUrl(iframeSrc) || hasNestedMediaUrl(iframeSrc))) {
       var extra = getSnifferExtra();
       postResult(iframeSrc, 'iframe', 'iframe_scan', extra);
     }
@@ -93,7 +118,7 @@ export class JSInjector {
       mutation.addedNodes.forEach(function(node) {
         if (node.nodeName === 'IFRAME') {
           var src = node.src || node.getAttribute('src');
-          if (src && isVideoUrl(src)) {
+          if (src && (isVideoUrl(src) || hasNestedMediaUrl(src))) {
             var extra = getSnifferExtra();
             postResult(src, 'iframe', 'mutation_observer', extra);
           }
@@ -102,7 +127,7 @@ export class JSInjector {
           var frames = node.querySelectorAll('iframe');
           for (var j = 0; j < frames.length; j++) {
             var fsrc = frames[j].src || frames[j].getAttribute('src');
-            if (fsrc && isVideoUrl(fsrc)) {
+            if (fsrc && (isVideoUrl(fsrc) || hasNestedMediaUrl(fsrc))) {
               var extra = getSnifferExtra();
               postResult(fsrc, 'iframe', 'mutation_observer', extra);
             }
@@ -222,6 +247,31 @@ export class JSInjector {
     var hints = ['://v16', '://v26', '://v3', '://v6', '://v9', '://lf', '://lf2', '://lf3', '://lf6', '://lf9', '://lf20', '://vkc', '://vkce', '://fev', '://febo', '/video/tos/', 'videocdn', 'video-cdn', 'mcdn', 'bytecdntp', 'bytetos.com', 'csp-sign', 'tos-cn-v-', 'play.mknacg.top:9009/d/', 'tjdownload.pan.wo.cn', 'pan.wo.cn/openapi/download', '/openapi/download?fid=', '/videos/', '/videoplayback', '/videoplay', 'cdnvideo', 'cdn-video', 'hlsvideo', 'streaming', 'liveld'];
     for (var j = 0; j < hints.length; j++) {
       if (lower.indexOf(hints[j]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function hasNestedMediaUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    var q = url.indexOf('?');
+    if (q < 0 || q >= url.length - 1) return false;
+    var parts = url.substring(q + 1).split('&');
+    var keys = ['url=', 'play=', 'src=', 'video=', 'videourl=', 'file=', 'source='];
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      var lowerPart = part.toLowerCase();
+      for (var k = 0; k < keys.length; k++) {
+        if (lowerPart.indexOf(keys[k]) === 0) {
+          var raw = part.substring(keys[k].length);
+          try { raw = decodeURIComponent(raw.replace(/\+/g, '%20')); } catch(e) {}
+          try { raw = decodeURIComponent(raw); } catch(e) {}
+          var values = raw.split(',');
+          for (var v = 0; v < values.length; v++) {
+            var nested = values[v].trim();
+            if (isVideoUrl(nested)) return true;
+          }
+        }
+      }
     }
     return false;
   }
@@ -626,6 +676,10 @@ export class JSInjector {
       var src = iframe.src || iframe.getAttribute('src') || '';
       if (src.indexOf('http://') !== 0 && src.indexOf('https://') !== 0) return;
       if (src.indexOf('googleads') !== -1 || src.indexOf('doubleclick') !== -1) return;
+      if (isVideoUrl(src) || hasNestedMediaUrl(src)) {
+        var extra = getSnifferExtra();
+        postResult(src, 'iframe', 'iframe_scan', extra);
+      }
       var script = getIframeSnifferScript();
       try {
         var iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
@@ -870,6 +924,30 @@ export class JSInjector {
       results.push({url: url, type: type, source: source});
     }
   }
+  function hasNestedMediaUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    var q = url.indexOf('?');
+    if (q < 0 || q >= url.length - 1) return false;
+    var parts = url.substring(q + 1).split('&');
+    var keys = ['url=', 'play=', 'src=', 'video=', 'videourl=', 'file=', 'source='];
+    var hints = ['.m3u8', '.mp4', '.flv', '.mknvideo', 'm3u8', 'mp4', '/video/tos/', 'videocdn', 'video-cdn', 'mcdn', 'bytecdntp', 'bytetos.com', 'csp-sign', '/videos/', '/videoplayback', '/videoplay'];
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      var lowerPart = part.toLowerCase();
+      for (var k = 0; k < keys.length; k++) {
+        if (lowerPart.indexOf(keys[k]) === 0) {
+          var raw = part.substring(keys[k].length);
+          try { raw = decodeURIComponent(raw.replace(/\+/g, '%20')); } catch(e) {}
+          try { raw = decodeURIComponent(raw); } catch(e) {}
+          var lowerRaw = raw.toLowerCase();
+          for (var h = 0; h < hints.length; h++) {
+            if (lowerRaw.indexOf(hints[h]) !== -1) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
   function inspectOptions(opts, source) {
     if (!opts || typeof opts !== 'object') return;
     var keys = ['src', 'url', 'video', 'source', 'file'];
@@ -908,6 +986,15 @@ export class JSInjector {
       pushUrl(ssrc, 'video_source_element', 'video_element_fallback');
     }
   }
+  try {
+    var iframes = document.querySelectorAll('iframe');
+    for (var ii = 0; ii < iframes.length; ii++) {
+      var iframeSrc = iframes[ii].src || iframes[ii].getAttribute('src');
+      if (iframeSrc && hasNestedMediaUrl(iframeSrc)) {
+        pushUrl(iframeSrc, 'iframe', 'video_element_fallback_iframe');
+      }
+    }
+  } catch(e) {}
   try {
     var controls = document.querySelectorAll('.mui-player, .mui-player-video, .mui-player-play, .play, button');
     for (var ci = 0; ci < controls.length && ci < 8; ci++) {

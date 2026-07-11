@@ -7,12 +7,11 @@ export struct DanmakuSettingsSidePanel {
   @Prop isFullScreen: boolean = true
   @Prop settingsVersion: number = 0
   onPanelClose: () => void = () => {}
-  onToggleDanmaku: () => void = () => {}
+  onSetDanmakuEnabled: (enabled: boolean) => void = () => {}
   onPauseAutoHide: () => void = () => {}
   onResumeAutoHide: () => void = () => {}
 
   @State private panelOffsetX: number = 0
-  private panStartOffsetX: number = 0
 
   build() {
     Stack({ alignContent: Alignment.End }) {
@@ -31,8 +30,8 @@ export struct DanmakuSettingsSidePanel {
           isDanmakuEnabled: this.isDanmakuEnabled,
           isFullScreen: this.isFullScreen,
           settingsVersion: this.settingsVersion,
-          onToggleDanmaku: () => {
-            this.onToggleDanmaku()
+          onSetDanmakuEnabled: (enabled: boolean) => {
+            this.onSetDanmakuEnabled(enabled)
           },
           onPanelClose: () => {
             this.onPanelClose()
@@ -52,23 +51,6 @@ export struct DanmakuSettingsSidePanel {
       .border({ width: { left: 0.5 }, color: $r('app.color.divider_color') })
       .translate({ x: this.showPanel ? this.panelOffsetX : '100%' })
       .animation({ duration: 300, curve: Curve.EaseInOut })
-      .gesture(
-        PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 10 })
-          .onActionStart(() => {
-            this.panStartOffsetX = this.panelOffsetX
-          })
-          .onActionUpdate((event: GestureEvent) => {
-            if (event.offsetX > 0) {
-              this.panelOffsetX = this.panStartOffsetX + event.offsetX
-            }
-          })
-          .onActionEnd((event: GestureEvent) => {
-            if (event.offsetX > 50) {
-              this.onPanelClose()
-            }
-            this.panelOffsetX = 0
-          })
-      )
     }
     .width('100%')
     .height('100%')

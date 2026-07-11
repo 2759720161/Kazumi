@@ -10,7 +10,9 @@ import {
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildTitleBarOptions
+  buildTitleBarOptions,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import { RuleCatalogItem } from '../../models/RuleCatalogItem'
 import { RuleSource } from '../../models/RuleSource'
@@ -20,10 +22,7 @@ import { DefaultRuleSourceInitializer } from '../../utils/DefaultRuleSourceIniti
 import { SettingsChangeSignal } from '../../store/SettingsChangeSignal'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
-import { promptAction } from '@kit.ArkUI'
-import { common } from '@kit.AbilityKit'
-import { picker } from '@kit.CoreFileKit'
-import { fileIo as fs } from '@kit.CoreFileKit'
+import { promptAction, curves } from '@kit.ArkUI'
 
 const logger = new Logger('RuleShopPage')
 const PREF_RULE_REPOSITORY_URL = 'rule_repository_url'
@@ -33,6 +32,7 @@ const PREF_RULE_REPOSITORY_URL = 'rule_repository_url'
 struct RuleShopPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State catalogItems: RuleCatalogItem[] = []
   @State localRules: RuleSource[] = []
   @State loading: boolean = false
@@ -40,16 +40,20 @@ struct RuleShopPage {
   @State errorMessage: string = ''
   @State installingName: string = ''
   @State togglingName: string = ''
+  @State deletingName: string = ''
   @State showActionMenu: boolean = false
   @State showLinkImportDialog: boolean = false
+  @State showDeleteDialog: boolean = false
+  @State deleteTargetName: string = ''
   @State importUrl: string = ''
   @State operationMessage: string = ''
   @State isLinkImporting: boolean = false
-  @State isFileImporting: boolean = false
-  @State isExporting: boolean = false
   @State canRefreshRepository: boolean = false
   @State repositoryUrl: string = ''
   @State enableMenuRuleName: string = ''
+  @State backgroundInstalling: boolean = false
+  @State backgroundInstallDone: number = 0
+  @State backgroundInstallTotal: number = 0
   private scroller: Scroller = new Scroller()
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
 
@@ -95,6 +99,7 @@ struct RuleShopPage {
       }
       .width('100%')
       .height('100%')
+      .mode(NavigationMode.Stack)
       .titleBar(this.buildRepositoryTitleBarOptions())
       .bindToScrollable([this.scroller])
       .titleMode(HdsNavigationTitleMode.MINI)
@@ -107,6 +112,10 @@ struct RuleShopPage {
 
       if (this.showLinkImportDialog) {
         this.LinkImportDialogOverlay()
+      }
+
+      if (this.showDeleteDialog) {
+        this.DeleteRuleDialogOverlay()
       }
     }
     .width('100%')
@@ -199,7 +208,7 @@ struct RuleShopPage {
       Column() {
         ForEach(this.getSortedItems(), (item: RuleCatalogItem) => {
           this.CatalogItemRow(item)
-        }, (item: RuleCatalogItem) => item.name)
+        }, (item: RuleCatalogItem) => this.buildCatalogItemKey(item))
       }
       .width('100%')
     } else if (!this.loading && this.errorMessage.length === 0) {
@@ -259,6 +268,8 @@ struct RuleShopPage {
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     .margin({ bottom: 8 })
+    .animation({ duration: 280, curve: curves.springMotion() })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: curves.springMotion() }))
   }
 
   @Builder
@@ -312,7 +323,7 @@ struct RuleShopPage {
           .backgroundColor($r('app.color.button_accent_bg'))
           .fontColor($r('app.color.text_on_primary'))
           .padding({ left: 14, right: 14 })
-          .enabled(this.installingName.length === 0 && this.togglingName.length === 0)
+          .enabled(this.isRuleOperationIdle())
           .onClick(() => {
             this.onInstallRule(item.name)
           })
@@ -329,7 +340,7 @@ struct RuleShopPage {
         .backgroundColor($r('app.color.button_primary_bg'))
         .fontColor($r('app.color.text_on_primary'))
         .padding({ left: 14, right: 14 })
-        .enabled(this.installingName.length === 0 && this.togglingName.length === 0)
+        .enabled(this.isRuleOperationIdle())
         .onClick(() => {
           this.onInstallRule(item.name)
         })
@@ -358,7 +369,7 @@ struct RuleShopPage {
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
     .margin({ left: 8 })
-    .enabled(this.installingName.length === 0 && this.togglingName.length === 0)
+    .enabled(this.isRuleOperationIdle())
     .stateStyles({
       pressed: {
         .backgroundColor($r('app.color.category_menu_item_selected'))
@@ -384,6 +395,7 @@ struct RuleShopPage {
     Menu() {
       this.RuleEnableMenuItem('启用', true)
       this.RuleEnableMenuItem('关闭', false)
+      this.RuleDeleteMenuItem()
     }
     .width(132)
     .fontColor($r('app.color.text_primary'))
@@ -410,6 +422,27 @@ struct RuleShopPage {
     }
     .onClick(() => {
       this.setRuleEnabledByName(this.enableMenuRuleName, enabled)
+      this.enableMenuRuleName = ''
+    })
+  }
+
+  @Builder
+  RuleDeleteMenuItem(): void {
+    MenuItem() {
+      Row() {
+        Text('删除')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.status_error'))
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height(48)
+      .padding({ left: 14, right: 14 })
+      .borderRadius(14)
+    }
+    .onClick(() => {
+      this.requestDeleteRule(this.enableMenuRuleName)
       this.enableMenuRuleName = ''
     })
   }
@@ -524,6 +557,12 @@ struct RuleShopPage {
       })
     }
     return items
+  }
+
+  private buildCatalogItemKey(item: RuleCatalogItem): string {
+    const status = RuleCatalogService.getRuleStatus(item, this.localRules)
+    const enabled = this.isRuleEnabled(item.name) ? 'enabled' : 'disabled'
+    return `${item.name}_${item.version}_${status}_${enabled}`
   }
 
   private getRuleSortPriority(item: RuleCatalogItem): number {
@@ -704,6 +743,78 @@ struct RuleShopPage {
     }
   }
 
+  private isRuleOperationIdle(): boolean {
+    return this.installingName.length === 0 && this.togglingName.length === 0 && this.deletingName.length === 0
+  }
+
+  private requestDeleteRule(name: string): void {
+    const rule = this.findLocalRule(name)
+    if (rule === null) {
+      this.operationMessage = '规则源不存在'
+      return
+    }
+    this.deleteTargetName = rule.name
+    this.showDeleteDialog = true
+  }
+
+  private async confirmDeleteRule(): Promise<void> {
+    const rule = this.findLocalRule(this.deleteTargetName)
+    if (rule === null) {
+      this.showDeleteDialog = false
+      this.deleteTargetName = ''
+      this.operationMessage = '规则源不存在'
+      return
+    }
+    this.deletingName = rule.name
+    try {
+      await this.ruleSourceStore.deleteById(rule.id)
+      SettingsChangeSignal.notifyRuleSourceChanged()
+      await this.refreshCatalogAfterRuleMutation()
+      this.operationMessage = `${rule.name} 已删除`
+      promptAction.showToast({ message: `规则 ${rule.name} 已删除` })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.operationMessage = `删除失败: ${msg}`
+      logger.error('Delete rule failed: %{public}s', msg)
+    } finally {
+      this.deletingName = ''
+      this.deleteTargetName = ''
+      this.showDeleteDialog = false
+    }
+  }
+
+  private async refreshCatalogAfterRuleMutation(): Promise<void> {
+    this.localRules = await this.ruleSourceStore.getAll()
+    const repositoryUrl = await this.getSavedRepositoryUrl()
+    this.repositoryUrl = repositoryUrl
+    this.canRefreshRepository = repositoryUrl.length > 0
+    if (repositoryUrl.length === 0) {
+      this.catalogItems = this.mergeCatalogItems([], this.localRules)
+      return
+    }
+
+    try {
+      const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+      this.errorMessage = ''
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.error('Refresh catalog after rule mutation failed: %{public}s', msg)
+      this.catalogItems = this.mergeCatalogItems(this.getCatalogSnapshotWithoutLocalOnlyRules(), this.localRules)
+    }
+  }
+
+  private getCatalogSnapshotWithoutLocalOnlyRules(): RuleCatalogItem[] {
+    const result: RuleCatalogItem[] = []
+    for (let i = 0; i < this.catalogItems.length; i++) {
+      const item = this.catalogItems[i]
+      if (item.author !== '本地已安装' || this.findLocalRule(item.name) !== null) {
+        result.push(item)
+      }
+    }
+    return result
+  }
+
   @Builder
   ActionMenuOverlay(): void {
     Stack({ alignContent: Alignment.TopEnd }) {
@@ -718,14 +829,6 @@ struct RuleShopPage {
       Column() {
         this.ActionMenuItem('链接导入', () => {
           this.openLinkImportDialog('')
-        })
-        this.ActionMenuItem('导入规则', () => {
-          this.showActionMenu = false
-          this.importFromFile()
-        })
-        this.ActionMenuItem('导出规则', () => {
-          this.showActionMenu = false
-          this.exportRules()
         })
         if (this.canRefreshRepository) {
           this.ActionMenuItem('刷新仓库', () => {
@@ -777,7 +880,7 @@ struct RuleShopPage {
           .width('100%')
           .margin({ bottom: 14 })
 
-        TextInput({ placeholder: '输入规则 JSON 或 index.json 链接', text: this.importUrl })
+        TextInput({ placeholder: '粘贴 GitHub 仓库、index.json 或规则 JSON 链接', text: this.importUrl })
           .width('100%')
           .height(44)
           .onChange((value: string) => {
@@ -827,6 +930,84 @@ struct RuleShopPage {
     .zIndex(30)
   }
 
+  @Builder
+  DeleteRuleDialogOverlay(): void {
+    Column() {
+      Column() {
+        Text('删除规则')
+          .fontSize(22)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+          .margin({ bottom: 24 })
+
+        Text(`确定要删除规则「${this.deleteTargetName}」吗？删除后该规则不会参与播放源搜索，可重新从仓库安装。`)
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .lineHeight(26)
+          .width('100%')
+          .margin({ bottom: 26 })
+
+        Row() {
+          Text('取消')
+            .layoutWeight(1)
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Center)
+            .onClick(() => {
+              if (this.deletingName.length === 0) {
+                this.showDeleteDialog = false
+                this.deleteTargetName = ''
+              }
+            })
+
+          Divider()
+            .vertical(true)
+            .height(34)
+            .color($r('app.color.divider_color'))
+            .margin({ left: 4, right: 4 })
+
+          Text(this.deletingName.length > 0 ? '删除中...' : '删除')
+            .layoutWeight(1)
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.status_error'))
+            .textAlign(TextAlign.Center)
+            .onClick(() => {
+              if (this.deletingName.length === 0) {
+                this.confirmDeleteRule()
+              }
+            })
+        }
+        .width('100%')
+        .height(52)
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .padding({ left: 30, right: 30, top: 30, bottom: 20 })
+      .borderRadius(34)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .backgroundColor($r('app.color.overlay_modal_bg'))
+    .padding({ left: 20, right: 20, bottom: 28 })
+    .zIndex(40)
+    .onClick(() => {
+      if (this.deletingName.length === 0) {
+        this.showDeleteDialog = false
+        this.deleteTargetName = ''
+      }
+    })
+  }
+
   private openLinkImportDialog(url: string): void {
     this.importUrl = url
     this.showActionMenu = false
@@ -842,17 +1023,19 @@ struct RuleShopPage {
     this.isLinkImporting = true
     this.operationMessage = '正在从链接导入...'
     try {
-      let count = 0
       if (this.isRepositoryIndexUrl(url)) {
-        count = await DefaultRuleSourceInitializer.importFromCatalogUrl(url)
+        this.operationMessage = '正在加载规则仓库...'
+        const remoteItems = await this.connectRepository(url)
+        this.operationMessage = `仓库已连接，共 ${remoteItems.length} 条规则，正在后台安装`
+        this.showLinkImportDialog = false
+        this.installRepositoryRulesInBackground(url, remoteItems)
       } else {
-        count = await DefaultRuleSourceInitializer.importFromUrl(url)
+        const count = await DefaultRuleSourceInitializer.importFromUrl(url)
+        SettingsChangeSignal.notifyRuleSourceChanged()
+        await this.refreshLocalRulesAfterImport()
+        this.operationMessage = `已导入 ${count} 条规则`
+        this.showLinkImportDialog = false
       }
-      SettingsChangeSignal.notifyRuleSourceChanged()
-      await this.saveRepositoryStateIfNeeded(url)
-      this.operationMessage = `已导入 ${count} 条规则`
-      this.showLinkImportDialog = false
-      await this.loadCatalog()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.operationMessage = `链接导入失败: ${msg}`
@@ -862,40 +1045,78 @@ struct RuleShopPage {
     }
   }
 
-  private async importFromFile(): Promise<void> {
-    this.isFileImporting = true
-    this.operationMessage = '请选择规则 JSON 文件...'
+  private async connectRepository(url: string): Promise<RuleCatalogItem[]> {
+    const remoteItems = await RuleCatalogService.fetchCatalog(url)
+    await this.saveRepositoryStateIfNeeded(url)
+    this.localRules = await this.ruleSourceStore.getAll()
+    this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+    this.repositoryUrl = url
+    this.canRefreshRepository = true
+    this.errorMessage = ''
+    return remoteItems
+  }
+
+  private async installRepositoryRulesInBackground(repositoryUrl: string, remoteItems: RuleCatalogItem[]): Promise<void> {
+    if (this.backgroundInstalling) {
+      return
+    }
+    this.backgroundInstalling = true
+    this.backgroundInstallDone = 0
+    this.backgroundInstallTotal = this.countInstallableRules(remoteItems)
+    if (this.backgroundInstallTotal === 0) {
+      this.backgroundInstalling = false
+      this.operationMessage = '仓库规则已是最新'
+      return
+    }
+
+    let failed = 0
     try {
-      const context = getContext(this) as common.UIAbilityContext
-      const docViewPicker = new picker.DocumentViewPicker(context)
-      const documentSelectOptions = new picker.DocumentSelectOptions()
-      documentSelectOptions.maxSelectNumber = 1
-      const uris: Array<string> = await docViewPicker.select(documentSelectOptions)
-      if (uris.length === 0) {
-        this.operationMessage = '导入已取消'
-        return
+      for (let i = 0; i < remoteItems.length; i++) {
+        const item = remoteItems[i]
+        const status = RuleCatalogService.getRuleStatus(item, this.localRules)
+        if (status === 'installed') {
+          continue
+        }
+        const result = await RuleCatalogService.tryInstallRule(item.name, repositoryUrl)
+        if (result === 0) {
+          this.backgroundInstallDone++
+          this.localRules = await this.ruleSourceStore.getAll()
+          this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+          this.operationMessage = `后台安装规则 ${this.backgroundInstallDone}/${this.backgroundInstallTotal}`
+        } else {
+          failed++
+        }
       }
-      const file = fs.openSync(uris[0], fs.OpenMode.READ_ONLY)
-      const stat = fs.statSync(uris[0])
-      const buf = new ArrayBuffer(stat.size)
-      fs.readSync(file.fd, buf)
-      fs.closeSync(file)
-      const arr = new Uint8Array(buf)
-      let jsonStr = ''
-      for (let i = 0; i < arr.length; i++) {
-        jsonStr += String.fromCharCode(arr[i])
-      }
-      const count = await DefaultRuleSourceInitializer.importFromJson(jsonStr)
+      this.localRules = await this.ruleSourceStore.getAll()
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
       SettingsChangeSignal.notifyRuleSourceChanged()
-      this.operationMessage = `已导入 ${count} 条规则`
-      await this.loadCatalog()
+      this.operationMessage = failed > 0 ?
+        `后台安装完成，失败 ${failed} 条` :
+        `已安装 ${this.backgroundInstallDone} 条规则`
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.operationMessage = `文件导入失败: ${msg}`
-      logger.error('File import failed: %{public}s', msg)
+      this.operationMessage = `后台安装中断: ${msg}`
+      logger.error('Background install failed: %{public}s', msg)
     } finally {
-      this.isFileImporting = false
+      this.backgroundInstalling = false
+      this.backgroundInstallTotal = 0
+      this.backgroundInstallDone = 0
     }
+  }
+
+  private countInstallableRules(items: RuleCatalogItem[]): number {
+    let count = 0
+    for (let i = 0; i < items.length; i++) {
+      if (RuleCatalogService.getRuleStatus(items[i], this.localRules) !== 'installed') {
+        count++
+      }
+    }
+    return count
+  }
+
+  private async refreshLocalRulesAfterImport(): Promise<void> {
+    this.localRules = await this.ruleSourceStore.getAll()
+    this.catalogItems = this.mergeCatalogItems(this.catalogItems, this.localRules)
   }
 
   private async loadRepositoryState(): Promise<void> {
@@ -915,59 +1136,93 @@ struct RuleShopPage {
   }
 
   private normalizeRepositoryLink(url: string): string {
-    const normalized = url.trim().replace(/\/+$/, '')
+    const normalized = this.normalizeInputUrl(url)
     const githubPrefix = 'https://github.com/'
     if (normalized.startsWith(githubPrefix)) {
       const parts = normalized.substring(githubPrefix.length).split('/')
       if (parts.length === 2 && parts[0].length > 0 && parts[1].length > 0) {
         return `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/main/index.json`
       }
+      if (parts.length >= 5 && parts[0].length > 0 && parts[1].length > 0 && parts[2] === 'blob') {
+        const owner = parts[0]
+        const repo = parts[1]
+        const ref = parts[3]
+        const path = parts.slice(4).join('/')
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path}`
+      }
+      if (parts.length >= 3 && parts[0].length > 0 && parts[1].length > 0 && parts[2] === 'tree') {
+        const owner = parts[0]
+        const repo = parts[1]
+        const ref = parts.length >= 4 && parts[3].length > 0 ? parts[3] : 'main'
+        const folder = parts.length > 4 ? parts.slice(4).join('/') + '/' : ''
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${folder}index.json`
+      }
+    }
+
+    const rawGithubPrefix = 'https://raw.githubusercontent.com/'
+    if (normalized.startsWith(rawGithubPrefix)) {
+      const parts = normalized.substring(rawGithubPrefix.length).split('/')
+      if (parts.length === 3 && parts[0].length > 0 && parts[1].length > 0 && parts[2].length > 0) {
+        return `${normalized}/index.json`
+      }
+      if (parts.length === 5 && parts[2] === 'refs' && parts[3] === 'heads' &&
+        parts[0].length > 0 && parts[1].length > 0 && parts[4].length > 0) {
+        return `${normalized}/index.json`
+      }
+    }
+
+    const jsDelivrGithubPrefix = 'https://cdn.jsdelivr.net/gh/'
+    if (normalized.startsWith(jsDelivrGithubPrefix)) {
+      const rest = normalized.substring(jsDelivrGithubPrefix.length)
+      const parts = rest.split('/')
+      if (parts.length === 2 && parts[0].length > 0 && parts[1].length > 0) {
+        return `${jsDelivrGithubPrefix}${parts[0]}/${parts[1]}@main/index.json`
+      }
+      if (parts.length >= 2 && parts[0].length > 0 && parts[1].length > 0 &&
+        parts[1].indexOf('@') > 0 && !this.jsDelivrPathHasFile(parts)) {
+        return `${normalized}/index.json`
+      }
     }
     return normalized
   }
 
+  private jsDelivrPathHasFile(parts: string[]): boolean {
+    if (parts.length <= 2) {
+      return false
+    }
+    const last = parts[parts.length - 1]
+    return last.indexOf('.') > 0
+  }
+
   private isRepositoryIndexUrl(url: string): boolean {
-    return url.trim().replace(/\/+$/, '').endsWith('/index.json')
+    return this.normalizeInputUrl(url).endsWith('/index.json')
+  }
+
+  private normalizeInputUrl(input: string): string {
+    let text = input.trim()
+    const markdownStart = text.indexOf('](')
+    if (text.startsWith('[') && markdownStart > 0 && text.endsWith(')')) {
+      text = text.substring(markdownStart + 2, text.length - 1).trim()
+    }
+    if ((text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith("'") && text.endsWith("'")) ||
+      (text.startsWith('<') && text.endsWith('>'))) {
+      text = text.substring(1, text.length - 1).trim()
+    }
+    const hashIndex = text.indexOf('#')
+    if (hashIndex >= 0) {
+      text = text.substring(0, hashIndex)
+    }
+    const queryIndex = text.indexOf('?')
+    if (queryIndex >= 0) {
+      text = text.substring(0, queryIndex)
+    }
+    return text.replace(/\/+$/, '')
   }
 
   private async getSavedRepositoryUrl(): Promise<string> {
     const prefs = PreferencesStore.getInstance()
     return (await prefs.getString(PREF_RULE_REPOSITORY_URL, '')).trim()
-  }
-
-  private async exportRules(): Promise<void> {
-    this.isExporting = true
-    this.operationMessage = '正在导出规则...'
-    try {
-      const rules = await this.ruleSourceStore.getAll()
-      if (rules.length === 0) {
-        this.operationMessage = '没有可导出的规则'
-        return
-      }
-      const jsonArr: Object[] = []
-      for (let i = 0; i < rules.length; i++) {
-        jsonArr.push(rules[i].toJSON())
-      }
-      const context = getContext(this) as common.UIAbilityContext
-      const documentSaveOptions = new picker.DocumentSaveOptions()
-      documentSaveOptions.newFileNames = ['kazumi_rules.json']
-      const docViewPicker = new picker.DocumentViewPicker(context)
-      const uris: Array<string> = await docViewPicker.save(documentSaveOptions)
-      if (uris.length > 0) {
-        const file = fs.openSync(uris[0], fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY)
-        fs.writeSync(file.fd, JSON.stringify(jsonArr))
-        fs.closeSync(file)
-        this.operationMessage = `已导出 ${rules.length} 条规则`
-      } else {
-        this.operationMessage = '导出已取消'
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.operationMessage = `导出失败: ${msg}`
-      logger.error('Export rules failed: %{public}s', msg)
-    } finally {
-      this.isExporting = false
-    }
   }
 
   private buildRepositoryMoreIcon(): HdsNavigationIconOptions {
@@ -1001,7 +1256,7 @@ struct RuleShopPage {
   }
 
   private buildRepositoryTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('规则仓库')
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('规则仓库', this.hdsMaterialLevel)
     base.content = this.buildRepositoryTitleBarContent()
     return base
   }

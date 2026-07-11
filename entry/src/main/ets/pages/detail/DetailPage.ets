@@ -11,6 +11,7 @@ import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { EpisodeData } from '../../models/EpisodeData'
 import { HistoryStore } from '../../store/HistoryStore'
 import { HistoryRecord } from '../../models/HistoryRecord'
+import { ThemeColorStore } from '../../services/ThemeColorStore'
 import { Logger } from '../../utils/Logger'
 import { LengthMetrics, router } from '@kit.ArkUI'
 import {
@@ -27,8 +28,12 @@ import {
   getTopSpacerHeight,
   getEffectiveTopSafeHeight,
   getBottomSpacerHeight,
-  buildImmersiveTitleBarStyle
+  buildImmersiveTitleBarStyle,
+  isWideDetailLayout,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
+import { ContinuationDetailParams, ContinuationPlayerParams, ContinuationState } from '../../utils/ContinuationState'
 
 const logger = new Logger('DetailPage')
 const COLLAPSED_SYNOPSIS_TEXT_HEIGHT: number = 198
@@ -52,6 +57,8 @@ class InitialEpisodeSelection {
 export struct DetailPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
+  @StorageLink('screenWidthVp') screenWidthVp: number = 0
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State animeName: string = ''
   @State animeCover: string = ''
   @State animeCoverFallback: string = ''
@@ -77,6 +84,12 @@ export struct DetailPage {
   @State tagsExpanded: boolean = false
   @State isSubjectDetailLoading: boolean = false
   @State preserveSourceSheetOnDisappear: boolean = false
+  @State sectionThemeBackground: string = '#00000000'
+  @State sectionThemeBorder: string = '#00000000'
+  @State tagThemeBackground: string = ''
+  @State tagThemeBorder: string = ''
+  @State sectionThemeKey: string = ''
+  @State currentCoverImage: string = ''
 
 
   private animeUrl: string = ''
@@ -110,8 +123,11 @@ export struct DetailPage {
       if (params['bangumiId'] !== undefined) this.bangumiId = params['bangumiId'] as number
       if (params['autoOpenSourceSheet'] !== undefined) this.autoOpenSourceSheet = params['autoOpenSourceSheet'] as boolean
     }
+    this.markContinuationState()
     this.loadDetail()
+    this.refreshSectionTheme()
     this.fetchSubjectDetail()
+    this.currentCoverImage = this.selectBestCoverImage()
 
     if (this.autoOpenSourceSheet) {
       setTimeout(() => {
@@ -138,44 +154,11 @@ export struct DetailPage {
     Stack({ alignContent: Alignment.Bottom }) {
 
       HdsNavigation() {
-        Scroll(this.contentScroller) {
-          Stack({ alignContent: Alignment.TopStart }) {
-            DetailHeroBackground({
-              cover: this.animeCover,
-              coverFallback: this.animeCoverFallback,
-              bangumiCover: this.animeBangumiCover,
-              topSafeHeight: getEffectiveTopSafeHeight(this.topSafeHeight)
-            })
-
-            Column() {
-              Blank()
-                .height(getTopSpacerHeight(this.topSafeHeight) + 12)
-                .width('100%')
-                .hitTestBehavior(HitTestMode.None)
-
-              DetailTitleBlock({
-                title: this.animeName,
-                originalName: this.animeOriginalName,
-                airDate: $animeAirDate
-              })
-
-              this.ContentPanel()
-
-              Blank()
-                .height(getBottomSpacerHeight(this.bottomSafeHeight))
-                .width('100%')
-                .hitTestBehavior(HitTestMode.None)
-            }
-              .width('100%')
-          }
-          .width('100%')
+        if (this.isTabletWideLayout()) {
+          this.TabletDetailContent()
+        } else {
+          this.PhoneDetailContent()
         }
-        .width('100%')
-        .height('100%')
-        .edgeEffect(EdgeEffect.Spring)
-        .scrollBar(BarState.Off)
-        .clip(false)
-
       }
       .width('100%')
       .height('100%')
@@ -187,7 +170,10 @@ export struct DetailPage {
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
       .bindToScrollable([this.contentScroller])
       .bindSheet($$this.showSourceSheet, this.SourceSheetContent, {
-        height: '84%',
+        height: this.getSourceSheetHeight(),
+        width: this.getSourceSheetWidth(),
+        preferType: this.getSourceSheetType(),
+        enableOutsideInteractive: false,
         dragBar: true,
         showClose: false,
         radius: LengthMetrics.vp(24),
@@ -216,6 +202,134 @@ export struct DetailPage {
     .width('100%')
     .height(LayoutPolicy.matchParent)
     .background($r('app.color.page_background_media'))
+  }
+
+  @Builder
+  private PhoneDetailContent() {
+    Scroll(this.contentScroller) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        DetailHeroBackground({
+          cover: this.animeCover,
+          coverFallback: this.animeCoverFallback,
+          bangumiCover: this.animeBangumiCover,
+          topSafeHeight: getEffectiveTopSafeHeight(this.topSafeHeight)
+        })
+
+        Column() {
+          Blank()
+            .height(getTopSpacerHeight(this.topSafeHeight) + 12)
+            .width('100%')
+            .hitTestBehavior(HitTestMode.None)
+
+          DetailTitleBlock({
+            title: this.animeName,
+            originalName: this.animeOriginalName,
+            airDate: $animeAirDate
+          })
+
+          this.ContentPanel()
+
+          Blank()
+            .height(getBottomSpacerHeight(this.bottomSafeHeight))
+            .width('100%')
+            .hitTestBehavior(HitTestMode.None)
+        }
+          .width('100%')
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .height('100%')
+    .edgeEffect(EdgeEffect.Spring)
+    .scrollBar(BarState.Off)
+    .clip(false)
+  }
+
+  @Builder
+  private TabletDetailContent() {
+    Row() {
+      Column() {
+        Blank()
+          .height(getTopSpacerHeight(this.topSafeHeight) + 12)
+          .width('100%')
+          .hitTestBehavior(HitTestMode.None)
+
+        Image(this.getCoverImageSrc())
+          .draggable(false)
+          .width('100%')
+          .aspectRatio(118 / 168)
+          .objectFit(this.getCoverImageSrc().length > 0 ? ImageFit.Cover : ImageFit.Contain)
+          .borderRadius(12)
+          .alt($r('app.media.ic_placeholder'))
+          .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
+          .onError(() => {
+            this.tryNextCoverImage()
+          })
+      }
+      .width('36%')
+      .height('100%')
+      .alignItems(HorizontalAlign.Center)
+      .padding({ left: 24, right: 8 })
+
+      Scroll(this.contentScroller) {
+        Column() {
+          Blank()
+            .height(getTopSpacerHeight(this.topSafeHeight) + 12)
+            .width('100%')
+            .hitTestBehavior(HitTestMode.None)
+
+          DetailTitleBlock({
+            title: this.animeName,
+            originalName: this.animeOriginalName,
+            airDate: $animeAirDate,
+            isWideLayout: true
+          })
+
+          this.TabletMetricsSection()
+          this.SynopsisSection()
+          this.TagSection()
+
+          Blank()
+            .height(getBottomSpacerHeight(this.bottomSafeHeight))
+            .width('100%')
+            .hitTestBehavior(HitTestMode.None)
+        }
+        .width('100%')
+      }
+      .layoutWeight(1)
+      .height('100%')
+      .padding({ left: 8, right: 24 })
+      .edgeEffect(EdgeEffect.Spring)
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+    .alignItems(VerticalAlign.Top)
+  }
+
+  private isTabletWideLayout(): boolean {
+    return isWideDetailLayout(this.screenWidthVp)
+  }
+
+  private getSourceSheetHeight(): Length {
+    return this.isTabletWideLayout() ? '92%' : '84%'
+  }
+
+  private getSourceSheetWidth(): Dimension {
+    if (!this.isTabletWideLayout()) {
+      return '100%'
+    }
+    if (this.screenWidthVp >= 1200) {
+      return Math.min(this.screenWidthVp - 64, 1180)
+    }
+    if (this.screenWidthVp >= 840) {
+      return Math.min(this.screenWidthVp - 32, 960)
+    }
+    return '96%'
+  }
+
+  private getSourceSheetType(): SheetType {
+    return this.isTabletWideLayout() ? SheetType.CENTER : SheetType.BOTTOM
   }
 
   @Builder
@@ -258,127 +372,188 @@ export struct DetailPage {
   }
 
   @Builder
-  private SynopsisSection() {
+  private TabletMetricsSection() {
     Column() {
-      Column() {
-        Text('简介')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_title'))
-          .width('100%')
-          .margin({ bottom: 16 })
+      Row() {
+        Column() {
+          Text(this.animeRatingScore > 0 ? this.animeRatingScore.toFixed(1) : '-')
+            .fontSize(26)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.rating_star'))
+            .maxLines(1)
+          Text('Bangumi 评分')
+            .fontSize(11)
+            .fontColor($r('app.color.text_subtitle'))
+            .margin({ top: 4 })
+        }
+        .alignItems(HorizontalAlign.Center)
 
         Column() {
-          if (this.isSynopsisSkeletonVisible()) {
-            this.SynopsisSkeleton()
-          } else {
-            Text(this.animeDesc.length > 0 ? this.animeDesc : '暂无简介')
-              .fontSize(15)
-              .fontWeight(FontWeight.Regular)
-              .fontColor(this.animeDesc.length > 0 ? $r('app.color.text_body') : $r('app.color.text_placeholder'))
-              .lineHeight(24)
-              .width('100%')
-              .maxLines(this.descExpanded ? 50 : 5)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
+          Text(this.animeRank > 0 ? `#${this.animeRank}` : '-')
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_title'))
+            .maxLines(1)
+          Text('排名')
+            .fontSize(11)
+            .fontColor($r('app.color.text_subtitle'))
+            .margin({ top: 4 })
         }
-        .height(this.descExpanded ? undefined : 150)
-        .alignItems(HorizontalAlign.Start)
-        .width('100%')
+        .alignItems(HorizontalAlign.Center)
 
-        Row() {
-          Blank()
-
-          if (this.animeDesc.length > 120) {
-            Text(this.descExpanded ? '收起' : '展开全文')
-              .fontSize(14)
-              .fontColor($r('app.color.accent_blue'))
-              .padding({ left: 8, right: 8, top: 8, bottom: 8 })
-              .onClick(() => {
-                this.descExpanded = !this.descExpanded
-              })
-          }
+        Column() {
+          Text(this.animeEps > 0 ? `${this.animeEps} 集` : '未知')
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_title'))
+            .maxLines(1)
+          Text('集数')
+            .fontSize(11)
+            .fontColor($r('app.color.text_subtitle'))
+            .margin({ top: 4 })
         }
-        .height(40)
-        .alignItems(VerticalAlign.Center)
-        .justifyContent(FlexAlign.End)
-        .width('100%')
+        .alignItems(HorizontalAlign.Center)
+
+        Column() {
+          Text(this.getVotesText())
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_title'))
+            .maxLines(1)
+          Text('评分人数')
+            .fontSize(11)
+            .fontColor($r('app.color.text_subtitle'))
+            .margin({ top: 4 })
+        }
+        .alignItems(HorizontalAlign.Center)
       }
       .width('100%')
-      .padding(20)
-      .borderRadius(22)
-      .backgroundColor($r('app.color.card_surface_blue'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: 0.5, color: $r('app.color.border_specular') })
-      .shadow({ radius: 18, color: $r('app.color.shadow_surface'), offsetY: 7 })
+      .justifyContent(FlexAlign.SpaceEvenly)
+      .padding({ left: 8, right: 8, top: 12, bottom: 12 })
+      .borderRadius(14)
+      .backgroundColor(this.sectionThemeBackground)
+      .border({ width: 0.5, color: this.sectionThemeBorder })
     }
     .width('100%')
-    .padding({ top: 12, bottom: 16 })
+    .margin({ top: 4, bottom: 8 })
+  }
+
+  @Builder
+  private SynopsisSection() {
+    Column() {
+      Text('简介')
+        .fontSize(20)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_title'))
+        .width('100%')
+        .margin({ bottom: 14 })
+
+      Column() {
+        if (this.isSynopsisSkeletonVisible()) {
+          this.SynopsisSkeleton()
+        } else {
+          Text(this.animeDesc.length > 0 ? this.animeDesc : '暂无简介')
+            .fontSize(15)
+            .fontWeight(FontWeight.Regular)
+            .fontColor(this.animeDesc.length > 0 ? $r('app.color.text_body') : $r('app.color.text_placeholder'))
+            .lineHeight(24)
+            .width('100%')
+            .maxLines(this.descExpanded ? 50 : 5)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
+      .height(this.descExpanded ? undefined : 150)
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+
+      Row() {
+        Blank()
+
+        if (this.animeDesc.length > 120) {
+          Text(this.descExpanded ? '收起' : '展开全文')
+            .fontSize(14)
+            .fontColor($r('app.color.accent_blue'))
+            .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+            .onClick(() => {
+              this.descExpanded = !this.descExpanded
+            })
+        }
+      }
+      .height(36)
+      .alignItems(VerticalAlign.Center)
+      .justifyContent(FlexAlign.End)
+      .width('100%')
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 14, bottom: 10 })
+    .borderRadius(18)
+    .backgroundColor(this.sectionThemeBackground)
+    .border({ width: 0.5, color: this.sectionThemeBorder })
+    .margin({ top: 10 })
   }
 
   @Builder
   private TagSection() {
     Column() {
-      Column() {
-        Text('标签')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_title'))
-          .width('100%')
-          .margin({ bottom: 18 })
+      Text('标签')
+        .fontSize(20)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_title'))
+        .width('100%')
+        .margin({ bottom: 16 })
 
-        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-          if (this.isTagSkeletonVisible()) {
-            this.TagSkeleton()
-          } else {
-            ForEach(this.tagsExpanded ? this.animeTags : this.animeTags.slice(0, 12), (tag: string) => {
-              Row() {
-                 Text(tag)
-                   .fontSize(13)
-                   .fontWeight(FontWeight.Medium)
-                   .fontColor($r('app.color.text_title'))
-                   .maxLines(1)
-                   .textOverflow({ overflow: TextOverflow.Ellipsis })
-               }
-               .height(30)
-               .padding({ left: 10, right: 10 })
-               .border({ width: 0.5, color: $r('app.color.border_tag') })
-               .borderRadius(15)
-               .backgroundColor($r('app.color.tag_chip_bg'))
-               .margin({ right: 10, bottom: 12 })
-            }, (tag: string) => tag)
-
-            if (this.animeTags.length > 12) {
-              Row() {
-                Text(this.tagsExpanded ? '收起' : '更多')
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.rating_star'))
-              }
-              .height(40)
-              .padding({ left: 16, right: 16 })
-              .borderRadius(20)
-              .backgroundColor($r('app.color.surface_button_bg'))
-              .margin({ right: 10, bottom: 12 })
-              .onClick(() => {
-                this.tagsExpanded = !this.tagsExpanded
-              })
+      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+        if (this.isTagSkeletonVisible()) {
+          this.TagSkeleton()
+        } else {
+          ForEach(this.tagsExpanded ? this.animeTags : this.animeTags.slice(0, 12), (tag: string) => {
+            Row() {
+              Text(tag)
+                .fontSize(13)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_on_primary'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
             }
+            .height(30)
+            .padding({ left: 10, right: 10 })
+            .border({ width: 0.5, color: this.getTagThemeBorder() })
+            .borderRadius(15)
+            .backgroundColor(this.getTagThemeBackground())
+            .margin({ right: 10, bottom: 12 })
+            .onClick(() => {
+              this.openTagSearch(tag)
+            })
+          }, (tag: string) => tag)
+
+          if (this.animeTags.length > 12) {
+            Row() {
+              Text(this.tagsExpanded ? '收起' : '更多')
+                .fontSize(13)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_on_primary'))
+            }
+            .height(30)
+            .padding({ left: 10, right: 10 })
+            .borderRadius(15)
+            .backgroundColor(this.getTagThemeBackground())
+            .border({ width: 0.5, color: this.getTagThemeBorder() })
+            .margin({ right: 10, bottom: 12 })
+            .onClick(() => {
+              this.tagsExpanded = !this.tagsExpanded
+            })
           }
         }
-        .width('100%')
-        .height(this.tagsExpanded ? undefined : 206)
       }
       .width('100%')
-      .padding(20)
-      .borderRadius(22)
-      .backgroundColor($r('app.color.card_surface_blue'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: 0.5, color: $r('app.color.border_specular') })
-      .shadow({ radius: 18, color: $r('app.color.shadow_surface'), offsetY: 7 })
+      .height(this.tagsExpanded ? undefined : 206)
     }
     .width('100%')
-    .padding({ top: 0, bottom: 0 })
+    .padding({ left: 14, right: 14, top: 14, bottom: 2 })
+    .borderRadius(18)
+    .backgroundColor(this.sectionThemeBackground)
+    .border({ width: 0.5, color: this.sectionThemeBorder })
+    .margin({ top: 12 })
   }
 
   @Builder
@@ -469,34 +644,62 @@ export struct DetailPage {
       this.preserveSourceSheetOnDisappear = true
       this.showSourceSheet = true
     }
+    const playerParams = new ContinuationPlayerParams()
+    playerParams.episodeUrl = selected.episode.url
+    playerParams.ruleSourceId = selectedSourceId
+    playerParams.animeName = this.animeName
+    playerParams.episodeName = selected.episode.name
+    playerParams.animeId = animeId
+    playerParams.animeCover = this.animeCover
+    playerParams.animeUrl = selectedAnimeUrl
+    playerParams.sourceId = selectedSourceId
+    playerParams.episodesJson = JSON.stringify(source.roads[selected.roadIndex].episodes)
+    playerParams.currentEpisodeIndex = selected.episodeIndex
+    playerParams.roadsJson = JSON.stringify(source.roads)
+    playerParams.selectedRoadIndex = selected.roadIndex
+    playerParams.bangumiId = this.bangumiId > 0 ? this.bangumiId : 0
+    playerParams.bangumiCover = this.animeBangumiCover
+    playerParams.coverFallback = this.animeCoverFallback
+    playerParams.animeDesc = this.animeDesc
+    playerParams.sourceName = this.sourceName
+    playerParams.historyPositionMs = historyPositionMs
+    ContinuationState.markPlayer(playerParams, historyPositionMs)
     router.pushUrl({
       url: 'pages/player/PlayerPage',
-      params: {
-        episodeUrl: selected.episode.url,
-        ruleSourceId: selectedSourceId,
-        animeName: this.animeName,
-        episodeName: selected.episode.name,
-        animeId: animeId,
-        animeCover: this.animeCover,
-        animeUrl: selectedAnimeUrl,
-        sourceId: selectedSourceId,
-        episodesJson: JSON.stringify(source.roads[selected.roadIndex].episodes),
-        currentEpisodeIndex: selected.episodeIndex,
-        roadsJson: JSON.stringify(source.roads),
-        selectedRoadIndex: selected.roadIndex,
-        bangumiId: this.bangumiId > 0 ? this.bangumiId : 0,
-        bangumiCover: this.animeBangumiCover,
-        coverFallback: this.animeCoverFallback,
-        animeDesc: this.animeDesc,
-        sourceName: this.sourceName,
-        historyPositionMs: historyPositionMs
-      }
+      params: playerParams
     }).catch((err: Error) => {
       if (preserveSourceSheet) {
         this.preserveSourceSheetOnDisappear = false
       }
       logger.error('router.pushUrl PlayerPage failed: %{public}s', err.message)
     })
+  }
+
+  private markContinuationState(): void {
+    ContinuationState.markDetail(this.buildContinuationParams())
+  }
+
+  private buildContinuationParams(): ContinuationDetailParams {
+    const params = new ContinuationDetailParams()
+    params.animeName = this.animeName
+    params.animeCover = this.animeCover
+    params.animeCoverFallback = this.animeCoverFallback
+    params.animeBangumiCover = this.animeBangumiCover
+    params.animeDesc = this.animeDesc
+    params.animeOriginalName = this.animeOriginalName
+    params.animeAirDate = this.animeAirDate
+    params.animeRatingScore = this.animeRatingScore
+    params.animeRank = this.animeRank
+    params.animeTags = JSON.stringify(this.animeTags)
+    params.animeVotes = this.animeVotes
+    params.animeVotesCount = JSON.stringify(this.animeVotesCount)
+    params.animeAirWeekday = this.animeAirWeekday
+    params.animeEps = this.animeEps
+    params.animeUrl = this.animeUrl
+    params.sourceName = this.sourceName
+    params.sourceId = this.ruleSourceId
+    params.bangumiId = this.bangumiId
+    return params
   }
 
   private isHistorySelectionMatched(history: HistoryRecord, selected: InitialEpisodeSelection): boolean {
@@ -601,6 +804,19 @@ export struct DetailPage {
     }
   }
 
+  private openTagSearch(rawTag: string): void {
+    const tag = rawTag.trim()
+    if (tag.length === 0) {
+      return
+    }
+    router.pushUrl({
+      url: 'pages/search/SearchPage',
+      params: {
+        tag: tag,
+        searchMode: 1
+      }
+    })
+  }
 
   private parseTags(raw: string): string[] {
     if (raw.length === 0) return []
@@ -644,6 +860,8 @@ export struct DetailPage {
         if (this.animeVotesCount.length === 0 && subject.votesCount.length > 0) this.animeVotesCount = subject.votesCount
         logger.info('Detail subject applied: %{public}s eps=%{public}d airDate=%{public}s',
           this.animeName, this.animeEps, this.animeAirDate)
+        this.currentCoverImage = this.selectBestCoverImage()
+        this.refreshSectionTheme()
       }
     } catch (err) {
       logger.warn('Fetch subject detail failed: %{public}s',
@@ -659,6 +877,70 @@ export struct DetailPage {
 
   private isTagSkeletonVisible(): boolean {
     return this.isSubjectDetailLoading && this.animeTags.length === 0
+  }
+
+  private refreshSectionTheme(): void {
+    const urls = this.getThemeSourceUrls()
+    const key = urls.join('|')
+    if (key.length === 0) {
+      this.clearSectionTheme()
+      return
+    }
+    if (key === this.sectionThemeKey && this.sectionThemeBackground !== '#00000000') {
+      return
+    }
+    this.sectionThemeKey = key
+    ThemeColorStore.getInstance().getThemeColor(urls).then((color: string) => {
+      if (this.sectionThemeKey !== key) {
+        return
+      }
+      if (color.length === 0) {
+        this.clearSectionTheme()
+        return
+      }
+      this.sectionThemeBackground = this.withAlpha(color, '12')
+      this.sectionThemeBorder = this.withAlpha(color, '28')
+      this.tagThemeBackground = this.withAlpha(color, '1C')
+      this.tagThemeBorder = this.withAlpha(color, '34')
+    }).catch((err: Error) => {
+      logger.warn('Refresh detail section theme failed: %{public}s', err.message)
+    })
+  }
+
+  private clearSectionTheme(): void {
+    this.sectionThemeBackground = '#00000000'
+    this.sectionThemeBorder = '#00000000'
+    this.tagThemeBackground = ''
+    this.tagThemeBorder = ''
+  }
+
+  private getThemeSourceUrls(): string[] {
+    const urls: string[] = []
+    if (this.animeBangumiCover.trim().length > 0) {
+      urls.push(this.animeBangumiCover)
+    }
+    if (this.animeCover.trim().length > 0) {
+      urls.push(this.animeCover)
+    }
+    if (this.animeCoverFallback.trim().length > 0) {
+      urls.push(this.animeCoverFallback)
+    }
+    return urls
+  }
+
+  private getTagThemeBackground(): ResourceColor {
+    return $r('app.color.accent_blue')
+  }
+
+  private getTagThemeBorder(): ResourceColor {
+    return $r('app.color.accent_blue')
+  }
+
+  private withAlpha(color: string, alpha: string): string {
+    if (color.length !== 7 || !color.startsWith('#') || alpha.length !== 2) {
+      return '#00000000'
+    }
+    return `#${alpha}${color.substring(1)}`
   }
 
   private shouldReplaceText(value: string): boolean {
@@ -697,7 +979,7 @@ export struct DetailPage {
   }
 
   private buildDetailTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle()
+    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     const collectIconColor: ResourceColor = CollectType.isFavorite(this.currentCollectType) ?
       $r('app.color.status_error') : $r('sys.color.icon_primary')
     if (style.originalStyle?.contentStyle?.menuStyle) {
@@ -722,6 +1004,48 @@ export struct DetailPage {
       enableComponentSafeArea: false,
       avoidLayoutSafeArea: true
     }
+  }
+
+  private selectBestCoverImage(): string {
+    if (this.animeBangumiCover.length > 0) {
+      return this.animeBangumiCover
+    }
+    if (this.animeCover.length > 0) {
+      return this.animeCover
+    }
+    return this.animeCoverFallback
+  }
+
+  private getCoverImageSrc(): string {
+    return this.currentCoverImage.length > 0 ? this.currentCoverImage : ''
+  }
+
+  private tryNextCoverImage(): void {
+    if (this.currentCoverImage === this.animeBangumiCover && this.animeCover.length > 0) {
+      this.currentCoverImage = this.animeCover
+    } else if (this.currentCoverImage === this.animeCover && this.animeCoverFallback.length > 0) {
+      this.currentCoverImage = this.animeCoverFallback
+    } else {
+      this.currentCoverImage = ''
+    }
+  }
+
+  private getVotesText(): string {
+    if (this.animeVotes <= 0) {
+      return '-'
+    }
+    if (this.animeVotes >= 100000000) {
+      return `${this.formatCompactNumber(this.animeVotes / 100000000)}亿`
+    }
+    if (this.animeVotes >= 10000) {
+      return `${this.formatCompactNumber(this.animeVotes / 10000)}万`
+    }
+    return `${this.animeVotes}`
+  }
+
+  private formatCompactNumber(value: number): string {
+    const fixed = value.toFixed(1)
+    return fixed.endsWith('.0') ? fixed.substring(0, fixed.length - 2) : fixed
   }
 
 }

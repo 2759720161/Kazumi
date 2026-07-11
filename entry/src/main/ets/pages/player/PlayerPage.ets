@@ -3,6 +3,7 @@ import { EpisodePanelItem } from '../../components/player/EpisodePanel'
 import { SniffErrorOverlay } from '../../components/player/SniffErrorOverlay'
 import { GestureLayer } from '../../components/player/GestureLayer'
 import { DanmakuCanvas } from '../../components/player/DanmakuCanvas'
+import { BusinessError } from '@kit.BasicServicesKit'
 import { PlaybackRoad } from '../../models/PlaybackRoad'
 import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode, VideoAspectModeHelper } from '../../core/player/IPlayerEngine'
 import { PlayerEngineFactory } from '../../core/player/PlayerEngineFactory'
@@ -26,13 +27,23 @@ import { AnimeItem } from '../../models/AnimeItem'
 
 import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
 import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker'
+import { CastEventCallbacks, CastMediaInfo, CastSessionManager } from '../../services/CastSessionManager'
+import { HistorySyncService } from '../../services/HistorySyncService'
+import { PiPCallbacks, PiPManager } from '../../services/PiPManager'
 import { Logger } from '../../utils/Logger'
-import { router, window } from '@kit.ArkUI'
+import { router, window, PiPWindow } from '@kit.ArkUI'
 import { audio } from '@kit.AudioKit'
 import { common } from '@kit.AbilityKit'
+import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
 
 import { webview } from '@kit.ArkWeb'
-import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
+import { getBottomSpacerHeight, getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
+import {
+  PLAYER_AUTO_FULLSCREEN_DEFAULT,
+  PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
+  PREFS_KEY_PLAYER_AUTO_FULLSCREEN
+} from '../../utils/PlayerAutoFullscreen'
+import { ContinuationPlayerParams, ContinuationState } from '../../utils/ContinuationState'
 
 const logger = new Logger('PlayerPage')
 
@@ -68,6 +79,8 @@ export struct PlayerPage {
   @State episodeName: string = ''
   private bangumiId: number = 0
   @State isPlaying: boolean = false
+  @State isPlayerLoading: boolean = false
+  @State isPlayerBuffering: boolean = false
   @State positionMs: number = 0
   @State durationMs: number = 0
   @State bufferMs: number = 0
@@ -81,6 +94,7 @@ export struct PlayerPage {
   @State selectedRoadIndex: number = 0
   @State visibleRoadIndex: number = 0
   @State currentEpisodeIndex: number = -1
+  @State episodeReverseOrder: boolean = false
   @State selectedPanelTab: number = 0
   @State sniffStatus: string = 'idle'
   @State sniffMessage: string = ''
@@ -91,7 +105,12 @@ export struct PlayerPage {
   @State snifferWebVisible: boolean = true
   @State screenBrightness: number = 0.5
   @State isFullScreen: boolean = false
+  @State isPiPActive: boolean = false
+  @State private videoWidth: number = 0
+  @State private videoHeight: number = 0
+  @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   private playerEngine: IPlayerEngine | null = null
+  private xComponentController: XComponentController | null = null
   @State hasEngine: boolean = false
   private danmakuManager: DanmakuManager | null = null
   @State isDanmakuEnabled: boolean = true
@@ -109,6 +128,7 @@ export struct PlayerPage {
   @State currentAspectMode: VideoAspectMode = VideoAspectMode.contain
   @State showAspectModePanel: boolean = false
   @State showRoadPickerPopup: boolean = false
+  @State showSideRoadPickerPopup: boolean = false
   @State sequentialPlayEpisodeIndex: number = -1
   @State resolveLogs: ResolveLogEvent[] = []
 
@@ -121,6 +141,8 @@ export struct PlayerPage {
   private historyStore: HistoryStore = new HistoryStore()
   private collectController: CollectController = new CollectController()
   private sourceResolver: VideoSourceResolver = new VideoSourceResolver()
+  private castSessionManager: CastSessionManager = CastSessionManager.getInstance()
+  private pipManager: PiPManager = PiPManager.getInstance()
   private logListener: ((event: ResolveLogEvent) => void) | null = null
   private webController: webview.WebviewController = new webview.WebviewController()
   private backgroundWebController: webview.WebviewController = new webview.WebviewController()
@@ -162,11 +184,19 @@ export struct PlayerPage {
   private audioManager: audio.AudioManager | null = null
   private mediaVolumeMinLevel: number = -1
   private mediaVolumeMaxLevel: number = -1
+  private fullscreenRestoreOrientation: window.Orientation = window.Orientation.UNSPECIFIED
+  private autoFullscreenActive: boolean = false
+  private lastPlayerAreaWidth: number = 0
+  private lastPlayerAreaHeight: number = 0
+  private isPageAlive: boolean = false
+  @State isAnimatingFullscreen: boolean = false
+  @State nonVideoOpacity: number = 1
 
   aboutToAppear(): void {
+    this.isPageAlive = true
     this.danmakuManager = new DanmakuManager()
     this.danmakuManager.init().then(() => {
-      if (this.danmakuManager !== null) {
+      if (this.isPageAlive && this.danmakuManager !== null) {
         this.isDanmakuEnabled = this.danmakuManager.getIsDanmakuEnabled()
         this.startDanmakuLoadingPoll()
       }
@@ -199,6 +229,7 @@ export struct PlayerPage {
       this.episodes = this.toEpisodePanelItems(this.roads[this.selectedRoadIndex])
     }
     this.visibleRoadIndex = this.selectedRoadIndex
+    this.markContinuationState()
 
     if (this.videoUrl.length > 0) {
       const options = new PlaybackOptions()
@@ -208,6 +239,8 @@ export struct PlayerPage {
         this.historySeekMs = -1
       }
       this.playbackOptions = options
+      this.isPlayerLoading = true
+      this.isPlayerBuffering = false
     }
 
     this.sourceResolver.setWorkerWebController(1, this.webController)
@@ -228,15 +261,25 @@ export struct PlayerPage {
       this.episodeUrl.length > 0 ? 'ok' : 'empty', this.videoUrl.length > 0 ? 'ok' : 'empty',
       this.ruleSourceId, String(this.pendingSniff))
 
+    this.initializeCastSession()
+    this.initializePiP()
+    this.loadSystemMediaVolume()
     this.startAutoHideTimer()
     this.setKeepScreenOn(true)
     this.loadAspectModePreference()
+    this.loadPlayerAutoFullscreenPreference().then(() => {
+      this.applyPlayerAutoFullscreenRuntimeState()
+    }).catch((_err: Error) => {
+      this.applyPlayerAutoFullscreenRuntimeState()
+    })
     this.episodeGridColumns = this.getEpisodeGridColumns()
   }
 
   aboutToDisappear(): void {
+    this.isPageAlive = false
     this.setKeepScreenOn(false)
     this.saveHistory()
+    this.stopPlaybackBeforeLeaving()
     this.sourceResolver.cancel()
     if (this.logListener !== null) {
       this.sourceResolver.removeLogListener(this.logListener)
@@ -256,9 +299,14 @@ export struct PlayerPage {
     if (this.isFullScreen) {
       this.setFullScreenMode(false)
     }
+    this.setAutoRotationEnabled(false)
+    this.pipManager.destroyPiP()
   }
 
   onBackPress(): boolean {
+    if (this.isAnimatingFullscreen) {
+      return true
+    }
     if (this.isFullScreen) {
       this.toggleFullScreen()
       return true
@@ -268,23 +316,11 @@ export struct PlayerPage {
 
   build() {
     Stack() {
-      Column() {
-        if (!this.isFullScreen) {
-          Column()
-            .width('100%')
-            .height(getEffectiveTopSafeHeight(this.topSafeHeight))
-            .backgroundColor($r('app.color.page_background_media'))
-        }
-
-        this.VideoSection()
-
-        if (!this.isFullScreen) {
-          this.PanelSection()
-        }
+      if (this.shouldUseTabletPlayerLayout()) {
+        this.TabletPlayerLayout()
+      } else {
+        this.StackedPlayerLayout()
       }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
 
       if (this.snifferWebVisible) {
         this.ForegroundSnifferWeb()
@@ -294,6 +330,10 @@ export struct PlayerPage {
     .width('100%')
     .height(LayoutPolicy.matchParent)
     .background($r('app.color.page_background_media'))
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      this.handlePlayerAreaChange(this.normalizeAreaSize(newArea.width as number),
+        this.normalizeAreaSize(newArea.height as number))
+    })
     .bindSheet($$this.showDanmakuSettingsSheet, this.buildDanmakuSettingsSheet, {
       height: '50%',
       showClose: false,
@@ -309,6 +349,69 @@ export struct PlayerPage {
   }
 
   @Builder
+  private StackedPlayerLayout() {
+    Column() {
+      Column()
+        .width('100%')
+        .height(this.isFullScreen ? 0 : getEffectiveTopSafeHeight(this.topSafeHeight))
+        .opacity(this.nonVideoOpacity)
+        .backgroundColor($r('app.color.page_background_media'))
+
+      this.VideoSection()
+
+      Column() {
+        this.PanelSection()
+      }
+      .width('100%')
+      .height(this.isFullScreen ? 0 : undefined)
+      .layoutWeight(this.isFullScreen ? 0 : 1)
+      .opacity(this.nonVideoOpacity)
+      .clip(true)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
+  }
+
+  @Builder
+  private TabletPlayerLayout() {
+    Column() {
+      Column()
+        .width('100%')
+        .height(this.isFullScreen ? 0 : getEffectiveTopSafeHeight(this.topSafeHeight))
+        .opacity(this.nonVideoOpacity)
+        .backgroundColor($r('app.color.page_background_media'))
+
+      Row() {
+        Column() {
+          this.VideoSection()
+        }
+        .layoutWeight(1)
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(Color.Black)
+
+        if (!this.isFullScreen) {
+          Column() {
+            this.PanelSection()
+          }
+          .width(this.getTabletPlayerPanelWidth())
+          .height('100%')
+          .clip(true)
+          .backgroundColor($r('app.color.page_background_media'))
+          .border({ width: { left: 0.5 }, color: $r('app.color.divider_color') })
+        }
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
+  }
+
+  @Builder
   private ForegroundSnifferWeb() {
     Web({ src: '', controller: this.webController })
       .width(1)
@@ -316,6 +419,7 @@ export struct PlayerPage {
       .visibility(Visibility.None)
       .javaScriptAccess(true)
       .domStorageAccess(true)
+      .mixedMode(MixedMode.All)
       .javaScriptProxy({
         object: new JsBridgeProxy(this.sourceResolver, 1),
         name: 'jsBridge',
@@ -379,6 +483,7 @@ export struct PlayerPage {
       .visibility(Visibility.None)
       .javaScriptAccess(true)
       .domStorageAccess(true)
+      .mixedMode(MixedMode.All)
       .javaScriptProxy({
         object: new JsBridgeProxy(this.sourceResolver, 2),
         name: 'jsBridge',
@@ -465,8 +570,8 @@ export struct PlayerPage {
       isDanmakuEnabled: this.isDanmakuEnabled,
       isFullScreen: this.isFullScreen,
       settingsVersion: this.danmakuSettingsOpenVersion,
-      onToggleDanmaku: () => {
-        this.toggleDanmaku()
+      onSetDanmakuEnabled: (enabled: boolean) => {
+        this.setDanmakuEnabled(enabled)
       },
       onPanelClose: () => {
         this.showDanmakuSettingsSheet = false
@@ -486,11 +591,11 @@ export struct PlayerPage {
       this.VideoLayerContent()
     }
     .width('100%')
-    .height(this.isFullScreen ? '100%' : undefined)
-    .aspectRatio(this.isFullScreen ? undefined : 16 / 9)
-    .layoutWeight(this.isFullScreen ? 1 : 0)
+    .aspectRatio(this.isFullScreen || this.shouldUseTabletPlayerLayout() ? undefined : 16 / 9)
+    .layoutWeight(this.isFullScreen || this.shouldUseTabletPlayerLayout() ? 1 : 0)
     .backgroundColor(Color.Black)
     .clip(true)
+    .renderFit(RenderFit.RESIZE_FILL)
   }
 
   @Builder
@@ -519,13 +624,22 @@ export struct PlayerPage {
             this.handlePlayerState(state)
           },
           onPlayerReady: () => {
-            logger.info('Player ready')
+            if (this.isPageAlive) {
+              logger.info('Player ready')
+            }
           },
           onEngineReady: (engine: IPlayerEngine) => {
+            if (!this.isPageAlive) {
+              engine.stop()
+              return
+            }
             this.playerEngine = engine
             this.hasEngine = true
             if (this.danmakuManager !== null) {
             this.danmakuManager.init().then(() => {
+              if (!this.isPageAlive) {
+                return
+              }
               this.isDanmakuEnabled = this.danmakuManager!.getIsDanmakuEnabled()
               if (this.danmakuManager !== null && this.animeName.length > 0) {
                 this.danmakuManager.loadDanmakuForEpisode(this.animeName, this.getCurrentEpisodeNo(), this.bangumiId, this.episodeName, this.sourceId, this.episodeUrl)
@@ -533,6 +647,9 @@ export struct PlayerPage {
               }
               })
             }
+          },
+          onSurfaceReady: (controller: XComponentController) => {
+            this.xComponentController = controller
           }
         })
 
@@ -553,6 +670,9 @@ export struct PlayerPage {
           .height('100%')
           .zIndex(2)
 
+        if (this.shouldShowPlayerLoadingOverlay()) {
+          this.PlayerLoadingOverlay()
+        }
       }
 
       if (this.sniffStatus === 'success' || this.sniffStatus === 'idle') {
@@ -619,8 +739,8 @@ export struct PlayerPage {
           onPanelClose: () => {
             this.closeDanmakuSettings()
           },
-          onToggleDanmaku: () => {
-            this.toggleDanmaku()
+          onSetDanmakuEnabled: (enabled: boolean) => {
+            this.setDanmakuEnabled(enabled)
           },
           onPauseAutoHide: () => {
             this.pauseAutoHideTimer()
@@ -733,21 +853,8 @@ export struct PlayerPage {
       }
 
       if (!this.isFullScreen) {
-        if (this.isDanmakuLoading) {
-          this.DanmakuLoadingButton()
-        } else {
-          this.DanmakuToggleButton(true)
-        }
+        this.CastPickerToolButton()
       }
-
-      this.TopSymbolButton(
-        CollectType.isFavorite(this.currentCollectType) ? CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart'),
-        CollectType.isFavorite(this.currentCollectType) ? '已收藏' : '收藏',
-        () => {
-          this.toggleCollect()
-        },
-        CollectType.isFavorite(this.currentCollectType)
-      )
 
       this.TopSymbolButton(this.showMoreMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
         this.showMoreMenu ? '收起' : '更多', () => {
@@ -1010,9 +1117,7 @@ export struct PlayerPage {
 
         this.SpeedToolButton()
 
-        this.ImageToolButton($r('app.media.ic_public_view_list'), '选集', () => {
-          this.openEpisodePanel()
-        })
+        this.PiPToolButton()
 
         this.SymbolToolButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '全屏', () => {
           this.toggleFullScreen()
@@ -1052,6 +1157,10 @@ export struct PlayerPage {
         .layoutWeight(1)
 
       this.SpeedToolButton()
+
+      this.CastPickerToolButton()
+
+      this.PiPToolButton()
 
       this.ImageToolButton($r('app.media.ic_public_view_list'), '选集', () => {
         this.openEpisodePanel()
@@ -1145,7 +1254,7 @@ export struct PlayerPage {
   @Builder
   private DanmakuToggleButton(isTopBar: boolean) {
     Row() {
-      SymbolGlyph(this.isDanmakuEnabled ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off  '))
+      SymbolGlyph(this.isDanmakuEnabled ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off'))
         .fontSize(isTopBar ? 22 : 23)
         .renderingStrategy(this.isDanmakuEnabled ? SymbolRenderingStrategy.MULTIPLE_COLOR : SymbolRenderingStrategy.SINGLE)
         .fontColor(this.isDanmakuEnabled ?
@@ -1169,6 +1278,7 @@ export struct PlayerPage {
   private ImageToolButton(icon: Resource, accessibilityLabel: string, action: () => void, active: boolean = false) {
     Row() {
       Image(icon)
+        .draggable(false)
         .width(23)
         .height(23)
         .objectFit(ImageFit.Contain)
@@ -1183,6 +1293,40 @@ export struct PlayerPage {
         this.showControlsWithAutoHide()
       })
   }
+
+  @Builder
+  private CastPickerToolButton() {
+    Row() {
+      AVCastPicker({
+        normalColor: '#F2FFFFFF',
+        activeColor: '#F2FFFFFF',
+        onStateChange: (state: AVCastPickerState) => {
+          if (state === AVCastPickerState.STATE_APPEARING) {
+            this.pauseAutoHideTimer()
+            this.syncCastMediaInfo()
+          } else if (state === AVCastPickerState.STATE_DISAPPEARING) {
+            this.showControlsWithAutoHide()
+          }
+        }
+      })
+        .width(24)
+        .height(24)
+    }
+    .width(44)
+    .height(40)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  private PiPToolButton() {
+    if (PiPManager.isPiPSupported() && this.hasEngine) {
+      this.ImageToolButton($r('app.media.ic_pip'), '画中画', () => {
+        this.startPiP()
+      })
+    }
+  }
+
   @Builder
   private DanmakuLoadingButton() {
     Row() {
@@ -1225,9 +1369,17 @@ export struct PlayerPage {
   private PanelSection() {
     Tabs({ index: this.selectedPanelTab, controller: this.panelTabsController }) {
       TabContent() {
-        this.EpisodePanelBody()
+        Column() {
+          this.EpisodePanelBody()
+        }
+        .width('100%')
+        .height('100%')
+        .alignItems(HorizontalAlign.Start)
+        .justifyContent(FlexAlign.Start)
       }
       .padding(0)
+      .width('100%')
+      .height('100%')
       .tabBar(SubTabBarStyle.of('选集')
         .indicator({
           color: $r('app.color.accent_blue'),
@@ -1247,9 +1399,17 @@ export struct PlayerPage {
       )
 
       TabContent() {
-        this.DanmakuSettingsTabBody()
+        Column() {
+          this.DanmakuSettingsTabBody()
+        }
+        .width('100%')
+        .height('100%')
+        .alignItems(HorizontalAlign.Start)
+        .justifyContent(FlexAlign.Start)
       }
       .padding(0)
+      .width('100%')
+      .height('100%')
       .tabBar(SubTabBarStyle.of('弹幕')
         .indicator({
           color: $r('app.color.accent_blue'),
@@ -1269,6 +1429,7 @@ export struct PlayerPage {
       )
     }
     .barMode(BarMode.Fixed)
+    .fadingEdge(true)
     .barPosition(BarPosition.Start)
     .barWidth('100%')
     .barHeight(56)
@@ -1293,6 +1454,8 @@ export struct PlayerPage {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
+
+          this.EpisodeOrderButton()
 
           if (this.roads.length > 1) {
             Row() {
@@ -1323,7 +1486,7 @@ export struct PlayerPage {
 
         if (this.getVisibleEpisodes().length > 0) {
           Grid() {
-            ForEach(this.getVisibleEpisodes(), (ep: EpisodePanelItem, index?: number) => {
+            ForEach(this.getDisplayedEpisodes(), (ep: EpisodePanelItem, index?: number) => {
               GridItem() {
                 this.EpisodeCard(ep, index)
               }
@@ -1356,15 +1519,21 @@ export struct PlayerPage {
           .justifyContent(FlexAlign.Center)
         }
 
-        Column()
-          .height(this.bottomSafeHeight + 80)
+        Blank()
+          .height(this.getEpisodePanelBottomSpacerHeight())
+          .width('100%')
+          .hitTestBehavior(HitTestMode.None)
       }
       .width('100%')
-      .height('100%')
+      .alignItems(HorizontalAlign.Start)
       .justifyContent(FlexAlign.Start)
     }
+    .width('100%')
+    .height('100%')
     .layoutWeight(1)
+    .edgeEffect(EdgeEffect.Spring)
     .scrollBar(BarState.Off)
+    .align(Alignment.Top)
     .padding(0)
     .margin(0)
   }
@@ -1388,16 +1557,11 @@ export struct PlayerPage {
               .fontSize(21)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_title'))
-
-            Text(this.getSelectedRoadName())
-              .fontSize(13)
-              .fontColor($r('app.color.text_hint'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .margin({ top: 3 })
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
+
+          this.EpisodeOrderButton()
 
           Button({ type: ButtonType.Circle }) {
             SymbolGlyph($r('sys.symbol.xmark'))
@@ -1430,13 +1594,13 @@ export struct PlayerPage {
           .width('100%')
           .padding({ left: 18, right: 14, top: 0, bottom: 8 })
           .onClick(() => {
-            this.showRoadPickerPopup = !this.showRoadPickerPopup
+            this.showSideRoadPickerPopup = !this.showSideRoadPickerPopup
           })
-          .bindMenu(this.showRoadPickerPopup, this.RoadPickerPopupContent, {
+          .bindMenu(this.showSideRoadPickerPopup, this.RoadPickerPopupContent, {
             placement: Placement.BottomLeft,
             showInSubWindow: false,
             onDisappear: () => {
-              this.showRoadPickerPopup = false
+              this.showSideRoadPickerPopup = false
             }
           })
         }
@@ -1444,36 +1608,8 @@ export struct PlayerPage {
         Scroll() {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             if (this.getVisibleEpisodes().length > 0) {
-              ForEach(this.getVisibleEpisodes(), (ep: EpisodePanelItem, index?: number) => {
-                Stack({ alignContent: Alignment.Bottom }) {
-                  Row() {
-                    if (this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex) {
-                      SymbolGlyph($r('sys.symbol.play_fill'))
-                        .fontSize(12)
-                        .fontColor([$r('app.color.text_on_primary')])
-                        .margin({ right: 4 })
-                    }
-                    Text(this.getEpisodeDisplayName(ep, index))
-                      .fontSize(14)
-                      .fontWeight(this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex ? FontWeight.Bold : FontWeight.Medium)
-                      .fontColor(this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex ? $r('app.color.text_on_primary') : $r('app.color.text_episode_unselected'))
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      .layoutWeight(1)
-                  }
-                  .height(44)
-                  .width('100%')
-                  .padding({ left: 12, right: 8 })
-                  .borderRadius(10)
-                  .backgroundColor(this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex ? $r('app.color.accent_blue') : $r('app.color.episode_item_unselected_bg'))
-                }
-                .width('48%')
-                .margin({ right: '2%', bottom: 8 })
-                .onClick(() => {
-                  if (index !== undefined) {
-                    this.onEpisodeSelected(index)
-                  }
-                })
+              ForEach(this.getDisplayedEpisodes(), (ep: EpisodePanelItem, index?: number) => {
+                this.SideEpisodeCard(ep, index)
               }, (ep: EpisodePanelItem, index?: number) => `player_side_ep_${ep.url}_${index}`)
             } else {
               Row() {
@@ -1489,10 +1625,13 @@ export struct PlayerPage {
           .width('100%')
           .padding({ left: 16, right: 8, top: 8, bottom: this.bottomSafeHeight + 24 })
         }
+        .width('100%')
+        .height('100%')
         .layoutWeight(1)
         .scrollBar(BarState.Off)
+        .align(Alignment.Top)
       }
-      .width('42%')
+      .width(this.getPlayerSidePanelWidth())
       .height('100%')
       .backgroundColor($r('app.color.player_side_panel_surface'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
@@ -1540,8 +1679,8 @@ export struct PlayerPage {
       isDanmakuEnabled: this.isDanmakuEnabled,
       isFullScreen: this.isFullScreen,
       settingsVersion: this.danmakuSettingsOpenVersion,
-      onToggleDanmaku: () => {
-        this.toggleDanmaku()
+      onSetDanmakuEnabled: (enabled: boolean) => {
+        this.setDanmakuEnabled(enabled)
       },
       onPanelClose: () => {
         this.selectedPanelTab = 0
@@ -1559,16 +1698,16 @@ export struct PlayerPage {
   private EpisodeCard(ep: EpisodePanelItem, index?: number) {
     Stack({ alignContent: Alignment.Bottom }) {
       Row() {
-        if (this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex) {
+        if (this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex) {
           SymbolGlyph($r('sys.symbol.play_fill'))
             .fontSize(12)
             .fontColor([$r('app.color.text_on_primary')])
             .margin({ right: 4 })
         }
-        Text(this.getEpisodeDisplayName(ep, index))
+        Text(this.getEpisodeDisplayName(ep, this.getActualEpisodeIndex(index)))
           .fontSize(14)
-          .fontWeight(this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex ? FontWeight.Bold : FontWeight.Medium)
-          .fontColor(this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex ? $r('app.color.text_on_primary') : $r('app.color.text_episode_unselected'))
+          .fontWeight(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? $r('app.color.text_on_primary') : $r('app.color.text_episode_unselected'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
@@ -1576,9 +1715,9 @@ export struct PlayerPage {
       .height(52)
       .padding({ left: 12, right: 8 })
       .borderRadius(12)
-      .backgroundColor(this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex ? $r('app.color.accent_blue') : $r('app.color.episode_item_unselected_bg'))
+      .backgroundColor(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? $r('app.color.accent_blue') : $r('app.color.episode_item_unselected_bg'))
 
-      if (this.visibleRoadIndex === this.selectedRoadIndex && index === this.currentEpisodeIndex && this.positionMs > 0 && this.durationMs > 0) {
+      if (this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex && this.positionMs > 0 && this.durationMs > 0) {
         Row()
           .width(`${Math.min(this.positionMs / this.durationMs * 100, 100)}%`)
           .height(2)
@@ -1591,18 +1730,73 @@ export struct PlayerPage {
     .borderRadius(12)
     .clip(true)
     .onClick(() => {
-      if (index !== undefined) {
-        this.onEpisodeSelected(index)
+      const actualIndex = this.getActualEpisodeIndex(index)
+      if (actualIndex >= 0) {
+        this.onEpisodeSelected(actualIndex)
       }
     })
     .gesture(LongPressGesture({ duration: 500 })
       .onAction(() => {
-        if (index !== undefined) {
-          this.onEpisodeSelected(index)
-          this.showHudText(`从${this.getEpisodeDisplayName(ep, index)}开始连续播放`)
+        const actualIndex = this.getActualEpisodeIndex(index)
+        if (actualIndex >= 0) {
+          this.onEpisodeSelected(actualIndex)
+          this.showHudText(`从${this.getEpisodeDisplayName(ep, actualIndex)}开始连续播放`)
         }
       })
     )
+  }
+
+  @Builder
+  private SideEpisodeCard(ep: EpisodePanelItem, index?: number) {
+    Stack({ alignContent: Alignment.Bottom }) {
+      Row() {
+        if (this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex) {
+          SymbolGlyph($r('sys.symbol.play_fill'))
+            .fontSize(12)
+            .fontColor([$r('app.color.text_on_primary')])
+            .margin({ right: 4 })
+        }
+        Text(this.getEpisodeDisplayName(ep, this.getActualEpisodeIndex(index)))
+          .fontSize(14)
+          .fontWeight(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? $r('app.color.text_on_primary') : $r('app.color.text_episode_unselected'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+      }
+      .height(44)
+      .width('100%')
+      .padding({ left: 12, right: 8 })
+      .borderRadius(10)
+      .backgroundColor(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? $r('app.color.accent_blue') : $r('app.color.episode_item_unselected_bg'))
+    }
+    .width('48%')
+    .margin({ right: '2%', bottom: 8 })
+    .onClick(() => {
+      const actualIndex = this.getActualEpisodeIndex(index)
+      if (actualIndex >= 0) {
+        this.onEpisodeSelected(actualIndex)
+      }
+    })
+  }
+
+  @Builder
+  private EpisodeOrderButton() {
+    Row() {
+      Text(this.episodeReverseOrder ? '倒序' : '正序')
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_hint'))
+    }
+    .height(32)
+    .padding({ left: 12, right: 12 })
+    .borderRadius(16)
+    .backgroundColor($r('app.color.episode_item_selected_bg'))
+    .margin({ left: 8 })
+    .onClick(() => {
+      this.episodeReverseOrder = !this.episodeReverseOrder
+      this.showControlsWithAutoHide()
+    })
   }
 
   @Builder
@@ -1639,6 +1833,7 @@ export struct PlayerPage {
           if (index !== undefined) {
             this.onRoadSelected(index)
             this.showRoadPickerPopup = false
+            this.showSideRoadPickerPopup = false
           }
         })
       }, (road: PlaybackRoad, index?: number) => `road_menu_${index}`)
@@ -1690,6 +1885,48 @@ export struct PlayerPage {
     .width('100%')
     .height('100%')
     .zIndex(1)
+  }
+
+  @Builder
+  private PlayerLoadingOverlay() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column() {
+        LoadingProgress()
+          .width(40)
+          .height(40)
+          .color($r('app.color.accent_blue_light'))
+        Text(this.getPlayerLoadingTitle())
+          .fontSize(17)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_on_primary'))
+          .margin({ top: 16 })
+        Text(this.getPlayerLoadingSubtitle())
+          .fontSize(12)
+          .fontColor('#BFFFFFFF')
+          .margin({ top: 6 })
+      }
+      .padding({ left: 26, right: 26, top: 24, bottom: 24 })
+      .borderRadius(22)
+      .backgroundColor('#66000000')
+      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .border({ width: 0.5, color: '#33FFFFFF' })
+      .shadow({ radius: 28, color: '#99000000', offsetY: 10 })
+    }
+    .width('100%')
+    .height('100%')
+    .zIndex(3)
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  private getPlayerLoadingTitle(): string {
+    return this.isPlayerBuffering ? '正在缓冲视频' : '正在加载视频'
+  }
+
+  private getPlayerLoadingSubtitle(): string {
+    if (this.isPlayerBuffering) {
+      return '网络较慢，请稍候'
+    }
+    return '已找到播放地址，正在初始化播放器'
   }
 
   private nextSpeed(): void {
@@ -1764,6 +2001,29 @@ export struct PlayerPage {
     }
   }
 
+  private setDanmakuEnabled(enabled: boolean): void {
+    if (this.isDanmakuEnabled === enabled) {
+      return
+    }
+    if (this.danmakuManager === null) {
+      this.isDanmakuEnabled = enabled
+      this.showHudText(enabled ? '弹幕已开启' : '弹幕已关闭')
+      return
+    }
+
+    const managerEnabled = this.danmakuManager.getIsDanmakuEnabled()
+    if (managerEnabled !== enabled) {
+      this.isDanmakuEnabled = this.danmakuManager.toggleDanmaku()
+    } else {
+      this.isDanmakuEnabled = enabled
+    }
+    this.showHudText(this.isDanmakuEnabled ? '弹幕已开启' : '弹幕已关闭')
+
+    if (this.isDanmakuEnabled && !this.danmakuManager.hasDanmakuData()) {
+      this.requestCurrentDanmakuLoad()
+    }
+  }
+
   private requestCurrentDanmakuLoad(): void {
     if (this.danmakuManager === null || this.animeName.length === 0) {
       return
@@ -1799,6 +2059,8 @@ export struct PlayerPage {
 
   private openEpisodePanel(): void {
     this.selectedPanelTab = 0
+    this.showRoadPickerPopup = false
+    this.showSideRoadPickerPopup = false
     if (this.isFullScreen) {
       this.showMoreMenu = false
       this.showDanmakuMatchPanel = false
@@ -1811,6 +2073,8 @@ export struct PlayerPage {
 
   private closeEpisodeSidePanel(): void {
     this.episodePanelOffsetX = 0
+    this.showRoadPickerPopup = false
+    this.showSideRoadPickerPopup = false
     this.showEpisodeSidePanel = false
     this.startAutoHideTimer()
   }
@@ -1844,6 +2108,8 @@ export struct PlayerPage {
   private async startSniffing(): Promise<void> {
     if (this.episodeUrl.length === 0) {
       this.sniffStatus = 'error'
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffMessage = '无效的剧集地址'
       return
     }
@@ -1864,6 +2130,8 @@ export struct PlayerPage {
     }
 
     this.sniffStatus = 'sniffing'
+    this.isPlayerLoading = false
+    this.isPlayerBuffering = false
     this.sniffMessage = ''
     this.sniffRetryCount = 0
 
@@ -1885,6 +2153,8 @@ export struct PlayerPage {
       const msg = err instanceof Error ? err.message : String(err)
       logger.error('Sniff failed: %{public}s', msg)
       this.sniffStatus = 'error'
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffMessage = '嗅探异常: ' + msg
     }
   }
@@ -1909,20 +2179,32 @@ export struct PlayerPage {
       }
       this.playbackOptions = options
       this.videoUrl = result.videoUrl
+      this.isPlayerLoading = true
+      this.isPlayerBuffering = false
       this.sniffStatus = 'success'
+      this.syncCastMediaInfo()
       logger.info('Sniff success: %{public}s [%{public}s] in %{public}dms',
         result.videoUrl.substring(0, 80), result.videoType, result.sniffDurationMs)
+      await this.saveHistory()
       this.prepareNextEpisode()
     } else if (result.errorCode === ResolveErrorCode.Captcha) {
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffStatus = 'captcha'
       this.sniffMessage = result.errorMessage
     } else if (result.errorCode === ResolveErrorCode.Timeout) {
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffStatus = 'timeout'
       this.sniffMessage = result.errorMessage
     } else if (result.errorCode === ResolveErrorCode.Network) {
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffStatus = 'error'
       this.sniffMessage = result.errorMessage.length > 0 ? result.errorMessage : '网络错误'
     } else {
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffStatus = 'error'
       this.sniffMessage = result.errorMessage.length > 0 ? result.errorMessage : '未找到视频流'
     }
@@ -2030,17 +2312,37 @@ export struct PlayerPage {
   }
 
   private handlePlayerState(state: PlayerState): void {
+    if (!this.isPageAlive) {
+      return
+    }
     this.isPlaying = state.playing
+    this.updatePlayerLoadingState(state)
+    this.isPlayerBuffering = this.resolvePlayerBufferingState(state)
     if (!this.isDraggingProgress) {
       this.positionMs = state.positionMs
     }
     this.durationMs = state.durationMs
     this.bufferMs = state.bufferMs
+    this.markContinuationState()
     if (Math.abs(this.speed - state.speed) > 0.001) {
       this.speed = state.speed
       this.speedLabel = this.formatSpeedLabel(state.speed)
     }
-    this.volume = state.volume
+    this.castSessionManager.updatePlaybackState(state.positionMs, state.playing)
+    if (state.durationMs > 0) {
+      this.castSessionManager.updateDuration(state.durationMs)
+    }
+    if (state.videoWidth > 0 && state.videoHeight > 0 &&
+      (state.videoWidth !== this.videoWidth || state.videoHeight !== this.videoHeight)) {
+      this.videoWidth = state.videoWidth
+      this.videoHeight = state.videoHeight
+    }
+    if (this.pipManager.isActive()) {
+      this.pipManager.updatePlaybackState(state.playing)
+      if (state.videoWidth > 0 && state.videoHeight > 0) {
+        this.pipManager.updateContentSize(state.videoWidth, state.videoHeight)
+      }
+    }
 
     if (this.danmakuManager !== null) {
       this.danmakuManager.onPlayerStateUpdate(state)
@@ -2058,12 +2360,16 @@ export struct PlayerPage {
           this.playbackRetryCount, this.maxPlaybackRetryCount)
         this.videoUrl = ''
         this.playbackOptions = new PlaybackOptions()
+        this.isPlayerLoading = false
+        this.isPlayerBuffering = false
         this.sniffStatus = 'sniffing'
         this.sniffMessage = ''
         this.startSniffing()
         return
       }
       this.sniffStatus = 'error'
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.sniffMessage = state.error
     }
 
@@ -2085,14 +2391,76 @@ export struct PlayerPage {
     }
   }
 
+  private updatePlayerLoadingState(state: PlayerState): void {
+    if (state.stateName === 'error' || state.completed ||
+      state.stateName === 'stopped' || state.stateName === 'released') {
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
+      return
+    }
+
+    if (state.playing || state.stateName === 'playing' || state.positionMs > 0) {
+      this.isPlayerLoading = false
+      return
+    }
+
+    if (this.videoUrl.length === 0 || (this.sniffStatus !== 'success' && this.sniffStatus !== 'idle')) {
+      this.isPlayerLoading = false
+      return
+    }
+
+    if (state.stateName === 'creating' || state.stateName === 'preparing' ||
+      state.stateName === 'initialized' || state.stateName === 'prepared' || state.buffering) {
+      this.isPlayerLoading = true
+    }
+  }
+
+  private resolvePlayerBufferingState(state: PlayerState): boolean {
+    if (!state.buffering || this.isPlayerLoading) {
+      return false
+    }
+    if (this.videoUrl.length === 0 || (this.sniffStatus !== 'success' && this.sniffStatus !== 'idle')) {
+      return false
+    }
+    if (state.stateName === 'error' || state.completed ||
+      state.stateName === 'stopped' || state.stateName === 'released') {
+      return false
+    }
+    return state.playing || state.stateName === 'playing' || state.positionMs > 0 || state.durationMs > 0
+  }
+
+  private shouldShowPlayerLoadingOverlay(): boolean {
+    return (this.isPlayerLoading || this.isPlayerBuffering) &&
+      this.videoUrl.length > 0 &&
+      (this.sniffStatus === 'success' || this.sniffStatus === 'idle')
+  }
+
+  private stopPlaybackBeforeLeaving(): void {
+    this.isPlaying = false
+    this.isPlayerLoading = false
+    this.isPlayerBuffering = false
+    this.castSessionManager.updatePlaybackState(this.positionMs, false)
+    if (this.playerEngine !== null) {
+      try {
+        this.playerEngine.stop()
+      } catch (err) {
+        logger.warn('Stop player before leaving failed')
+      }
+    }
+    this.playerEngine = null
+    this.hasEngine = false
+  }
+
   private togglePlayPause(): void {
     if (this.hasEngine && this.playerEngine !== null) {
       const nextPlaying = !this.isPlaying
       this.isPlaying = nextPlaying
       if (!nextPlaying) {
         this.playerEngine.pause()
+        this.castSessionManager.sendPause()
       } else {
         this.playerEngine.play()
+        this.castSessionManager.sendPlay()
       }
     }
   }
@@ -2115,6 +2483,10 @@ export struct PlayerPage {
 
   private getBottomControlOffset(): number {
     return this.isFullScreen ? this.bottomSafeHeight + 112 : 64
+  }
+
+  private getEpisodePanelBottomSpacerHeight(): number {
+    return getBottomSpacerHeight(this.bottomSafeHeight) + 16
   }
 
   private getControlAnimationDuration(): number {
@@ -2190,12 +2562,33 @@ export struct PlayerPage {
       const manager = this.getAudioManager()
       const minLevel = await this.getMediaVolumeMinLevel(manager)
       const maxLevel = await this.getMediaVolumeMaxLevel(manager)
+      if (maxLevel <= minLevel) {
+        logger.warn('Invalid system media volume range: %{public}d-%{public}d', minLevel, maxLevel)
+        return
+      }
       const targetLevel = Math.round(minLevel + normalizedVolume * (maxLevel - minLevel))
       await manager.setVolume(audio.AudioVolumeType.MEDIA, targetLevel)
       logger.info('Apply system media volume: level=%{public}d range=%{public}d-%{public}d',
         targetLevel, minLevel, maxLevel)
     } catch (err) {
       logger.warn('Failed to apply system media volume: %{public}s', String(err))
+    }
+  }
+
+  private async loadSystemMediaVolume(): Promise<void> {
+    try {
+      const manager = this.getAudioManager()
+      const minLevel = await this.getMediaVolumeMinLevel(manager)
+      const maxLevel = await this.getMediaVolumeMaxLevel(manager)
+      if (maxLevel <= minLevel) {
+        return
+      }
+      const currentLevel = await manager.getVolume(audio.AudioVolumeType.MEDIA)
+      this.volume = this.clampUnitValue((currentLevel - minLevel) / (maxLevel - minLevel))
+      logger.info('Load system media volume: level=%{public}d range=%{public}d-%{public}d',
+        currentLevel, minLevel, maxLevel)
+    } catch (err) {
+      logger.warn('Failed to load system media volume: %{public}s', String(err))
     }
   }
 
@@ -2308,6 +2701,8 @@ export struct PlayerPage {
   }
 
   private openDanmakuSettings(): void {
+    this.showRoadPickerPopup = false
+    this.showSideRoadPickerPopup = false
     this.showEpisodeSidePanel = false
     this.pauseAutoHideTimer()
     this.danmakuSettingsOpenVersion++
@@ -2323,7 +2718,7 @@ export struct PlayerPage {
 
   private async pickAndLoadLocalDanmaku(): Promise<void> {
     try {
-      const context = getContext(this) as common.UIAbilityContext
+    const context = getContext(this) as common.UIAbilityContext
       const fileResult: LocalFileResult | null = await LocalFilePicker.pickDanmakuFile(context)
       if (fileResult === null) {
         return
@@ -2504,6 +2899,135 @@ export struct PlayerPage {
   }
 
   private toggleFullScreen(): void {
+    if (this.isAnimatingFullscreen) {
+      return
+    }
+    this.isAnimatingFullscreen = true
+    this.suppressControlAnimation = true
+    this.autoFullscreenActive = false
+    this.isControlVisible = true
+    this.showMoreMenu = false
+    this.showAspectModePanel = false
+    this.showDanmakuSettingsPanel = false
+    this.showDanmakuSettingsSheet = false
+    this.showEpisodeSidePanel = false
+    this.pauseAutoHideTimer()
+
+    if (!this.isFullScreen) {
+      this.getUIContext().animateTo({
+        duration: 350,
+        curve: Curve.FastOutSlowIn,
+        onFinish: () => {
+          this.setFullScreenMode(true, true)
+          this.isAnimatingFullscreen = false
+          this.suppressControlAnimation = false
+          this.showControlsWithAutoHide()
+        }
+      }, () => {
+        this.isFullScreen = true
+        this.nonVideoOpacity = 0
+      })
+    } else {
+      this.setFullScreenMode(false)
+      setTimeout(() => {
+        this.getUIContext().animateTo({
+          duration: 350,
+          curve: Curve.FastOutSlowIn,
+          onFinish: () => {
+            this.isAnimatingFullscreen = false
+            this.suppressControlAnimation = false
+            this.showControlsWithAutoHide()
+          }
+        }, () => {
+          this.isFullScreen = false
+          this.nonVideoOpacity = 1
+        })
+      }, 80)
+    }
+  }
+
+  private async setFullScreenMode(fullScreen: boolean, lockLandscape: boolean = true): Promise<void> {
+    AppStorage.setOrCreate('playerFullScreen', fullScreen)
+    try {
+      const context = getContext(this)
+      const mainWindow = await window.getLastWindow(context)
+      if (fullScreen) {
+        this.fullscreenRestoreOrientation = mainWindow.getPreferredOrientation()
+        mainWindow.setWindowSystemBarEnable([])
+        if (lockLandscape && this.isPhoneDevice()) {
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_LANDSCAPE)
+        }
+        mainWindow.enableLandscapeMultiWindow().catch((err: BusinessError) => {
+          logger.warn('enableLandscapeMultiWindow failed: %{public}d', err.code)
+        })
+      } else {
+        mainWindow.setWindowSystemBarEnable(['status', 'navigation'])
+        if (this.isPhoneDevice()) {
+          await mainWindow.setPreferredOrientation(this.fullscreenRestoreOrientation)
+        } else {
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+        }
+        mainWindow.disableLandscapeMultiWindow().catch((err: BusinessError) => {
+          logger.warn('disableLandscapeMultiWindow failed: %{public}d', err.code)
+        })
+        this.fullscreenRestoreOrientation = window.Orientation.UNSPECIFIED
+      }
+    } catch (_err) {
+      logger.warn('Failed to toggle system bars for fullscreen')
+    }
+  }
+
+  private async loadPlayerAutoFullscreenPreference(): Promise<void> {
+    try {
+      this.playerAutoFullscreen = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_PLAYER_AUTO_FULLSCREEN,
+        PLAYER_AUTO_FULLSCREEN_DEFAULT
+      )
+      AppStorage.setOrCreate('playerAutoFullscreen', this.playerAutoFullscreen)
+    } catch (_err) {
+      this.playerAutoFullscreen = PLAYER_AUTO_FULLSCREEN_DEFAULT
+      AppStorage.setOrCreate('playerAutoFullscreen', PLAYER_AUTO_FULLSCREEN_DEFAULT)
+    }
+  }
+
+  private applyPlayerAutoFullscreenRuntimeState(): void {
+    this.setAutoRotationEnabled(this.playerAutoFullscreen)
+    if (this.playerAutoFullscreen && this.lastPlayerAreaWidth > 0 && this.lastPlayerAreaHeight > 0) {
+      this.handlePlayerAreaChange(this.lastPlayerAreaWidth, this.lastPlayerAreaHeight)
+    }
+  }
+
+  private normalizeAreaSize(value: number): number {
+    return value > 0 ? value : 0
+  }
+
+  private handlePlayerAreaChange(width: number, height: number): void {
+    if (width <= 0 || height <= 0) {
+      return
+    }
+    this.lastPlayerAreaWidth = width
+    this.lastPlayerAreaHeight = height
+    if (!this.playerAutoFullscreen) {
+      return
+    }
+    const shortEdge = Math.min(width, height)
+    const isPhoneWindow = shortEdge <= PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX
+    if (!isPhoneWindow) {
+      return
+    }
+    if (width > height && !this.isFullScreen) {
+      this.enterAutoFullscreen()
+    } else if (height >= width && this.isFullScreen && this.autoFullscreenActive) {
+      this.exitAutoFullscreen()
+    }
+  }
+
+  private enterAutoFullscreen(): void {
+    if (this.isAnimatingFullscreen) {
+      return
+    }
+    this.isAnimatingFullscreen = true
+    this.autoFullscreenActive = true
     this.suppressControlAnimation = true
     this.isControlVisible = true
     this.showMoreMenu = false
@@ -2512,29 +3036,90 @@ export struct PlayerPage {
     this.showDanmakuSettingsSheet = false
     this.showEpisodeSidePanel = false
     this.pauseAutoHideTimer()
-    this.isFullScreen = !this.isFullScreen
 
-    this.setFullScreenMode(this.isFullScreen)
-    setTimeout(() => {
-      this.suppressControlAnimation = false
-      this.showControlsWithAutoHide()
-    }, 360)
+    this.getUIContext().animateTo({
+      duration: 350,
+      curve: Curve.FastOutSlowIn,
+      onFinish: () => {
+        this.setFullScreenMode(true, false)
+        this.isAnimatingFullscreen = false
+        this.suppressControlAnimation = false
+        this.showControlsWithAutoHide()
+      }
+    }, () => {
+      this.isFullScreen = true
+      this.nonVideoOpacity = 0
+    })
   }
 
-  private async setFullScreenMode(fullScreen: boolean): Promise<void> {
+  private exitAutoFullscreen(): void {
+    if (this.isAnimatingFullscreen) {
+      return
+    }
+    this.isAnimatingFullscreen = true
+    this.autoFullscreenActive = false
+    this.suppressControlAnimation = true
+    this.setFullScreenMode(false)
+    this.setAutoRotationEnabled(true)
+    setTimeout(() => {
+      this.getUIContext().animateTo({
+        duration: 350,
+        curve: Curve.FastOutSlowIn,
+        onFinish: () => {
+          this.isAnimatingFullscreen = false
+          this.suppressControlAnimation = false
+          this.showControlsWithAutoHide()
+        }
+      }, () => {
+        this.isFullScreen = false
+        this.nonVideoOpacity = 1
+      })
+    }, 80)
+  }
+
+  private async setAutoRotationEnabled(enabled: boolean): Promise<void> {
     try {
       const context = getContext(this)
       const mainWindow = await window.getLastWindow(context)
-      if (fullScreen) {
-        mainWindow.setWindowSystemBarEnable([])
-        await mainWindow.setPreferredOrientation(window.Orientation.LANDSCAPE)
+      if (this.isPhoneDevice()) {
+        if (enabled) {
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+        } else {
+          await mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT)
+        }
       } else {
-        mainWindow.setWindowSystemBarEnable(['status', 'navigation'])
-        await mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT)
+        // Tablet: always allow auto rotation
+        await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
       }
     } catch (_err) {
-      logger.warn('Failed to toggle system bars for fullscreen')
+      logger.warn('Failed to set auto rotation: %{public}s', _err instanceof Error ? _err.message : String(_err))
     }
+  }
+
+  private isPhoneDevice(): boolean {
+    return this.screenWidthVp < 600
+  }
+
+  private shouldUseTabletPlayerLayout(): boolean {
+    return this.screenWidthVp >= 840
+  }
+
+  private getTabletPlayerPanelWidth(): number {
+    if (this.screenWidthVp >= 1200) {
+      return 420
+    }
+    return 360
+  }
+
+  private getPlayerSidePanelWidth(): Dimension {
+    if (this.screenWidthVp <= 0) {
+      return '40%'
+    }
+    const targetWidth = Math.round(this.screenWidthVp * 0.4)
+    if (this.screenWidthVp < 840) {
+      return Math.max(320, targetWidth)
+    }
+    return Math.min(Math.max(360, targetWidth), 560)
   }
 
   private hasNextEpisode(): boolean {
@@ -2543,6 +3128,20 @@ export struct PlayerPage {
         return true
       }
       for (let i = this.selectedRoadIndex + 1; i < this.roads.length; i++) {
+        if (this.roads[i].episodes.length > 0) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  private hasPreviousEpisode(): boolean {
+    if (this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
+      if (this.currentEpisodeIndex > 0) {
+        return true
+      }
+      for (let i = this.selectedRoadIndex - 1; i >= 0; i--) {
         if (this.roads[i].episodes.length > 0) {
           return true
         }
@@ -2568,6 +3167,23 @@ export struct PlayerPage {
     }
   }
 
+  private playPreviousEpisode(): void {
+    if (this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
+      if (this.currentEpisodeIndex > 0) {
+        this.visibleRoadIndex = this.selectedRoadIndex
+        this.onEpisodeSelected(this.currentEpisodeIndex - 1)
+        return
+      }
+      for (let i = this.selectedRoadIndex - 1; i >= 0; i--) {
+        if (this.roads[i].episodes.length > 0) {
+          this.visibleRoadIndex = i
+          this.onEpisodeSelected(this.roads[i].episodes.length - 1)
+          return
+        }
+      }
+    }
+  }
+
   private onEpisodeSelected(index: number): void {
     const visibleEpisodes = this.getVisibleEpisodes()
     if (index >= 0 && index < visibleEpisodes.length) {
@@ -2579,6 +3195,9 @@ export struct PlayerPage {
       this.episodeName = visibleEpisodes[index].name
       this.episodeUrl = visibleEpisodes[index].url
       this.videoUrl = ''
+      this.syncCastMediaInfo()
+      this.isPlayerLoading = false
+      this.isPlayerBuffering = false
       this.positionMs = 0
       this.durationMs = 0
       this.bufferMs = 0
@@ -2607,6 +3226,7 @@ export struct PlayerPage {
     }
     this.sourceResolver.cancel()
     this.pendingSniff = false
+    this.syncCastMediaInfo()
   }
 
   private getCurrentEpisodeNo(): number {
@@ -2686,6 +3306,29 @@ export struct PlayerPage {
     return []
   }
 
+  private getDisplayedEpisodes(): EpisodePanelItem[] {
+    const items = this.getVisibleEpisodes()
+    if (!this.episodeReverseOrder) {
+      return items
+    }
+    const result: EpisodePanelItem[] = []
+    for (let i = items.length - 1; i >= 0; i--) {
+      result.push(items[i])
+    }
+    return result
+  }
+
+  private getActualEpisodeIndex(displayIndex: number | undefined): number {
+    if (displayIndex === undefined) {
+      return -1
+    }
+    const count = this.getVisibleEpisodes().length
+    if (displayIndex < 0 || displayIndex >= count) {
+      return -1
+    }
+    return this.episodeReverseOrder ? count - 1 - displayIndex : displayIndex
+  }
+
   private parseEpisodePanelItems(json: string): EpisodePanelItem[] {
     if (json.length === 0) {
       return []
@@ -2699,27 +3342,77 @@ export struct PlayerPage {
   }
 
   private async saveHistory(): Promise<void> {
-    if (this.animeId.length === 0) {
+    const historyAnimeId = this.buildHistoryAnimeId()
+    const historyEpisodeUrl = this.episodeUrl.length > 0 ? this.episodeUrl : this.videoUrl
+    if (historyAnimeId.length === 0 || historyEpisodeUrl.length === 0) {
       return
     }
     try {
       const record = new HistoryRecord()
-      record.animeId = this.animeId
+      record.animeId = historyAnimeId
       record.animeName = this.animeName
       record.animeCover = this.animeCover
       record.animeUrl = this.animeUrl
       record.sourceId = this.sourceId >= 0 ? this.sourceId : this.ruleSourceId
       record.episodeName = this.episodeName
-      record.episodeUrl = this.episodeUrl.length > 0 ? this.episodeUrl : this.videoUrl
+      record.episodeUrl = historyEpisodeUrl
       record.positionMs = this.positionMs
       record.durationMs = this.durationMs
       record.roadIndex = this.selectedRoadIndex
       record.episodeIndex = this.currentEpisodeIndex
       await this.historyStore.upsert(record)
+      HistorySyncService.getInstance().scheduleAutoUploadAfterLocalChange()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logger.error('Save history failed: %{public}s', msg)
     }
+  }
+
+  private buildHistoryAnimeId(): string {
+    if (this.animeId.length > 0) {
+      return this.animeId
+    }
+
+    const sourceId = this.sourceId >= 0 ? this.sourceId : this.ruleSourceId
+    const identityUrl = this.animeUrl.length > 0 ? this.animeUrl : this.episodeUrl
+    if (sourceId >= 0 && identityUrl.length > 0) {
+      return String(sourceId) + '_' + identityUrl
+    }
+
+    if (identityUrl.length > 0) {
+      return identityUrl
+    }
+
+    return this.animeName
+  }
+
+  private markContinuationState(): void {
+    ContinuationState.markPlayer(this.buildContinuationParams(), this.positionMs)
+  }
+
+  private buildContinuationParams(): ContinuationPlayerParams {
+    const sourceId = this.sourceId >= 0 ? this.sourceId : this.ruleSourceId
+    const params = new ContinuationPlayerParams()
+    params.videoUrl = this.episodeUrl.length > 0 ? '' : this.videoUrl
+    params.episodeUrl = this.episodeUrl
+    params.ruleSourceId = this.ruleSourceId
+    params.animeName = this.animeName
+    params.episodeName = this.episodeName
+    params.animeId = this.animeId
+    params.animeCover = this.animeCover
+    params.animeUrl = this.animeUrl
+    params.sourceId = sourceId
+    params.episodesJson = JSON.stringify(this.episodes)
+    params.currentEpisodeIndex = this.currentEpisodeIndex
+    params.roadsJson = JSON.stringify(this.roads)
+    params.selectedRoadIndex = this.selectedRoadIndex
+    params.bangumiId = this.bangumiId
+    params.bangumiCover = this.bangumiCover
+    params.coverFallback = this.coverFallback
+    params.animeDesc = this.animeDesc
+    params.sourceName = this.sourceName
+    params.historyPositionMs = this.positionMs
+    return params
   }
 
   private performSeek(positionMs: number): void {
@@ -2728,6 +3421,179 @@ export struct PlayerPage {
     }
     this.lastSeekRequestAtMs = Date.now()
     this.playerEngine.seek(positionMs)
+    this.castSessionManager.sendSeek(positionMs)
+  }
+
+  private initializeCastSession(): void {
+    const context = getContext(this) as common.UIAbilityContext
+    this.castSessionManager.setCallbacks(this.buildCastCallbacks())
+    this.castSessionManager.ensureVideoSession(context).then(() => {
+      this.syncCastMediaInfo()
+    }).catch((_err: Error) => {
+      logger.warn('initializeCastSession failed')
+    })
+  }
+
+  private buildCastCallbacks(): CastEventCallbacks {
+    const callbacks = new CastEventCallbacks()
+    callbacks.onPlay = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+    }
+    callbacks.onPause = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+      }
+    }
+    callbacks.onSeek = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    callbacks.onPlayNext = () => {
+      this.playNextEpisode()
+    }
+    callbacks.onPlayPrevious = () => {
+      this.playPreviousEpisode()
+    }
+    callbacks.onCastDeviceConnected = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+      }
+    }
+    callbacks.onCastDeviceDisconnected = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+    }
+    callbacks.onEndOfStream = () => {
+      if (this.hasNextEpisode()) {
+        this.playNextEpisode()
+      } else {
+        this.castSessionManager.stopCasting()
+      }
+    }
+    callbacks.onRemotePositionChange = (positionMs: number) => {
+      if (!this.isDraggingProgress) {
+        this.positionMs = positionMs
+      }
+    }
+    return callbacks
+  }
+
+  private syncCastMediaInfo(): void {
+    if (this.videoUrl.length === 0 || this.playbackOptions.isLocalFile) {
+      this.castSessionManager.setCastSupported(false)
+      return
+    }
+
+    const info = new CastMediaInfo()
+    info.url = this.videoUrl
+    info.title = this.animeName.length > 0 ? this.animeName : this.buildPlayerTitle()
+    info.subtitle = this.episodeName
+    info.cover = this.getCastCover()
+    info.durationMs = this.durationMs
+    info.positionMs = this.positionMs
+    this.castSessionManager.updateMedia(info)
+    this.castSessionManager.setCastSupported(true)
+    if (this.pipManager.isActive()) {
+      this.pipManager.setNextPreviousEnabled(this.hasNextEpisode(), this.hasPreviousEpisode())
+    }
+  }
+
+  private getCastCover(): string {
+    if (this.bangumiCover.length > 0) {
+      return this.bangumiCover
+    }
+    if (this.animeCover.length > 0) {
+      return this.animeCover
+    }
+    if (this.coverFallback.length > 0) {
+      return this.coverFallback
+    }
+    return ''
+  }
+
+  private initializePiP(): void {
+    this.pipManager.setCallbacks(this.buildPiPCallbacks())
+  }
+
+  private async startPiP(): Promise<void> {
+    if (this.pipManager.isActive() || this.pipManager.isCreating()) {
+      return
+    }
+    if (this.xComponentController === null) {
+      logger.warn('PiP: XComponentController not available')
+      return
+    }
+    if (this.isFullScreen) {
+      this.toggleFullScreen()
+      await new Promise<void>((resolve) => setTimeout(resolve, 400))
+    }
+    this.pauseAutoHideTimer()
+    const context = getContext(this) as common.UIAbilityContext
+    const contentWidth = this.videoWidth > 0 ? this.videoWidth : 1920
+    const contentHeight = this.videoHeight > 0 ? this.videoHeight : 1080
+    const isWideContent = contentWidth > contentHeight
+    const controlGroups: Array<PiPWindow.VideoPlayControlGroup> = [
+      PiPWindow.VideoPlayControlGroup.VIDEO_PREVIOUS_NEXT
+    ]
+    const success = await this.pipManager.createAndStart(
+      context, this.xComponentController, contentWidth, contentHeight, controlGroups,
+      isWideContent ? 2 : 1)
+    if (success) {
+      this.isPiPActive = true
+      this.pipManager.updatePlaybackState(this.isPlaying)
+      this.pipManager.setNextPreviousEnabled(this.hasNextEpisode(), this.hasPreviousEpisode())
+    }
+  }
+
+  private buildPiPCallbacks(): PiPCallbacks {
+    const callbacks = new PiPCallbacks()
+    callbacks.onPlay = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+        this.pipManager.updatePlaybackState(true)
+      }
+    }
+    callbacks.onPause = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+        this.pipManager.updatePlaybackState(false)
+      }
+    }
+    callbacks.onNext = () => {
+      this.playNextEpisode()
+    }
+    callbacks.onPrevious = () => {
+      this.playPreviousEpisode()
+    }
+    callbacks.onFastForward = () => {
+      if (this.hasEngine && this.playerEngine !== null) {
+        this.seekTo(Math.min(this.positionMs + 10000, this.durationMs))
+      }
+    }
+    callbacks.onFastBackward = () => {
+      if (this.hasEngine && this.playerEngine !== null) {
+        this.seekTo(Math.max(this.positionMs - 10000, 0))
+      }
+    }
+    callbacks.onRestore = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+      this.isPiPActive = false
+    }
+    callbacks.onPiPStopped = () => {
+      this.isPiPActive = false
+    }
+    return callbacks
   }
 
   private clearPendingSeek(): void {

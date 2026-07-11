@@ -14,6 +14,7 @@ export struct RouteTabs {
         }, (route: string, index?: number) => `route_${index}`)
       }
       .barMode(BarMode.Scrollable)
+      .fadingEdge(true)
       .width('100%')
       .height(48)
       .onChange((index: number) => {

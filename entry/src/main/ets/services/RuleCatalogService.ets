@@ -29,7 +29,11 @@ export class RuleCatalogService {
     const list = parsed as Object[]
     for (let i = 0; i < list.length; i++) {
       try {
-        const item = RuleCatalogItem.fromJSON(list[i] as Record<string, Object>)
+        const rawItem = list[i] as Record<string, Object>
+        if (!DefaultRuleSourceInitializer.isValidCatalogItemJson(rawItem)) {
+          throw new Error('Invalid Kazumi catalog item')
+        }
+        const item = RuleCatalogItem.fromJSON(rawItem)
         if (item.name.length > 0) {
           items.push(item)
         }
@@ -37,6 +41,9 @@ export class RuleCatalogService {
         const msg = err instanceof Error ? err.message : String(err)
         logger.warn('Failed to parse catalog item at index %{public}d: %{public}s', i, msg)
       }
+    }
+    if (list.length > 0 && items.length === 0) {
+      throw new Error('Rule catalog index contains no valid Kazumi rules')
     }
     logger.info('Fetched catalog with %{public}d items', items.length)
     return items

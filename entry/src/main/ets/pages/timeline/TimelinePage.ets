@@ -15,15 +15,17 @@ import {
   TitleBarContentOptions,
   HdsNavigationIconOptions,
   HdsNavigationMenuContentOptions,
-  HdsTabs,
-  hdsMaterial
+  HdsTabs
 } from '@kit.UIDesignKit'
 import {
   MINI_TITLE_BAR_CONTENT_HEIGHT,
   getEffectiveTopSafeHeight,
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildImmersiveTitleBarStyle
+  buildImmersiveTitleBarStyle,
+  buildAdaptiveMaterialEffect,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
@@ -51,6 +53,7 @@ export struct TimelinePage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State selectedWeekdayIndex: number = 0
@@ -64,6 +67,8 @@ export struct TimelinePage {
   @State selectedQuarter: number = 0
   @State isViewingCurrentSeason: boolean = true
   private contentScroller: Scroller = new Scroller()
+  private enrichingWeekdayKeys: string[] = []
+  private enrichedWeekdayKeys: string[] = []
 
   aboutToAppear(): void {
     this.selectedYear = new Date().getFullYear()
@@ -128,6 +133,33 @@ export struct TimelinePage {
         .onScrollStop(() => {
           this.snapBottomTabOffset()
         })
+        .gesture(
+          PanGesture({ direction: PanDirection.Horizontal, distance: 40 })
+            .onActionEnd((event: GestureEvent) => {
+              if (Math.abs(event.offsetX) < 30) {
+                return
+              }
+              if (event.offsetX < 0 && this.selectedWeekdayIndex < WEEKDAY_TAB_COUNT - 1) {
+                this.getUIContext().animateTo({
+                  duration: 250,
+                  curve: curves.springMotion()
+                }, () => {
+                  this.selectedWeekdayIndex += 1
+                })
+                this.contentScroller.scrollToIndex(0)
+                this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
+              } else if (event.offsetX > 0 && this.selectedWeekdayIndex > 0) {
+                this.getUIContext().animateTo({
+                  duration: 250,
+                  curve: curves.springMotion()
+                }, () => {
+                  this.selectedWeekdayIndex -= 1
+                })
+                this.contentScroller.scrollToIndex(0)
+                this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
+              }
+            })
+        )
       }
       .width('100%')
       .height('100%')
@@ -161,12 +193,17 @@ export struct TimelinePage {
 
   @Builder
   private AnimeListContent(): void {
-    Column() {
+    Grid() {
       ForEach(this.getAnimeListForWeekday(this.selectedWeekdayIndex), (item: AnimeItem, index?: number) => {
-        TimelineAnimeCard({ animeItem: item })
-          .margin({ bottom: 6 })
+        GridItem() {
+          TimelineAnimeCard({ animeItem: item })
+        }
       }, (item: AnimeItem, index?: number) => `tl_${this.selectedWeekdayIndex}_${index}_${item.name}`)
     }
+    .columnsTemplate(this.getTimelineCardColumns())
+    .columnsGap(10)
+    .rowsGap(10)
+    .scrollBar(BarState.Off)
     .width('100%')
     .padding({ left: 12, right: 12, top: 4, bottom: 4 })
   }
@@ -209,56 +246,61 @@ export struct TimelinePage {
 
   @Builder
   private TimelineSkeletonList(): void {
-    Column() {
+    Grid() {
       ForEach([0, 1, 2, 3, 4, 5], (index: number) => {
-        Row() {
-          Column()
-            .width(92)
-            .height(132)
-            .borderRadius(10)
-            .backgroundColor($r('app.color.skeleton_background'))
+        GridItem() {
+          Row() {
+            Column()
+              .width(92)
+              .height(132)
+              .borderRadius(10)
+              .backgroundColor($r('app.color.skeleton_background'))
 
-          Column() {
-            Column()
-              .width('70%')
-              .height(16)
-              .borderRadius(4)
-              .backgroundColor($r('app.color.skeleton_background'))
-            Column()
-              .width('50%')
-              .height(14)
-              .borderRadius(4)
-              .margin({ top: 6 })
-              .backgroundColor($r('app.color.skeleton_background'))
-            Column()
-              .width('85%')
-              .height(14)
-              .borderRadius(4)
-              .margin({ top: 4 })
-              .backgroundColor($r('app.color.skeleton_background'))
-            Blank()
-              .layoutWeight(1)
-            Row() {
+            Column() {
               Column()
-                .width(36)
-                .height(14)
+                .width('70%')
+                .height(16)
                 .borderRadius(4)
                 .backgroundColor($r('app.color.skeleton_background'))
+              Column()
+                .width('50%')
+                .height(14)
+                .borderRadius(4)
+                .margin({ top: 6 })
+                .backgroundColor($r('app.color.skeleton_background'))
+              Column()
+                .width('85%')
+                .height(14)
+                .borderRadius(4)
+                .margin({ top: 4 })
+                .backgroundColor($r('app.color.skeleton_background'))
+              Blank()
+                .layoutWeight(1)
+              Row() {
+                Column()
+                  .width(36)
+                  .height(14)
+                  .borderRadius(4)
+                  .backgroundColor($r('app.color.skeleton_background'))
+              }
             }
+            .layoutWeight(1)
+            .height(132)
+            .margin({ left: 14 })
+            .alignItems(HorizontalAlign.Start)
           }
-          .layoutWeight(1)
-          .height(132)
-          .margin({ left: 14 })
-          .alignItems(HorizontalAlign.Start)
+          .width('100%')
+          .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+          .borderRadius(12)
+          .backgroundColor($r('app.color.card_background'))
+          .border({ width: 0.5, color: $r('app.color.card_specular_border') })
         }
-        .width('100%')
-        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.card_background'))
-        .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-        .margin({ bottom: 6 })
       }, (index: number) => `tl_skeleton_${index}`)
     }
+    .columnsTemplate(this.getTimelineCardColumns())
+    .columnsGap(10)
+    .rowsGap(10)
+    .scrollBar(BarState.Off)
     .width('100%')
     .padding({ left: 12, right: 12, top: 4, bottom: 4 })
   }
@@ -277,11 +319,12 @@ export struct TimelinePage {
               onSelected: (selectedIndex: number) => {
                 this.getUIContext().animateTo({
                   duration: 250,
-      curve: curves.springMotion()
+                  curve: curves.springMotion()
                 }, () => {
                   this.selectedWeekdayIndex = selectedIndex
                 })
                 this.contentScroller.scrollToIndex(0)
+                this.enrichSelectedWeekdayInBackground(selectedIndex)
               }
             })
           }
@@ -538,7 +581,7 @@ export struct TimelinePage {
   }
 
   private buildTimelineTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle()
+    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     if (style.originalStyle?.backgroundStyle) {
       style.originalStyle.backgroundStyle.maskExtraHeight = 0
     }
@@ -564,6 +607,9 @@ export struct TimelinePage {
   }
 
   private getVisibleWeekdayCount(): number {
+    if (this.screenWidthVp >= 840) {
+      return 7
+    }
     if (this.screenWidthVp >= 600) {
       return 5
     }
@@ -606,6 +652,16 @@ export struct TimelinePage {
     return Math.max(WEEKDAY_TAB_ITEM_MIN_WIDTH, Math.min(WEEKDAY_TAB_ITEM_MAX_WIDTH, fittedWidth))
   }
 
+  private getTimelineCardColumns(): string {
+    if (this.screenWidthVp >= 1200) {
+      return '1fr 1fr 1fr'
+    }
+    if (this.screenWidthVp >= 600) {
+      return '1fr 1fr'
+    }
+    return '1fr'
+  }
+
   private getAnimeListForWeekday(weekdayIndex: number): AnimeItem[] {
     if (this.calendar.length < WEEKDAY_TAB_COUNT) {
       return []
@@ -621,6 +677,7 @@ export struct TimelinePage {
       this.calendar = result
       this.hasLoaded = true
       logger.info('Calendar loaded: %{public}d days', result.filter((arr: AnimeItem[]) => arr.length > 0).length)
+      this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
     } catch (_err) {
       this.isError = true
       logger.warn('Calendar load failed')
@@ -641,6 +698,8 @@ export struct TimelinePage {
     this.selectedQuarter = quarter
     this.isViewingCurrentSeason = AnimeSeason.isCurrentSeason(year, quarter)
     this.selectedWeekdayIndex = AnimeSeason.getCurrentWeekdayIndex()
+    this.enrichingWeekdayKeys = []
+    this.enrichedWeekdayKeys = []
     this.loadCalendarBySeason(year, quarter)
   }
 
@@ -672,6 +731,7 @@ export struct TimelinePage {
       this.seasonString = AnimeSeason.getSeasonString(new Date(year, quarter * 3, 1))
       this.hasLoaded = true
       logger.info('Season calendar loaded for %{public}d Q%{public}d', year, quarter)
+      this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
     } catch (_err) {
       this.isError = true
       logger.warn('Season calendar load failed')
@@ -687,10 +747,64 @@ export struct TimelinePage {
       this.loadCalendarBySeason(this.selectedYear, this.selectedQuarter)
     }
   }
+
+  private enrichSelectedWeekdayInBackground(weekdayIndex: number): void {
+    if (this.calendar.length < WEEKDAY_TAB_COUNT) {
+      return
+    }
+    const key = this.buildEnrichWeekdayKey(weekdayIndex)
+    if (this.hasEnrichKey(this.enrichedWeekdayKeys, key) || this.hasEnrichKey(this.enrichingWeekdayKeys, key)) {
+      return
+    }
+    this.addEnrichKey(this.enrichingWeekdayKeys, key)
+    BangumiApi.enrichCalendarItemsForDay(this.calendar, weekdayIndex, 10)
+      .then(() => {
+        this.removeEnrichKey(this.enrichingWeekdayKeys, key)
+        this.addEnrichKey(this.enrichedWeekdayKeys, key)
+        if (this.buildEnrichWeekdayKey(this.selectedWeekdayIndex) !== key || this.calendar.length < WEEKDAY_TAB_COUNT) {
+          return
+        }
+        this.calendar = this.cloneCalendar(this.calendar)
+      })
+      .catch((_err: Error) => {
+        this.removeEnrichKey(this.enrichingWeekdayKeys, key)
+        logger.warn('Visible weekday enrich failed')
+      })
+  }
+
+  private buildEnrichWeekdayKey(weekdayIndex: number): string {
+    return `${this.selectedYear}-${this.selectedQuarter}-${weekdayIndex}`
+  }
+
+  private hasEnrichKey(keys: string[], key: string): boolean {
+    return keys.indexOf(key) >= 0
+  }
+
+  private addEnrichKey(keys: string[], key: string): void {
+    if (!this.hasEnrichKey(keys, key)) {
+      keys.push(key)
+    }
+  }
+
+  private removeEnrichKey(keys: string[], key: string): void {
+    const index = keys.indexOf(key)
+    if (index >= 0) {
+      keys.splice(index, 1)
+    }
+  }
+
+  private cloneCalendar(source: AnimeItem[][]): AnimeItem[][] {
+    const result: AnimeItem[][] = []
+    for (let i = 0; i < source.length; i++) {
+      result.push(source[i].slice())
+    }
+    return result
+  }
 }
 
 @Component
 struct WeekdayTabItem {
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @Prop label: string = ''
   @Prop index: number = 0
   @Prop selectedIndex: number = 0
@@ -730,10 +844,7 @@ struct WeekdayTabItem {
         },
         barBottomMargin: 0,
         barSideMargin: 0,
-        systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.IMMERSIVE,
-          materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
-        },
+        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
         lightColor: Color.Transparent
       })
     }

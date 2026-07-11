@@ -8,6 +8,7 @@
     "pages/detail/DetailPage",
     "pages/player/PlayerPage",
     "pages/history/HistoryPage",
+    "pages/settings/WebDavSyncPage",
     "pages/settings/DanmakuSettingsPage",
     "pages/settings/DanmakuBlockRulesPage",
     "pages/settings/RuleShopPage",

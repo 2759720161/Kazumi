@@ -58,6 +58,36 @@ export class RecommendCardModel {
     return model
   }
 
+  static copyOf(item: RecommendCardModel): RecommendCardModel {
+    const model = new RecommendCardModel()
+    model.id = item.id
+    model.title = item.title
+    model.originalTitle = item.originalTitle
+    model.cover = item.cover
+    model.coverLarge = item.coverLarge
+    model.backdrop = item.backdrop
+    model.summary = item.summary
+    model.score = item.score
+    model.rank = item.rank
+    model.votes = item.votes
+    model.date = item.date
+    model.year = item.year
+    model.tags = [...item.tags]
+    model.eps = item.eps
+    model.bangumiId = item.bangumiId
+    model.sourceId = item.sourceId
+    model.sourceName = item.sourceName
+    model.url = item.url
+    model.coverFallback = item.coverFallback
+    model.coverCommon = item.coverCommon
+    model.coverMedium = item.coverMedium
+    model.bangumiCover = item.bangumiCover
+    model.aliases = [...item.aliases]
+    model.airWeekday = item.airWeekday
+    model.votesCount = [...item.votesCount]
+    return model
+  }
+
   getGridCover(): string {
     if (this.coverCommon.length > 0) return this.coverCommon
     if (this.coverMedium.length > 0) return this.coverMedium

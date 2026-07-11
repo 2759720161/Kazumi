@@ -5,7 +5,9 @@ import {
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildTitleBarOptions
+  buildTitleBarOptions,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
@@ -176,6 +178,7 @@ export struct DanmakuSettingsPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = false
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State danmakuBorder: boolean = true
   @State danmakuBorderSize: number = 1.5
   @State danmakuColor: boolean = true
@@ -252,7 +255,8 @@ export struct DanmakuSettingsPage {
     }
     .width('100%')
     .height('100%')
-    .titleBar(buildTitleBarOptions('弹幕设置'))
+    .mode(NavigationMode.Stack)
+    .titleBar(buildTitleBarOptions('弹幕设置', this.hdsMaterialLevel))
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
     .backgroundColor(Color.Transparent)
@@ -857,22 +861,28 @@ export struct DanmakuSettingsPage {
 
         Text(this.getSliderValueText(stateKey))
           .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
+          .fontWeight(FontWeight.Medium)
+          .fontColor(enabled ? $r('app.color.accent_blue') : $r('app.color.text_secondary'))
+          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+          .borderRadius(12)
+          .backgroundColor(enabled ? $r('app.color.episode_item_selected_bg') : $r('app.color.button_ghost_bg'))
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 10, bottom: 0 })
+      .padding({ left: 16, right: 16, top: 8, bottom: 0 })
 
       Slider({ value: this.getSliderValue(stateKey), min: min, max: max, step: step })
         .width('100%')
-        .padding({ left: 12, right: 12, bottom: 8 })
+        .height(24)
+        .padding({ left: 16, right: 16 })
         .enabled(enabled)
+        .opacity(enabled ? 1.0 : 0.35)
         .onChange((sliderValue: number) => {
           this.setSliderValue(stateKey, sliderValue)
           onChanged(sliderValue)
         })
     }
     .width('100%')
-    .constraintSize({ minHeight: 64 })
+    .constraintSize({ minHeight: 54 })
   }
 
   private getActiveSourceNames(): string {

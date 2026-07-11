@@ -15,6 +15,7 @@ export struct HistoryCard {
   build() {
     Row() {
       Image(this.record.animeCover)
+        .draggable(false)
         .width(80)
         .height(108)
         .objectFit(ImageFit.Cover)

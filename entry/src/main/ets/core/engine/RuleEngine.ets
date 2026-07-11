@@ -4,21 +4,25 @@ import { AnimeItem } from '../../models/AnimeItem';
 import { Episode } from '../../models/Episode';
 import { RuleSourceStore } from '../../store/RuleSourceStore';
 import { SearchExecutor } from './SearchExecutor';
+import { ApiRuleStrategy } from './ApiRuleStrategy';
 import { RequestPolicyHandler } from './RequestPolicyHandler';
 import { AntiCrawlHandler } from './AntiCrawlHandler';
 import { Logger } from '../../utils/Logger';
+import { RuleMode } from '../../models/ApiRuleConfig';
 
 const logger = new Logger('RuleEngine');
 
 export class RuleEngine {
   private ruleStore: RuleSourceStore;
   private searchExecutor: SearchExecutor;
+  private apiRuleStrategy: ApiRuleStrategy;
   private requestHandler: RequestPolicyHandler;
   private antiCrawlHandler: AntiCrawlHandler;
 
   constructor() {
     this.ruleStore = new RuleSourceStore();
     this.searchExecutor = new SearchExecutor();
+    this.apiRuleStrategy = new ApiRuleStrategy();
     this.requestHandler = new RequestPolicyHandler();
     this.antiCrawlHandler = new AntiCrawlHandler();
   }
@@ -86,6 +90,9 @@ export class RuleEngine {
   private async searchWithRule(rule: RuleSource, keyword: string): Promise<AnimeItem[]> {
     try {
       const runtime = new RuleRuntimeModel(rule);
+      if (rule.searchMode === RuleMode.API) {
+        return await this.apiRuleStrategy.search(rule, keyword);
+      }
       const html = await this.requestHandler.fetchWithRule(runtime, keyword);
 
       if (this.antiCrawlHandler.isCaptchaResponse(html)) {
@@ -110,6 +117,20 @@ export class RuleEngine {
   async parseDetail(rule: RuleSource, url: string): Promise<Record<string, string>> {
     try {
       const runtime = new RuleRuntimeModel(rule);
+      if (rule.chapterMode === RuleMode.API) {
+        const roads = await this.apiRuleStrategy.queryRoads(rule, url);
+        const episodes: Episode[] = [];
+        for (let i = 0; i < roads.length; i++) {
+          for (let j = 0; j < roads[i].episodes.length; j++) {
+            const ep = new Episode();
+            ep.name = roads[i].episodes[j].name;
+            ep.url = roads[i].episodes[j].url;
+            ep.index = episodes.length;
+            episodes.push(ep);
+          }
+        }
+        return episodes;
+      }
       const html = await this.requestHandler.fetchUrlWithRuleHeaders(runtime, url);
       return this.searchExecutor.parseDetail(html, runtime);
     } catch (err) {

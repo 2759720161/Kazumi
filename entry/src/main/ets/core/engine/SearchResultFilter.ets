@@ -53,7 +53,7 @@ export class SearchResultFilter {
       const filtered: AnimeItem[] = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        const reason = this.getFilterReason(item);
+        const reason = this.getFilterReason(item, ruleName);
         if (reason.length > 0) {
           logger.debug('Drop %{public}s item: name=%{public}s, url=%{public}s, reason=%{public}s',
             ruleName, item.name.length > 30 ? item.name.substring(0, 30) : item.name,
@@ -87,7 +87,7 @@ export class SearchResultFilter {
     }
   }
 
-  private getFilterReason(item: AnimeItem): string {
+  private getFilterReason(item: AnimeItem, ruleName: string): string {
     if (item.name.length === 0) {
       return 'empty-name';
     }
@@ -105,7 +105,34 @@ export class SearchResultFilter {
     if (item.name.trim().length > MAX_TITLE_LENGTH) {
       return 'title-too-long';
     }
+    const ruleSpecificReason = this.getRuleSpecificReason(item, ruleName);
+    if (ruleSpecificReason.length > 0) {
+      return ruleSpecificReason;
+    }
     return '';
+  }
+
+  private getRuleSpecificReason(item: AnimeItem, ruleName: string): string {
+    const lowerRuleName = ruleName.toLowerCase();
+    if (lowerRuleName === 'gugu3' && this.isGugu3RankingItem(item.name)) {
+      return 'gugu3-ranking-item';
+    }
+    return '';
+  }
+
+  private isGugu3RankingItem(name: string): boolean {
+    const value = name.trim();
+    try {
+      const rankPattern = new RegExp('^NO\\d+');
+      if (rankPattern.test(value)) {
+        return true;
+      }
+    } catch (e) {
+    }
+    if (value.indexOf('&#xe596;') !== -1 && value.indexOf('NO') === 0) {
+      return true;
+    }
+    return false;
   }
 
   private getActionOrStatusReason(name: string): string {

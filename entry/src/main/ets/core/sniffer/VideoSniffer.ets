@@ -33,8 +33,13 @@ export class VideoSniffer {
   private fallbackExecuted: boolean = false
   private promotedPlayerPageUrls: Set<string> = new Set()
   private currentReferer: string = ''
+  private userAgent: string = NetworkPolicy.DEFAULT_PLAYER_USER_AGENT
   private readonly weakCandidateDelayMs: number = NetworkPolicy.WEAK_CANDIDATE_DELAY_MS
   private readonly fallbackWaitMs: number = NetworkPolicy.FALLBACK_WAIT_MS
+
+  setUserAgent(userAgent: string): void {
+    this.userAgent = userAgent.length > 0 ? userAgent : NetworkPolicy.DEFAULT_PLAYER_USER_AGENT
+  }
 
   setResultCallback(callback: (result: SnifferResult) => void): void {
     this.onResult = callback
@@ -136,6 +141,7 @@ export class VideoSniffer {
 
     if (this.webController) {
       try {
+        this.applyCustomUserAgent()
         this.webController.loadUrl(url)
       } catch (e) {
         if (this.sniffSessionId !== mySession) {
@@ -287,6 +293,7 @@ export class VideoSniffer {
       if (referer.length > 0) {
         this.currentReferer = referer
       }
+      this.promotePlayerPageIfNeeded(url)
       let result: SnifferResult | null = null
       let isVideoElementSource = source.indexOf('video_element') !== -1 ||
         source.indexOf('video_tag') !== -1 ||
@@ -361,6 +368,11 @@ export class VideoSniffer {
     if (result === null || !this.isSniffing) {
       return
     }
+    if (this.isIgnored7sefunCandidate(result.url)) {
+      logger.info('recordResult: ignore 7sefun blocked candidate %{public}s from %{public}s',
+        result.url.substring(0, 80), result.source)
+      return
+    }
     logger.info('recordResult: [%{public}s/%{public}s] score=%{public}d %{public}s from %{public}s',
       result.type, result.quality, result.score, result.url.substring(0, 80), result.source)
     this.results.push(result)
@@ -405,6 +417,15 @@ export class VideoSniffer {
     return verdict.isWeak
   }
 
+  private isIgnored7sefunCandidate(url: string): boolean {
+    const lowerReferer = this.currentReferer.toLowerCase()
+    if (lowerReferer.indexOf('7sefun.top') === -1) {
+      return false
+    }
+    const lowerUrl = url.toLowerCase()
+    return lowerUrl.indexOf('jxdunrui.top') !== -1 || lowerUrl.indexOf('mao6.') !== -1
+  }
+
   private promotePlayerPageIfNeeded(url: string): void {
     if (!this.webController || !this.isSniffing) {
       return
@@ -421,9 +442,21 @@ export class VideoSniffer {
     logger.info('Promoting player frame to main WebView for sniffing (rule=%{public}s): %{public}s',
       verdict.matchedRuleName, url.substring(0, 100))
     try {
+      this.applyCustomUserAgent()
       this.webController.loadUrl(url)
     } catch (e) {
       logger.warn('Promote player page failed: %{public}s', String(e))
+    }
+  }
+
+  private applyCustomUserAgent(): void {
+    if (this.webController === null || this.userAgent.length === 0) {
+      return
+    }
+    try {
+      this.webController.setCustomUserAgent(this.userAgent)
+    } catch (e) {
+      logger.warn('Set WebView user agent failed: %{public}s', String(e))
     }
   }
 

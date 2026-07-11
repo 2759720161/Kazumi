@@ -10,6 +10,7 @@ import { HlsManifestParser } from '../core/sniffer/HlsManifestParser'
 import { SnifferSessionPool } from '../core/sniffer/SnifferSessionPool'
 import { WebViewCleanupLevel } from '../core/sniffer/SnifferSessionPool'
 import { VideoSourceRequest } from '../core/sniffer/VideoSourceRequest'
+import { HtmlXPathParser } from '../core/engine/HtmlXPathParser'
 
 class TestResult {
   name: string = ''
@@ -42,6 +43,7 @@ export class SnifferTestSuite {
     this.testJSInjectorScripts()
     this.testSnifferSessionPool()
     this.testHlsManifestParser()
+    this.testRelativeDescendantXPath()
     let failed = 0
     for (let i = 0; i < this.results.length; i++) {
       if (!this.results[i].passed) {
@@ -136,6 +138,15 @@ export class SnifferTestSuite {
     this.assert('Filter-jpg-reject', r === null, r !== null ? 'accepted' : 'rejected')
   }
 
+  private testRelativeDescendantXPath(): void {
+    const parser = new HtmlXPathParser()
+    const doc = parser.parse('<div class="road"><div><a href="/vod/play/id/1/sid/2/nid/3.html">第03集</a></div></div>')
+    const roads = parser.selectNodes("//div[contains(@class,'road')]", doc)
+    const links = roads.length > 0 ? parser.selectNodes(".//a[contains(@href,'/vod/play/')]", roads[0]) : []
+    this.assert('XPath-relative-descendant-link', links.length === 1,
+      'roads=' + roads.length + ' links=' + links.length)
+  }
+
   private testSniffRuleEvaluator(): void {
     let verdict = this.ruleEvaluator.evaluateWeakCandidate('https://player.moedot.net/player/abc')
     this.assert('RuleEvaluator-weak-moedot', verdict.isWeak, 'isWeak=' + verdict.isWeak)
@@ -150,6 +161,11 @@ export class SnifferTestSuite {
 
     let promote = this.ruleEvaluator.evaluatePromotePage('https://player.cycanime.com/?url=abc')
     this.assert('RuleEvaluator-promote-cycanime', promote.shouldPromote, 'shouldPromote=' + promote.shouldPromote)
+
+    promote = this.ruleEvaluator.evaluatePromotePage(
+      'https://www.7sefun.top/addons/dp/player/index.php?key=abc&url=def')
+    this.assert('RuleEvaluator-promote-7sefun-player', promote.shouldPromote,
+      'shouldPromote=' + promote.shouldPromote + ' rule=' + promote.matchedRuleName)
 
     promote = this.ruleEvaluator.evaluatePromotePage('https://cdn.example.com/video.m3u8')
     this.assert('RuleEvaluator-promote-normal', !promote.shouldPromote, 'shouldPromote=' + promote.shouldPromote)

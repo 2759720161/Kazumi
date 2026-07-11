@@ -13,12 +13,13 @@ import { HttpClient } from '../../network/HttpClient'
 import { NetworkPolicy } from './NetworkPolicy'
 import { SnifferSessionPool } from './SnifferSessionPool'
 import { SnifferLease, WebViewCleanupLevel } from './SnifferSessionPool'
+import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 import { Logger } from '../../utils/Logger'
 import { HlsManifestParser } from './HlsManifestParser'
 
 const logger = new Logger('VideoSourceResolver')
 
-const DEFAULT_PLAYER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+const DEFAULT_PLAYER_USER_AGENT = NetworkPolicy.DEFAULT_PLAYER_USER_AGENT
 
 export class VideoSourceResolver {
   private sniffer: VideoSniffer = new VideoSniffer()
@@ -39,6 +40,10 @@ export class VideoSourceResolver {
   private currentLease: SnifferLease | null = null
   private backgroundLease: SnifferLease | null = null
   private isPreparingNext: boolean = false
+  /** 用于协议能力查询（如过滤 DASH）的规则评估器 */
+  private readonly protocolEvaluator: SniffRuleEvaluator = new SniffRuleEvaluator()
+  /** 当前兼容模式会话固定的随机 UA，保证一次嗅探内 UA 不变化。 */
+  private currentSessionUA: string = ''
 
   setWebController(controller: webview.WebviewController): void {
     this.setWorkerWebController(1, controller)
@@ -77,6 +82,38 @@ export class VideoSourceResolver {
     }
   }
 
+  private getEffectiveUserAgent(preferred: string = ''): string {
+    if (preferred.length > 0) {
+      return preferred
+    }
+    if (this.currentSessionUA.length > 0) {
+      return this.currentSessionUA
+    }
+    return DEFAULT_PLAYER_USER_AGENT
+  }
+
+  private shouldUseCompatibilityUserAgent(ruleSource: RuleSource | null): boolean {
+    if (ruleSource === null) {
+      return false
+    }
+    const ruleName = ruleSource.name.toLowerCase()
+    return ruleName === '7sefun' || ruleName === 'tvtfun'
+  }
+
+  private buildSnifferUserAgent(request: VideoSourceRequest, ruleSource: RuleSource | null): string {
+    if (request.userAgent.length > 0) {
+      return request.userAgent
+    }
+    if (ruleSource !== null && ruleSource.userAgent.length > 0) {
+      return ruleSource.userAgent
+    }
+    if (!this.shouldUseCompatibilityUserAgent(ruleSource)) {
+      return ''
+    }
+    this.currentSessionUA = NetworkPolicy.getRandomUA()
+    return this.currentSessionUA
+  }
+
   async resolve(request: VideoSourceRequest): Promise<VideoSourceResult> {
     const mySession = ++this.sessionId
     const myEpoch = this.resolveEpoch
@@ -98,6 +135,8 @@ export class VideoSourceResolver {
     if (request.ruleSourceId >= 0) {
       ruleSource = await this.ruleStore.getById(request.ruleSourceId)
     }
+    this.currentSessionUA = ''
+    this.sniffer.setUserAgent(this.buildSnifferUserAgent(request, ruleSource))
 
     if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
       this.isResolving = false
@@ -118,11 +157,15 @@ export class VideoSourceResolver {
       return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
     }
 
-    const directResult = this.tryBuildDirectMediaResult(sniffUrl)
-    if (directResult !== null) {
-      await this.attachStreamMetadata(directResult, request, mySession, myEpoch)
+    const tvtfunResult = await this.tryResolveTvTFunApiResult(sniffUrl, ruleSource, request)
+    if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
       this.isResolving = false
-      return directResult
+      return VideoSourceResult.cancelled(Date.now() - this.resolveStartTime)
+    }
+    if (tvtfunResult !== null) {
+      await this.attachStreamMetadata(tvtfunResult, request, mySession, myEpoch)
+      this.isResolving = false
+      return tvtfunResult
     }
 
     const direct7sefunResult = this.tryBuild7sefunDirectResult(sniffUrl, ruleSource)
@@ -130,6 +173,13 @@ export class VideoSourceResolver {
       await this.attachStreamMetadata(direct7sefunResult, request, mySession, myEpoch)
       this.isResolving = false
       return direct7sefunResult
+    }
+
+    const directResult = this.tryBuildDirectMediaResult(sniffUrl)
+    if (directResult !== null) {
+      await this.attachStreamMetadata(directResult, request, mySession, myEpoch)
+      this.isResolving = false
+      return directResult
     }
 
     this.currentLease = this.sessionPool.acquire(request)
@@ -188,11 +238,11 @@ export class VideoSourceResolver {
     this.activePrepareSessionId = mySession
     this.isPreparingNext = true
     const prepareStartTime = Date.now()
-
     let ruleSource: RuleSource | null = null
     if (request.ruleSourceId >= 0) {
       ruleSource = await this.ruleStore.getById(request.ruleSourceId)
     }
+    this.backgroundSniffer.setUserAgent(this.buildSnifferUserAgent(request, ruleSource))
     if (!this.isResolverSessionActive(mySession, myEpoch, 2)) {
       this.finishPrepareSession(mySession)
       return VideoSourceResult.cancelled(Date.now() - prepareStartTime)
@@ -206,17 +256,23 @@ export class VideoSourceResolver {
     this.backgroundSniffer.setTimeout(request.sniffTimeoutMs, request.maxRetryCount)
 
     const sniffUrl = await this.normalizeSniffUrlForRule(request.episodeUrl, ruleSource)
-    const directResult = this.tryBuildDirectMediaResult(sniffUrl, prepareStartTime)
-    if (directResult !== null) {
-      await this.attachStreamMetadata(directResult, request, mySession, myEpoch, 2)
-      this.finishPrepareSession(mySession)
-      return directResult
+    const tvtfunResult = await this.tryResolveTvTFunApiResult(sniffUrl, ruleSource, request, prepareStartTime)
+    if (tvtfunResult !== null) {
+      await this.attachStreamMetadata(tvtfunResult, request, mySession, myEpoch, 2)
+      this.emitLog(mySession, 'prepareNextDone', 'url=' + tvtfunResult.videoUrl.substring(0, 80))
+      return tvtfunResult
     }
     const direct7sefunResult = this.tryBuild7sefunDirectResult(sniffUrl, ruleSource, prepareStartTime)
     if (direct7sefunResult !== null) {
       await this.attachStreamMetadata(direct7sefunResult, request, mySession, myEpoch, 2)
       this.finishPrepareSession(mySession)
       return direct7sefunResult
+    }
+    const directResult = this.tryBuildDirectMediaResult(sniffUrl, prepareStartTime)
+    if (directResult !== null) {
+      await this.attachStreamMetadata(directResult, request, mySession, myEpoch, 2)
+      this.finishPrepareSession(mySession)
+      return directResult
     }
 
     const lease = this.sessionPool.acquireBackground(request)
@@ -270,6 +326,11 @@ export class VideoSourceResolver {
     }
 
     logger.info('7sefun decoded player url: %{public}s', playerUrl.substring(0, 100))
+    if (this.shouldSniff7sefunOriginalPage(playerUrl)) {
+      logger.info('7sefun player url requires original page sniffing: %{public}s',
+        playerUrl.substring(0, 100))
+      return url
+    }
     return playerUrl
   }
 
@@ -282,12 +343,81 @@ export class VideoSourceResolver {
     if (type !== 'm3u8' && type !== 'mp4' && type !== 'flv' && type !== 'ts') {
       return null
     }
+    if (this.shouldSniff7sefunOriginalPage(url)) {
+      logger.info('7sefun direct media ignored, fallback to WebView sniffing: %{public}s',
+        url.substring(0, 100))
+      return null
+    }
     const elapsed = Date.now() - startTimeMs
     logger.info('7sefun direct media url resolved without WebView sniffing: %{public}s',
       url.substring(0, 100))
     const candidate = new SnifferResult(url, type, 'unknown', '7sefun_player_config')
     candidate.score = 120
     return VideoSourceResult.success(url, type, [candidate], elapsed)
+  }
+
+  private async tryResolveTvTFunApiResult(url: string, ruleSource: RuleSource | null, request: VideoSourceRequest,
+    startTimeMs: number = this.resolveStartTime): Promise<VideoSourceResult | null> {
+    if (ruleSource === null || ruleSource.name.toLowerCase() !== 'tvtfun') {
+      return null
+    }
+    if (url.indexOf('https://www.tvtfun.net/api/videos/resolve-play-url?') !== 0) {
+      return null
+    }
+    try {
+      const headers: Record<string, string> = {}
+      headers['Accept'] = 'application/json,text/plain,*/*'
+      headers['Accept-Encoding'] = 'identity'
+      headers['Referer'] = request.episodeUrl.indexOf('/api/videos/resolve-play-url?') >= 0
+        ? 'https://www.tvtfun.net/'
+        : request.episodeUrl
+      headers['User-Agent'] = this.getEffectiveUserAgent(request.userAgent)
+      const client = new HttpClient()
+      const response = await client.get(url, headers)
+      if (!response.isSuccessful || response.body.length === 0) {
+        logger.warn('TvTFun resolve-play-url failed: status=%{public}d body=%{public}s',
+          response.statusCode, response.body.substring(0, Math.min(120, response.body.length)))
+        return null
+      }
+      const parsed = JSON.parse(response.body) as Record<string, Object>
+      const mediaUrl = this.extractTvTFunMediaUrl(parsed)
+      if (mediaUrl.length === 0) {
+        logger.warn('TvTFun resolve-play-url returned no media url')
+        return null
+      }
+      const type = SnifferResult.detectType(mediaUrl)
+      if (!this.isDirectPlayableType(type)) {
+        logger.warn('TvTFun resolved url is not playable type=%{public}s url=%{public}s',
+          type, mediaUrl.substring(0, 100))
+        return null
+      }
+      const elapsed = Date.now() - startTimeMs
+      logger.info('TvTFun API resolved media without WebView: %{public}s', mediaUrl.substring(0, 100))
+      const candidate = new SnifferResult(mediaUrl, type, 'unknown', 'tvtfun_resolve_api')
+      candidate.score = 150
+      return VideoSourceResult.success(mediaUrl, type, [candidate], elapsed)
+    } catch (err) {
+      logger.warn('TvTFun resolve-play-url exception: %{public}s', err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
+
+  private extractTvTFunMediaUrl(parsed: Record<string, Object>): string {
+    const data = parsed['data']
+    if (data === undefined || data === null || Array.isArray(data) || typeof data !== 'object') {
+      return ''
+    }
+    const dataRecord = data as Record<string, Object>
+    const rawUrl = dataRecord['url']
+    if (typeof rawUrl !== 'string') {
+      return ''
+    }
+    return rawUrl as string
+  }
+
+  private shouldSniff7sefunOriginalPage(url: string): boolean {
+    const lowerUrl = url.toLowerCase()
+    return lowerUrl.indexOf('jxdunrui.top') !== -1 || lowerUrl.indexOf('mao6.') !== -1
   }
 
   private tryBuildDirectMediaResult(url: string, startTimeMs: number = this.resolveStartTime): VideoSourceResult | null {
@@ -463,7 +593,7 @@ export class VideoSourceResolver {
       }
     }
     if (headers['User-Agent'] === undefined) {
-      headers['User-Agent'] = DEFAULT_PLAYER_USER_AGENT
+      headers['User-Agent'] = this.getEffectiveUserAgent()
     }
     headers['Accept'] = 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*'
     return headers
@@ -483,7 +613,7 @@ export class VideoSourceResolver {
     try {
       const client = new HttpClient()
       const response = await client.get(url, {
-        'User-Agent': DEFAULT_PLAYER_USER_AGENT,
+        'User-Agent': this.getEffectiveUserAgent(),
         'Referer': 'https://www.7sefun.top/',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       })
@@ -512,7 +642,7 @@ export class VideoSourceResolver {
   private decode7sefunPlayerUrl(encoded: string): string {
     const percentEncoded = this.decodeBase64Ascii(encoded)
     try {
-      return decodeURIComponent(percentEncoded)
+      return encodeURI(this.decodeUrlRepeated(percentEncoded))
     } catch (_) {
       return percentEncoded
     }
@@ -675,7 +805,20 @@ export class VideoSourceResolver {
         if (bestResult !== null) {
           resolveOnce(VideoSourceResult.success(bestResult.url, bestResult.type, results, elapsed))
         } else if (results.length > 0) {
-          resolveOnce(VideoSourceResult.success(results[0].url, results[0].type, results, elapsed))
+          // selectBestResult 返回 null 但仍有候选时，区分“全是不支持格式”和“低优先级候选”。
+          const hasUnsupportedOnly = results.every(r => !this.isSupportedProtocol(r.type))
+          if (hasUnsupportedOnly) {
+            resolveOnce(VideoSourceResult.noSupportedFormat(results, elapsed))
+          } else {
+            // 有候选但不在优先类型内（blob/unknown），取评分最高的
+            let fallback = results[0]
+            for (let i = 1; i < results.length; i++) {
+              if (results[i].score > fallback.score) {
+                fallback = results[i]
+              }
+            }
+            resolveOnce(VideoSourceResult.success(fallback.url, fallback.type, results, elapsed))
+          }
         } else {
           resolveOnce(VideoSourceResult.fail('未嗅探到视频流地址', retryCount, elapsed))
         }
@@ -732,10 +875,21 @@ export class VideoSourceResolver {
     })
   }
 
+  /**
+   * 从候选列表中选出最优结果：
+   * 1. 过滤掉协议不受支持的候选（如 DASH .mpd、RTMP）。
+   * 2. 优先从 m3u8/mp4/flv/ts/range_video 中按 score 选最高分。
+   * 3. 若无上述类型，再从 blob/unknown 中选最高分。
+   * 4. 若所有候选都被过滤，返回 null，由调用方返回 noSupportedFormat。
+   */
   private selectBestResult(results: SnifferResult[]): SnifferResult | null {
     let best: SnifferResult | null = null
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
+      // 跳过明确不支持的协议
+      if (!this.isSupportedProtocol(r.type)) {
+        continue
+      }
       if (r.type === 'm3u8' || r.type === 'mp4' || r.type === 'flv' ||
         r.type === 'ts' || r.type === 'range_video') {
         if (best === null || r.score > best.score) {
@@ -743,17 +897,46 @@ export class VideoSourceResolver {
         }
       }
     }
-    if (best === null) {
-      for (let i = 0; i < results.length; i++) {
-        const r = results[i]
-        if (r.type === 'blob' || r.type === 'unknown') {
-          if (best === null || r.score > best.score) {
-            best = r
-          }
+    if (best !== null) {
+      return best
+    }
+    // 第二轮：blob / unknown 类型（可能有效）
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      if (!this.isSupportedProtocol(r.type)) {
+        continue
+      }
+      if (r.type === 'blob' || r.type === 'unknown') {
+        if (best === null || r.score > best.score) {
+          best = r
         }
       }
     }
     return best
+  }
+
+  /**
+   * 判断给定类型/协议是否被播放器支持。
+   */
+  private isSupportedProtocol(type: string): boolean {
+    if (type === 'blob' || type === 'unknown' || type === 'range_video') {
+      return true
+    }
+    const extMap: Record<string, string> = {
+      'm3u8': '.m3u8',
+      'mp4': '.mp4',
+      'flv': '.flv',
+      'ts': '.ts',
+      'mpd': '.mpd',
+      'rtmp': 'rtmp://',
+    }
+    const ext = extMap[type]
+    if (ext === undefined) {
+      // 未知类型默认允许
+      return true
+    }
+    const cap = this.protocolEvaluator.evaluateProtocolCapability(ext)
+    return cap.supported
   }
 
   private applyRuleSourceToResult(result: VideoSourceResult, rule: RuleSource): VideoSourceResult {
@@ -843,7 +1026,7 @@ export class VideoSourceResolver {
     let headerKeys = Object.keys(request.headers)
     for (let i = 0; i < headerKeys.length; i++) {
       let key = headerKeys[i]
-      options.headers[key] = request.headers[key]
+      this.setPlaybackHttpHeader(options.headers, key, request.headers[key])
     }
 
     let capturedContext: CapturedRequestContext | null = this.findCapturedContext(result)
@@ -857,12 +1040,10 @@ export class VideoSourceResolver {
       let ctxHeaderKeys = Object.keys(capturedContext.headers)
       for (let i = 0; i < ctxHeaderKeys.length; i++) {
         let key = ctxHeaderKeys[i]
-        if (options.headers[key] === undefined) {
-          options.headers[key] = capturedContext.headers[key]
-        }
+        this.setPlaybackHttpHeader(options.headers, key, capturedContext.headers[key])
       }
       if (capturedContext.cookies.length > 0) {
-        let existingCookie = options.headers['Cookie']
+        let existingCookie = this.getPlaybackHttpHeader(options.headers, 'Cookie')
         if (existingCookie !== undefined && existingCookie.length > 0) {
           let merged = this.mergeCookieStrings(existingCookie, capturedContext.cookies)
           options.headers['Cookie'] = merged
@@ -873,6 +1054,83 @@ export class VideoSourceResolver {
     }
 
     return options
+  }
+
+  private setPlaybackHttpHeader(headers: Record<string, string>, key: string, value: string): void {
+    const canonicalKey = this.canonicalPlaybackHttpHeader(key)
+    if (canonicalKey.length === 0) {
+      return
+    }
+    const safeValue = this.sanitizePlaybackHttpHeaderValue(value)
+    if (safeValue.length === 0) {
+      return
+    }
+    const existingKey = this.findPlaybackHttpHeaderKey(headers, canonicalKey)
+    if (existingKey.length > 0) {
+      return
+    }
+    headers[canonicalKey] = safeValue
+  }
+
+  private getPlaybackHttpHeader(headers: Record<string, string>, key: string): string {
+    const existingKey = this.findPlaybackHttpHeaderKey(headers, key)
+    if (existingKey.length === 0) {
+      return ''
+    }
+    return headers[existingKey]
+  }
+
+  private findPlaybackHttpHeaderKey(headers: Record<string, string>, key: string): string {
+    const target = key.toLowerCase()
+    const keys = Object.keys(headers)
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i].toLowerCase() === target) {
+        return keys[i]
+      }
+    }
+    return ''
+  }
+
+  private removePlaybackHttpHeader(headers: Record<string, string>, key: string): Record<string, string> {
+    const target = key.toLowerCase()
+    const next: Record<string, string> = {}
+    const keys = Object.keys(headers)
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i].toLowerCase() !== target) {
+        next[keys[i]] = headers[keys[i]]
+      }
+    }
+    return next
+  }
+
+  private canonicalPlaybackHttpHeader(key: string): string {
+    const lowerKey = key.trim().toLowerCase()
+    switch (lowerKey) {
+      case 'cookie':
+        return 'Cookie'
+      case 'origin':
+        return 'Origin'
+      case 'accept':
+        return 'Accept'
+      case 'referer':
+      case 'referrer':
+        return 'Referer'
+      case 'user-agent':
+        return 'User-Agent'
+      default:
+        return ''
+    }
+  }
+
+  private sanitizePlaybackHttpHeaderValue(value: string): string {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) {
+      return ''
+    }
+    if (trimmed.indexOf('\r') >= 0 || trimmed.indexOf('\n') >= 0 || trimmed.indexOf(',') >= 0) {
+      return ''
+    }
+    return trimmed
   }
 
   private mergeCookieStrings(existing: string, captured: string): string {
@@ -903,37 +1161,67 @@ export class VideoSourceResolver {
 
   async buildPlaybackOptionsWithRule(result: VideoSourceResult, request: VideoSourceRequest): Promise<PlaybackOptions> {
     const options = this.buildPlaybackOptions(result, request)
+    let ruleSource: RuleSource | null = null
 
     if (request.ruleSourceId >= 0) {
-      const rule = await this.ruleStore.getById(request.ruleSourceId)
-      if (rule !== null) {
-        if (options.referer.length === 0 && rule.referer.length > 0) {
-          options.referer = rule.referer
+      ruleSource = await this.ruleStore.getById(request.ruleSourceId)
+      if (ruleSource !== null) {
+        if (options.referer.length === 0 && ruleSource.referer.length > 0) {
+          options.referer = ruleSource.referer
         }
-        if (options.userAgent.length === 0 && rule.userAgent.length > 0) {
-          options.userAgent = rule.userAgent
+        if (options.userAgent.length === 0 && ruleSource.userAgent.length > 0) {
+          options.userAgent = ruleSource.userAgent
         }
-        if (rule.name.toLowerCase() === '7sefun') {
-          options.referer = this.build7sefunPlaybackReferer(result.videoUrl, request.episodeUrl)
-          if (options.userAgent.length === 0) {
-            options.userAgent = DEFAULT_PLAYER_USER_AGENT
+        if (ruleSource.name.toLowerCase() === '7sefun') {
+          const fallbackReferer = this.build7sefunPlaybackReferer(result.videoUrl, request.episodeUrl)
+          if (this.shouldOverride7sefunReferer(result.videoUrl) || options.referer.length === 0) {
+            options.referer = fallbackReferer
           }
+          if (options.userAgent.length === 0) {
+            options.userAgent = this.getEffectiveUserAgent()
+          }
+          const existingReferer = this.findPlaybackHttpHeaderKey(options.headers, 'Referer')
           if (options.referer.length > 0) {
-            options.headers['Referer'] = options.referer
+            if (existingReferer.length === 0 || this.shouldOverride7sefunReferer(result.videoUrl)) {
+              if (existingReferer.length > 0 && existingReferer !== 'Referer') {
+                options.headers = this.removePlaybackHttpHeader(options.headers, existingReferer)
+              }
+              options.headers['Referer'] = options.referer
+            }
+          } else if (this.shouldOverride7sefunReferer(result.videoUrl) && existingReferer.length > 0) {
+            options.headers = this.removePlaybackHttpHeader(options.headers, existingReferer)
+          }
+          if (options.userAgent.length > 0) {
+            options.headers['User-Agent'] = options.userAgent
           }
           options.headers['Accept'] = '*/*'
-          options.headers['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8'
           logger.info('7sefun playback headers: referer=%{public}s, url=%{public}s',
             options.referer.length > 0 ? options.referer : '<empty>',
             result.videoUrl.substring(0, 80))
+        } else if (ruleSource.name.toLowerCase() === 'tvtfun') {
+          if (options.referer.length === 0) {
+            options.referer = 'https://www.tvtfun.net/'
+          }
+          if (options.userAgent.length === 0) {
+            options.userAgent = this.getEffectiveUserAgent()
+          }
+          options.headers['Referer'] = options.referer
+          options.headers['User-Agent'] = options.userAgent
+          options.headers['Accept'] = '*/*'
+          logger.info('TvTFun playback headers applied: url=%{public}s', result.videoUrl.substring(0, 80))
         }
       }
     }
-    if (options.userAgent.length === 0) {
-      options.userAgent = DEFAULT_PLAYER_USER_AGENT
+    if (options.userAgent.length === 0 && this.shouldUseCompatibilityUserAgent(ruleSource)) {
+      options.userAgent = this.getEffectiveUserAgent()
     }
 
     return options
+  }
+
+  private shouldOverride7sefunReferer(videoUrl: string): boolean {
+    const lowerUrl = videoUrl.toLowerCase()
+    return lowerUrl.indexOf('groupvideo.photo.qq.com') !== -1 || lowerUrl.indexOf('lmm85.com') !== -1
   }
 
   private build7sefunPlaybackReferer(videoUrl: string, episodeUrl: string): string {

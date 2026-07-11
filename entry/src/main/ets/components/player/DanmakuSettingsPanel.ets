@@ -158,7 +158,7 @@ export struct DanmakuSettingsPanelContent {
   @Prop isFullScreen: boolean = false
   @Prop @Watch('onSettingsVersionChanged') settingsVersion: number = 0
   @Prop showSourceFilter: boolean = true
-  onToggleDanmaku: () => void = () => {}
+  onSetDanmakuEnabled: (enabled: boolean) => void = () => {}
   onPanelClose: () => void = () => {}
   onPauseAutoHide: () => void = () => {}
   onResumeAutoHide: () => void = () => {}
@@ -194,9 +194,13 @@ export struct DanmakuSettingsPanelContent {
   @State isRegexValid: boolean = true
   @State isResetting: boolean = false
 
+
   aboutToAppear(): void {
     this.panelDanmakuEnabled = this.isDanmakuEnabled
     this.loadAllSettings()
+  }
+
+  aboutToDisappear(): void {
   }
 
   private onDanmakuEnabledChanged(): void {
@@ -300,8 +304,8 @@ export struct DanmakuSettingsPanelContent {
           title: '弹幕总开关',
           value: $panelDanmakuEnabled,
           switchEnabled: true,
-          onToggle: (_value: boolean) => {
-            this.onToggleDanmaku()
+          onToggle: (value: boolean) => {
+            this.onSetDanmakuEnabled(value)
           }
         })
       }
@@ -744,16 +748,21 @@ export struct DanmakuSettingsPanelContent {
 
       Text(this.getSliderValueText(stateKey))
         .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
+        .fontWeight(FontWeight.Medium)
+        .fontColor(enabled ? $r('app.color.accent_blue') : $r('app.color.text_secondary'))
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .borderRadius(12)
+        .backgroundColor(enabled ? $r('app.color.episode_item_selected_bg') : $r('app.color.button_ghost_bg'))
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 10, bottom: 0 })
+    .padding({ left: 16, right: 16, top: 8, bottom: 0 })
 
     Slider({ value: this.getSliderValue(stateKey), min: min, max: max, step: step })
       .width('100%')
-      .padding({ left: 12, right: 12, bottom: 8 })
+      .height(24)
+      .padding({ left: 16, right: 16 })
       .enabled(enabled)
-      .opacity(enabled ? 1.0 : 0.4)
+      .opacity(enabled ? 1.0 : 0.35)
       .trackColor($r('app.color.divider_color'))
       .selectedColor($r('app.color.accent_blue'))
       .onChange((sliderValue: number, mode: SliderChangeMode) => {

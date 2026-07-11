@@ -5,7 +5,9 @@ import {
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildTitleBarOptions
+  buildTitleBarOptions,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../../utils/AdvancedOptionsUnlock'
 
@@ -15,6 +17,7 @@ struct ThirdPartyPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = false
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   private scroller: Scroller = new Scroller()
 
   build() {
@@ -65,7 +68,8 @@ struct ThirdPartyPage {
     }
     .width('100%')
     .height('100%')
-    .titleBar(buildTitleBarOptions('三方库与服务'))
+    .mode(NavigationMode.Stack)
+    .titleBar(buildTitleBarOptions('三方库与服务', this.hdsMaterialLevel))
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
     .backgroundColor(Color.Transparent)

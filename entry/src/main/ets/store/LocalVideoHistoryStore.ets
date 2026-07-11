@@ -106,6 +106,19 @@ export class LocalVideoHistoryStore {
     return rows;
   }
 
+  async deleteByIds(ids: number[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0;
+    }
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
+    predicates.in(RdbConstants.COL_ID, ids);
+    const rows = await this.rdbManager.delete(predicates);
+    if (rows > 0) {
+      LocalVideoHistoryChangeSignal.notifyChanged();
+    }
+    return rows;
+  }
+
   async updateCoverUri(fileKey: string, coverUri: string): Promise<number> {
     if (fileKey.length === 0 || coverUri.length === 0) {
       return 0;

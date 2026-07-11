@@ -33,7 +33,7 @@ export struct SniffErrorOverlay {
           .margin({ bottom: 22 })
 
         Row() {
-          Button('重试')
+          Button('重试解析')
             .onClick(() => {
               if (this.onRetry) {
                 this.onRetry()
@@ -49,7 +49,7 @@ export struct SniffErrorOverlay {
             .shadow({ radius: 14, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
             .margin({ right: 12 })
 
-          Button('返回')
+          Button('返回选择')
             .onClick(() => {
               if (this.onBack) {
                 this.onBack()

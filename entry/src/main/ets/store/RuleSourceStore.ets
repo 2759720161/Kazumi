@@ -177,6 +177,20 @@ export class RuleSourceStore {
           rule.createdAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_CREATED_AT));
           rule.updatedAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_UPDATED_AT));
 
+          try {
+            const rawJson = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_RAW_JSON));
+            if (rawJson.length > 0) {
+              const rawRule = RuleSource.fromJSON(JSON.parse(rawJson) as Record<string, Object>);
+              rule.searchMode = rawRule.searchMode;
+              rule.chapterMode = rawRule.chapterMode;
+              rule.searchApiConfig = rawRule.searchApiConfig;
+              rule.chapterApiConfig = rawRule.chapterApiConfig;
+            }
+          } catch (e) {
+            logger.debug('raw_json parsing failed, ignoring API config: %{public}s',
+              e instanceof Error ? e.message : String(e));
+          }
+
           const antiCrawlJson = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_ANTI_CRAWLER_CONFIG));
           if (antiCrawlJson.length > 0) {
             try {

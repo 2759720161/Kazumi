@@ -7,70 +7,56 @@ export struct RecommendCard {
   @Prop item: RecommendCardModel = new RecommendCardModel()
   @Prop showRank: boolean = false
   @Prop cardWidth: number = 112
+  @State isPressed: boolean = false
 
   build() {
-    Stack({ alignContent: Alignment.BottomStart }) {
-      Image(this.item.getGridCover().length > 0 ? this.item.getGridCover() : $r('app.media.ic_placeholder'))
-        .width('100%')
-        .height('100%')
-        .objectFit(ImageFit.Cover)
-        .borderRadius(12)
-        .alt($r('app.media.ic_placeholder'))
+    Column({ space: 8 }) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Image(this.item.getGridCover().length > 0 ? this.item.getGridCover() : $r('app.media.ic_placeholder'))
+          .draggable(false)
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Cover)
+          .borderRadius(12)
+          .alt($r('app.media.ic_placeholder'))
 
-      this.BottomGradient()
-      this.TitleOverlay()
-
-      if (this.showRank && this.item.rank > 0) {
-        this.RankBadge()
+        if (this.showRank && this.item.rank > 0) {
+          this.RankBadge()
+        }
       }
+      .width('100%')
+      .height(this.getPosterHeight())
+      .borderRadius(12)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
+      .clip(true)
+
+      Text(this.item.title)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .lineHeight(18)
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Start)
+        .width('100%')
     }
     .width('100%')
-    .height(this.getPosterHeight())
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
-    .clip(true)
+    .height(this.getCardHeight())
+    .alignItems(HorizontalAlign.Start)
+    .scale({ x: this.isPressed ? 0.98 : 1, y: this.isPressed ? 0.98 : 1 })
+    .animation({ duration: 150 })
     .onClick(() => {
       this.navigateToDetail()
     })
-  }
-
-  @Builder
-  private BottomGradient() {
-    Column()
-      .width('100%')
-      .height('48%')
-      .linearGradient({
-        direction: GradientDirection.Bottom,
-        colors: [
-          ['#00000000', 0],
-          ['#88000000', 0.55],
-          ['#D9000000', 1]
-        ]
-      })
-      .hitTestBehavior(HitTestMode.None)
-  }
-
-  @Builder
-  private TitleOverlay() {
-    Text(this.item.title)
-      .fontSize(14)
-      .fontWeight(FontWeight.Bold)
-      .fontColor(Color.White)
-      .lineHeight(18)
-      .maxLines(2)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
-      .textAlign(TextAlign.Start)
-      .width('100%')
-      .padding({ left: 9, right: 9, bottom: 10 })
-      .textShadow({
-        radius: 6,
-        color: '#99000000',
-        offsetX: 0,
-        offsetY: 1
-      })
-      .hitTestBehavior(HitTestMode.None)
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.isPressed = true
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.isPressed = false
+      }
+    })
   }
 
   @Builder
@@ -97,6 +83,6 @@ export struct RecommendCard {
   }
 
   private getCardHeight(): number {
-    return this.getPosterHeight()
+    return this.getPosterHeight() + 44
   }
 }

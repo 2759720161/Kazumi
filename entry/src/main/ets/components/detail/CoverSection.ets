@@ -27,6 +27,7 @@ export struct CoverSection {
     Stack() {
       if (this.currentCover.length > 0) {
         Image(this.currentCover)
+          .draggable(false)
           .width('100%')
           .height('100%')
           .objectFit(ImageFit.Cover)

@@ -23,6 +23,13 @@ interface MpvNapiInterface {
   nativeSetSurfaceId(ctxId: number, surfaceId: string): number
   nativeApiVersion(): number
   nativeOnEvent(ctxId: number, callback: (event: MpvEventData) => void): number
+  nativeVpCreate(qualityLevel: number): number
+  nativeVpSetOutputSurface(surfaceId: string): number
+  nativeVpGetInputSurfaceId(): string | null
+  nativeVpSetQualityLevel(qualityLevel: number): number
+  nativeVpStart(): number
+  nativeVpStop(): number
+  nativeVpDestroy(): void
 }
 
 interface MpvEventData {
@@ -99,6 +106,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
   private hwdecMode: string = 'auto'
   private hlsAdFilterEnabled: boolean = true
   private segAllowImgEnabled: boolean = true
+  private detailEnhancerQuality: number = -1
   private pendingAspectMode: VideoAspectMode | null = null
   private isReleasing: boolean = false
 
@@ -106,15 +114,53 @@ export class MpvPlayerEngine implements IPlayerEngine {
     this.surfaceId = surfaceId
     if (this.isInitialized && !this.isReleasing && this.ctxId >= 0 && napi !== null && surfaceId.length > 0) {
       try {
-        const err = napi.nativeSetSurfaceId(this.ctxId, surfaceId)
+        const targetSurfaceId = this.getEffectiveSurfaceId(surfaceId)
+        const err = napi.nativeSetSurfaceId(this.ctxId, targetSurfaceId)
         if (err < 0) {
           logger.warn('mpv surface rebind failed: %{public}d', err)
         } else {
-          logger.info('mpv surface rebound: %{public}s', surfaceId)
+          logger.info('mpv surface rebound: %{public}s (vp=%{public}s)', targetSurfaceId,
+            this.detailEnhancerQuality >= 0 ? 'on' : 'off')
         }
       } catch (_err) {
         logger.warn('mpv surface rebind threw')
       }
+    }
+  }
+
+  private getEffectiveSurfaceId(displaySurfaceId: string): string {
+    if (this.detailEnhancerQuality < 0 || napi === null) {
+      return displaySurfaceId
+    }
+    try {
+      const createRet = napi.nativeVpCreate(this.detailEnhancerQuality)
+      if (createRet !== 0) {
+        logger.warn('VideoProcessing create failed: %{public}d, falling back to direct surface', createRet)
+        return displaySurfaceId
+      }
+      const setSurfaceRet = napi.nativeVpSetOutputSurface(displaySurfaceId)
+      if (setSurfaceRet !== 0) {
+        logger.warn('VideoProcessing set output surface failed: %{public}d', setSurfaceRet)
+        napi.nativeVpDestroy()
+        return displaySurfaceId
+      }
+      const inputSurfaceId = napi.nativeVpGetInputSurfaceId()
+      if (inputSurfaceId === null || inputSurfaceId.length === 0) {
+        logger.warn('VideoProcessing get input surface id failed')
+        napi.nativeVpDestroy()
+        return displaySurfaceId
+      }
+      const startRet = napi.nativeVpStart()
+      if (startRet !== 0) {
+        logger.warn('VideoProcessing start failed: %{public}d', startRet)
+        napi.nativeVpDestroy()
+        return displaySurfaceId
+      }
+      logger.info('VideoProcessing pipeline active: mpv→VP(%{public}d)→display', this.detailEnhancerQuality)
+      return inputSurfaceId
+    } catch (err) {
+      logger.warn('VideoProcessing setup threw: %{public}s', String(err))
+      return displaySurfaceId
     }
   }
 
@@ -128,6 +174,10 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
   setSegAllowImgEnabled(enabled: boolean): void {
     this.segAllowImgEnabled = enabled
+  }
+
+  setDetailEnhancerQuality(quality: number): void {
+    this.detailEnhancerQuality = quality
   }
 
   prepare(options: PlaybackOptions): void {
@@ -191,7 +241,12 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
       if (options.url.length > 0) {
         const loadArgs: string[] = ['loadfile', options.url]
-        napi.nativeCommand(this.ctxId, loadArgs)
+        const loadErr = napi.nativeCommand(this.ctxId, loadArgs)
+        logger.info('mpv loadfile command result: %{public}d', loadErr)
+        if (loadErr < 0) {
+          this.failPlayback('mpv loadfile failed: ' + String(loadErr))
+          return
+        }
         this.state.stateName = 'preparing'
         this.notifyStateChange()
         this.startPrepareTimeout()
@@ -319,6 +374,15 @@ export class MpvPlayerEngine implements IPlayerEngine {
     this.clearPrepareTimeout()
     if (this.isReleasing) {
       return
+    }
+    if (napi !== null && this.detailEnhancerQuality >= 0) {
+      try {
+        napi.nativeVpStop()
+        napi.nativeVpDestroy()
+        logger.info('VideoProcessing destroyed on release')
+      } catch (_err) {
+        logger.warn('VideoProcessing destroy on release failed')
+      }
     }
     if (this.ctxId >= 0 && napi !== null) {
       const releasingCtxId = this.ctxId
@@ -511,15 +575,68 @@ export class MpvPlayerEngine implements IPlayerEngine {
         const headerParts: string[] = []
         for (let i = 0; i < headerKeys.length; i++) {
           const key = headerKeys[i]
-          headerParts.push(`${key}: ${options.headers[key]}`)
+          const headerLine = this.buildSafeMpvHeaderLine(key, options.headers[key])
+          if (headerLine.length > 0) {
+            headerParts.push(headerLine)
+          }
         }
-        napi.nativeSetProperty(this.ctxId, 'http-header-fields', headerParts.join(','))
+        if (headerParts.length > 0) {
+          napi.nativeSetProperty(this.ctxId, 'http-header-fields', headerParts.join(','))
+          logger.info('mpv http headers applied: count=%{public}d names=%{public}s',
+            headerParts.length, this.describeHeaderNames(headerParts))
+        }
       }
       if (options.startPositionMs > 0) {
         napi.nativeSetProperty(this.ctxId, 'start', String(options.startPositionMs / 1000))
       }
     } catch (_err) {
       logger.warn('applyMpvOptions partially failed (non-fatal)')
+    }
+  }
+
+  private describeHeaderNames(headerParts: string[]): string {
+    const names: string[] = []
+    for (let i = 0; i < headerParts.length; i++) {
+      const colonIndex = headerParts[i].indexOf(':')
+      if (colonIndex > 0) {
+        names.push(headerParts[i].substring(0, colonIndex))
+      }
+    }
+    return names.join('|')
+  }
+
+  private buildSafeMpvHeaderLine(key: string, value: string): string {
+    const headerName = this.normalizeMpvHeaderName(key)
+    if (headerName.length === 0) {
+      return ''
+    }
+    const headerValue = value.trim()
+    if (headerValue.length === 0) {
+      return ''
+    }
+    if (headerValue.indexOf('\r') >= 0 || headerValue.indexOf('\n') >= 0 || headerValue.indexOf(',') >= 0) {
+      logger.warn('Skip unsafe mpv http header: %{public}s', headerName)
+      return ''
+    }
+    return `${headerName}: ${headerValue}`
+  }
+
+  private normalizeMpvHeaderName(key: string): string {
+    const lowerKey = key.trim().toLowerCase()
+    switch (lowerKey) {
+      case 'cookie':
+        return 'Cookie'
+      case 'origin':
+        return 'Origin'
+      case 'accept':
+        return 'Accept'
+      case 'referer':
+      case 'referrer':
+        return 'Referer'
+      case 'user-agent':
+        return 'User-Agent'
+      default:
+        return ''
     }
   }
 

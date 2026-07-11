@@ -297,6 +297,22 @@
       "value": "#BFF7FAFF"
     },
     {
+      "name": "detail_info_panel_bg",
+      "value": "#00000000"
+    },
+    {
+      "name": "detail_info_metric_bg",
+      "value": "#00000000"
+    },
+    {
+      "name": "detail_info_border",
+      "value": "#22FFFFFF"
+    },
+    {
+      "name": "detail_info_shadow",
+      "value": "#4D000000"
+    },
+    {
       "name": "bottom_bar_surface",
       "value": "#D9F7FAFF"
     },
@@ -315,6 +331,10 @@
     {
       "name": "hero_gradient_start",
       "value": "#08000000"
+    },
+    {
+      "name": "side_bar_background",
+      "value": "#E6F5F5F5"
     }
   ]
 }

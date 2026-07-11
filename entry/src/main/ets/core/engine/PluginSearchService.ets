@@ -2,11 +2,14 @@ import { RuleSource } from '../../models/RuleSource'
 import { RuleRuntimeModel } from '../../models/RuleRuntimeModel'
 import { PluginSearchState, SearchResultRef } from '../../models/PluginSearchState'
 import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
+import { AnimeItem } from '../../models/AnimeItem'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { SearchExecutor } from './SearchExecutor'
+import { ApiRuleStrategy } from './ApiRuleStrategy'
 import { RequestPolicyHandler } from './RequestPolicyHandler'
 import { AntiCrawlHandler } from './AntiCrawlHandler'
 import { Logger } from '../../utils/Logger'
+import { RuleMode } from '../../models/ApiRuleConfig'
 
 const logger = new Logger('PluginSearchService')
 
@@ -15,6 +18,7 @@ const SEARCH_CONCURRENCY = 4
 export class PluginSearchService {
   private ruleStore: RuleSourceStore = new RuleSourceStore()
   private searchExecutor: SearchExecutor = new SearchExecutor()
+  private apiRuleStrategy: ApiRuleStrategy = new ApiRuleStrategy()
   private requestHandler: RequestPolicyHandler = new RequestPolicyHandler()
   private antiCrawlHandler: AntiCrawlHandler = new AntiCrawlHandler()
   private pluginStates: PluginSearchState[] = []
@@ -87,6 +91,19 @@ export class PluginSearchService {
     }
     try {
       const runtime = new RuleRuntimeModel(rule)
+      if (rule.searchMode === RuleMode.API) {
+        const results = await this.apiRuleStrategy.search(rule, keyword)
+        if (this.searchEpoch !== epoch) {
+          return
+        }
+        if (results.length === 0) {
+          this.updateState(stateIndex, PluginSearchState.noResult(rule.id, rule.name), epoch)
+          return
+        }
+        this.updateSearchResults(stateIndex, rule, results, epoch)
+        return
+      }
+
       const html = await this.requestHandler.fetchWithRule(runtime, keyword)
       if (this.searchEpoch !== epoch) {
         return
@@ -107,16 +124,7 @@ export class PluginSearchService {
         return
       }
 
-      const refs: SearchResultRef[] = []
-      for (let i = 0; i < results.length; i++) {
-        const ref = new SearchResultRef()
-        ref.name = results[i].name
-        ref.url = results[i].url
-        ref.sourceId = rule.id
-        ref.sourceName = rule.name
-        refs.push(ref)
-      }
-      this.updateState(stateIndex, PluginSearchState.success(rule.id, rule.name, refs), epoch)
+      this.updateSearchResults(stateIndex, rule, results, epoch)
     } catch (err) {
       if (this.searchEpoch !== epoch) {
         return
@@ -163,6 +171,14 @@ export class PluginSearchService {
     await this.searchByPlugin(stateIndex, rule, keyword, currentEpoch)
   }
 
+  async retryPluginById(pluginId: number, keyword: string): Promise<void> {
+    const stateIndex = this.pluginStates.findIndex((state: PluginSearchState) => state.pluginId === pluginId)
+    if (stateIndex === -1) {
+      return
+    }
+    await this.retryPlugin(stateIndex, keyword)
+  }
+
   updatePluginError(index: number, message: string): void {
     if (index < 0 || index >= this.pluginStates.length) {
       return
@@ -170,6 +186,14 @@ export class PluginSearchService {
     const state = this.pluginStates[index]
     this.pluginStates[index] = PluginSearchState.error(state.pluginId, state.pluginName, message)
     this.notifyStateChange(this.searchEpoch)
+  }
+
+  updatePluginErrorById(pluginId: number, message: string): void {
+    const index = this.pluginStates.findIndex((state: PluginSearchState) => state.pluginId === pluginId)
+    if (index === -1) {
+      return
+    }
+    this.updatePluginError(index, message)
   }
 
   async queryRoads(searchRef: SearchResultRef): Promise<PlaybackSource> {
@@ -194,6 +218,30 @@ export class PluginSearchService {
 
     try {
       const runtime = new RuleRuntimeModel(rule)
+      if (rule.chapterMode === RuleMode.API) {
+        const roads = await this.apiRuleStrategy.queryRoads(rule, searchRef.url)
+        if (this.searchEpoch !== currentEpoch) {
+          source.status = 'error'
+          source.message = '请求已取消'
+          return source
+        }
+        if (roads.length === 0) {
+          source.status = 'empty'
+          source.message = '无剧集'
+          return source
+        }
+        for (let i = 0; i < roads.length; i++) {
+          for (let j = 0; j < roads[i].episodes.length; j++) {
+            roads[i].episodes[j].sourceId = rule.id
+            roads[i].episodes[j].sourceName = rule.name
+            roads[i].episodes[j].animeUrl = searchRef.url
+          }
+        }
+        source.roads = roads
+        source.status = 'success'
+        return source
+      }
+
       const html = await this.requestHandler.fetchUrlWithRuleHeaders(runtime, searchRef.url)
       if (this.searchEpoch !== currentEpoch) {
         source.status = 'error'
@@ -231,6 +279,62 @@ export class PluginSearchService {
     return source
   }
 
+  async queryRoadsFromHtml(searchRef: SearchResultRef, html: string): Promise<PlaybackSource> {
+    const source = new PlaybackSource()
+    source.name = searchRef.sourceName
+    source.sourceId = searchRef.sourceId
+    source.animeUrl = searchRef.url
+    source.status = 'pending'
+
+    const rule = await this.ruleStore.getById(searchRef.sourceId)
+    if (rule === null) {
+      source.status = 'error'
+      source.message = '规则源不存在'
+      return source
+    }
+
+    try {
+      const runtime = new RuleRuntimeModel(rule)
+      if (rule.chapterMode === RuleMode.API) {
+        const roads = await this.apiRuleStrategy.queryRoads(rule, searchRef.url)
+        if (roads.length === 0) {
+          source.status = 'empty'
+          source.message = '无剧集'
+          return source
+        }
+        for (let i = 0; i < roads.length; i++) {
+          for (let j = 0; j < roads[i].episodes.length; j++) {
+            roads[i].episodes[j].sourceId = rule.id
+            roads[i].episodes[j].sourceName = rule.name
+            roads[i].episodes[j].animeUrl = searchRef.url
+          }
+        }
+        source.roads = roads
+        source.status = 'success'
+        return source
+      }
+      const roads = this.searchExecutor.parseRoads(html, runtime)
+      if (roads.length === 0) {
+        source.status = 'empty'
+        source.message = '无剧集'
+        return source
+      }
+      for (let i = 0; i < roads.length; i++) {
+        for (let j = 0; j < roads[i].episodes.length; j++) {
+          roads[i].episodes[j].sourceId = rule.id
+          roads[i].episodes[j].sourceName = rule.name
+          roads[i].episodes[j].animeUrl = searchRef.url
+        }
+      }
+      source.roads = roads
+      source.status = 'success'
+    } catch (err) {
+      source.status = 'error'
+      source.message = this.normalizeErrorMessage(err instanceof Error ? err.message : '解析失败')
+    }
+    return source
+  }
+
   private normalizeErrorMessage(message: string): string {
     const text = message.toLowerCase()
     if (text.indexOf('timeout') !== -1 ||
@@ -241,6 +345,19 @@ export class PluginSearchService {
       return '搜索超时，可重试'
     }
     return message
+  }
+
+  private updateSearchResults(stateIndex: number, rule: RuleSource, results: AnimeItem[], epoch: number): void {
+    const refs: SearchResultRef[] = []
+    for (let i = 0; i < results.length; i++) {
+      const ref = new SearchResultRef()
+      ref.name = results[i].name
+      ref.url = results[i].url
+      ref.sourceId = rule.id
+      ref.sourceName = rule.name
+      refs.push(ref)
+    }
+    this.updateState(stateIndex, PluginSearchState.success(rule.id, rule.name, refs), epoch)
   }
 
   private updateState(index: number, state: PluginSearchState, epoch: number): void {

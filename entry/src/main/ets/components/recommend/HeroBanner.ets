@@ -7,6 +7,7 @@ export struct HeroBanner {
   @State currentIndex: number = 0
   @Prop items: RecommendCardModel[] = []
   @Prop topInset: number = 0
+  @Prop version: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
   private swiperController: SwiperController = new SwiperController()
   private autoPlayInterval: number = 5000
@@ -16,7 +17,7 @@ export struct HeroBanner {
       Swiper(this.swiperController) {
         ForEach(this.items, (item: RecommendCardModel, index?: number) => {
           this.HeroSlide(item)
-        }, (item: RecommendCardModel, index?: number) => 'hero_' + item.id.toString() + '_' + (index ?? 0).toString())
+        }, (item: RecommendCardModel, index?: number) => 'hero_' + this.version.toString() + '_' + item.id.toString() + '_' + (index ?? 0).toString())
       }
       .autoPlay(this.items.length > 1)
       .interval(this.autoPlayInterval)
@@ -36,7 +37,7 @@ export struct HeroBanner {
             .borderRadius(2)
             .backgroundColor((index ?? 0) === this.currentIndex ? $r('sys.color.icon_primary') : $r('app.color.text_hint'))
             .animation({ duration: 200, curve: Curve.EaseOut })
-        }, (_: RecommendCardModel, index?: number) => 'dot_' + (index ?? 0).toString())
+        }, (_: RecommendCardModel, index?: number) => 'dot_' + this.version.toString() + '_' + (index ?? 0).toString())
       }
       .margin({ bottom: 16, left: 20 })
     }
@@ -46,15 +47,27 @@ export struct HeroBanner {
 
   @Builder
   private HeroBackground(item: RecommendCardModel) {
-    Stack() {
+    Stack({ alignContent: Alignment.Top }) {
       if (item.getHeroBackdrop().length > 0) {
-        Image(item.getHeroBackdrop())
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Cover)
-          .blur(14)
-          .opacity(0.72)
-          .onError(() => {})
+        if (this.screenWidthVp >= 600) {
+          Image(item.getHeroBackdrop())
+            .draggable(false)
+            .width('100%')
+            .aspectRatio(16 / 9)
+            .objectFit(ImageFit.Cover)
+            .blur(14)
+            .opacity(0.72)
+            .onError(() => {})
+        } else {
+          Image(item.getHeroBackdrop())
+            .draggable(false)
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Cover)
+            .blur(14)
+            .opacity(0.72)
+            .onError(() => {})
+        }
       }
 
       Column()
@@ -106,11 +119,11 @@ export struct HeroBanner {
             if (item.score > 0) {
               Row({ space: 4 }) {
                 Text('\u2605')
-                  .fontSize(12)
+                  .fontSize(11)
                   .fontColor('#FFD700')
                 Text(item.getScoreText())
-                  .fontSize(13)
-                  .fontColor(Color.White)
+                  .fontSize(11)
+                  .fontColor('#CCFFFFFF')
                   .fontWeight(FontWeight.Medium)
               }
               .padding({ left: 8, right: 8, top: 3, bottom: 3 })
@@ -127,12 +140,14 @@ export struct HeroBanner {
                 .backgroundColor('#4D000000')
             }
 
-            Text(item.getMetaText())
-              .fontSize(11)
-              .fontColor('#CCFFFFFF')
-              .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-              .borderRadius(10)
-              .backgroundColor('#4D000000')
+            if (item.getMetaText().length > 0) {
+              Text(item.getMetaText())
+                .fontSize(11)
+                .fontColor('#CCFFFFFF')
+                .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+                .borderRadius(10)
+                .backgroundColor('#4D000000')
+            }
           }
 
           if (item.tags.length > 0) {
@@ -144,21 +159,23 @@ export struct HeroBanner {
           }
 
         }
-        .width(this.getTextWidth())
+        .layoutWeight(1)
         .padding({ left: 20, right: 10 })
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Start)
 
         Column() {
           Image(item.getGridCover().length > 0 ? item.getGridCover() : $r('app.media.ic_placeholder'))
+            .draggable(false)
             .width('100%')
-            .aspectRatio(3 / 4)
+            .height('100%')
             .objectFit(ImageFit.Cover)
             .borderRadius(12)
             .shadow({ radius: 20, color: '#4D000000', offsetY: 8 })
             .alt($r('app.media.ic_placeholder'))
         }
         .width(this.getPosterWidth())
+        .height(this.getPosterHeight())
         .padding({ left: 4, right: 18 })
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
@@ -184,18 +201,19 @@ export struct HeroBanner {
     return 300 + this.topInset
   }
 
-  private getTextWidth(): string {
-    if (this.screenWidthVp >= 600) {
-      return '58%'
+  private getPosterWidth(): number {
+    if (this.screenWidthVp >= 1200) {
+      return 198
+    } else if (this.screenWidthVp >= 840) {
+      return 192
+    } else if (this.screenWidthVp >= 600) {
+      return 180
     }
-    return '66%'
+    return 122
   }
 
-  private getPosterWidth(): string {
-    if (this.screenWidthVp >= 600) {
-      return '42%'
-    }
-    return '34%'
+  private getPosterHeight(): number {
+    return Math.round(this.getPosterWidth() * 4 / 3)
   }
 
   private getContentTopPadding(): number {

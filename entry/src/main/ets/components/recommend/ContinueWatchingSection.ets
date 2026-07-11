@@ -53,6 +53,7 @@ export struct ContinueWatchingSection {
   private ContinueCard(record: HistoryRecord) {
     Row({ space: 12 }) {
       Image(record.animeCover.length > 0 ? record.animeCover : $r('app.media.ic_placeholder'))
+        .draggable(false)
         .width(52)
         .height(72)
         .objectFit(ImageFit.Cover)

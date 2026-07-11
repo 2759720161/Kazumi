@@ -9,6 +9,12 @@ import { Logger } from '../../utils/Logger';
 
 const logger = new Logger('SearchExecutor');
 
+class PlaybackLinkCandidate {
+  rawUrl: string = '';
+  title: string = '';
+  text: string = '';
+}
+
 export class SearchExecutor {
   private parser: HtmlXPathParser;
   private searchResultFilter: SearchResultFilter;
@@ -65,8 +71,9 @@ export class SearchExecutor {
   }
 
   private parse7sefunSearchResults(doc: HtmlDocument, runtime: RuleRuntimeModel): AnimeItem[] {
-    const nodes = this.parser.selectNodes("//div[contains(@class,'module-search-item')]", doc);
+    const nodes = this.select7sefunSearchNodes(doc, runtime);
     if (nodes.length === 0) {
+      logger.warn('7sefun search parser found no result nodes');
       return [];
     }
 
@@ -121,6 +128,27 @@ export class SearchExecutor {
     logger.info('Search rule 7sefun parsed by dedicated parser: nodes=%{public}d, valid=%{public}d',
       nodes.length, filtered.length);
     return filtered;
+  }
+
+  private select7sefunSearchNodes(doc: HtmlDocument, runtime: RuleRuntimeModel): HtmlNode[] {
+    const candidates: string[] = [
+      "//div[contains(@class,'module-search-item')]",
+      "//div[@class='video anim']",
+      runtime.rule.searchList,
+      "//div[contains(@class,'video') and .//a[contains(@href,'/voddetail/')]]"
+    ];
+    for (let i = 0; i < candidates.length; i++) {
+      const xpath = candidates[i];
+      if (xpath.length === 0) {
+        continue;
+      }
+      const nodes = this.parser.selectNodes(xpath, doc);
+      if (nodes.length > 0) {
+        logger.info('7sefun search nodes matched: xpath=%{public}s, count=%{public}d', xpath, nodes.length);
+        return nodes;
+      }
+    }
+    return this.selectFallbackSearchNodes(doc);
   }
 
   private find7sefunDetailAnchor(node: HtmlNode): HtmlNode | null {
@@ -493,20 +521,59 @@ export class SearchExecutor {
 
   private resolvePageUrl(url: string, runtime: RuleRuntimeModel): string {
     const resolved = runtime.buildFullUrl(url);
-    return this.normalizeSameHostHttpUrl(resolved, runtime.rule.baseUrl);
+    return this.normalizeEpisodeUrlByBaseScheme(resolved, runtime.rule.baseUrl);
   }
 
-  private normalizeSameHostHttpUrl(url: string, baseUrl: string): string {
-    if (!url.startsWith('http://') || !baseUrl.startsWith('https://')) {
+  private normalizeEpisodeUrlByBaseScheme(url: string, baseUrl: string): string {
+    const urlScheme = this.extractScheme(url);
+    const baseScheme = this.extractScheme(baseUrl);
+    if (!this.isHttpScheme(urlScheme) || !this.isHttpScheme(baseScheme) || urlScheme === baseScheme) {
       return url;
     }
 
-    const urlHost = this.extractHost(url);
-    const baseHost = this.extractHost(baseUrl);
-    if (urlHost.length > 0 && urlHost === baseHost) {
-      return 'https://' + url.substring('http://'.length);
+    const urlAuthority = this.extractAuthority(url);
+    const baseAuthority = this.extractAuthority(baseUrl);
+    if (urlAuthority.length > 0 && urlAuthority === baseAuthority) {
+      return baseScheme + '://' + url.substring(url.indexOf('://') + 3);
     }
     return url;
+  }
+
+  private isHttpScheme(scheme: string): boolean {
+    return scheme === 'http' || scheme === 'https';
+  }
+
+  private extractScheme(url: string): string {
+    const schemeIndex = url.indexOf('://');
+    if (schemeIndex === -1) {
+      return '';
+    }
+    return url.substring(0, schemeIndex).toLowerCase();
+  }
+
+  private extractAuthority(url: string): string {
+    let value = url;
+    const schemeIndex = value.indexOf('://');
+    if (schemeIndex !== -1) {
+      value = value.substring(schemeIndex + 3);
+    }
+
+    const slashIndex = value.indexOf('/');
+    if (slashIndex !== -1) {
+      value = value.substring(0, slashIndex);
+    }
+
+    const queryIndex = value.indexOf('?');
+    if (queryIndex !== -1) {
+      value = value.substring(0, queryIndex);
+    }
+
+    const hashIndex = value.indexOf('#');
+    if (hashIndex !== -1) {
+      value = value.substring(0, hashIndex);
+    }
+
+    return value.toLowerCase();
   }
 
   private extractHost(url: string): string {
@@ -640,6 +707,12 @@ export class SearchExecutor {
       const doc: HtmlDocument = this.parser.parse(html);
       let roadNodes = this.parser.selectNodes(runtime.rule.chapterRoads, doc);
       if (roadNodes.length === 0) {
+        const linkRoads = this.parseVodPlayRoads(html, runtime);
+        if (linkRoads.length > 0) {
+          logger.info('Using playback-link road parser for rule %{public}s after xpath miss, roads=%{public}d, xpath=%{public}s',
+            runtime.rule.name, linkRoads.length, runtime.rule.chapterRoads);
+          return linkRoads;
+        }
         roadNodes = this.selectFallbackRoadNodes(doc);
         if (roadNodes.length === 0) {
           const fallbackRoads = this.parseVodPlayRoads(html, runtime);
@@ -723,6 +796,14 @@ export class SearchExecutor {
           logger.warn('Failed to parse road %{public}d: %{public}s', i, msg);
         }
       }
+      if (roads.length === 0) {
+        const fallbackRoads = this.parseVodPlayRoads(html, runtime);
+        if (fallbackRoads.length > 0) {
+          logger.info('Using vodplay regex road parser after empty road parse for rule %{public}s, roads=%{public}d',
+            runtime.rule.name, fallbackRoads.length);
+          return fallbackRoads;
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Road parsing failed for rule %{public}s: %{public}s', runtime.rule.name, msg);
@@ -731,8 +812,9 @@ export class SearchExecutor {
   }
 
   private parseVodPlayRoads(html: string, runtime: RuleRuntimeModel): PlaybackRoad[] {
+    const normalizedHtml = this.normalizePlaybackHtml(html);
     const roads: PlaybackRoad[] = [];
-    const parts = html.split('vod-play-list-container');
+    const parts = normalizedHtml.split('vod-play-list-container');
     if (parts.length > 1) {
       for (let i = 1; i < parts.length; i++) {
         const road = this.parseVodPlayRoadPart(parts[i], runtime, roads.length);
@@ -740,29 +822,30 @@ export class SearchExecutor {
           roads.push(road);
         }
       }
-      return roads;
+      if (roads.length > 0) {
+        return roads;
+      }
     }
 
-    return this.parseVodPlayRoadsByUrlGroup(html, runtime);
+    return this.parseVodPlayRoadsByUrlGroup(normalizedHtml, runtime);
   }
 
   private parseVodPlayRoadPart(part: string, runtime: RuleRuntimeModel, roadIndex: number): PlaybackRoad | null {
     const episodeNames: string[] = [];
     const episodeUrls: string[] = [];
     const seen = new Set<string>();
-    const linkPattern: RegExp = /<a\b([^>]*)href=["']([^"']*(?:\/vodplay\/|\/vod\/play\/)[^"']*)["']([^>]*)>([\s\S]*?)<\/a>/g;
-    let match = linkPattern.exec(part);
-    while (match !== null) {
-      const rawUrl = match[2].trim();
+    const candidates = this.extractPlaybackLinkCandidates(part);
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const rawUrl = candidate.rawUrl.trim();
       if (!seen.has(rawUrl)) {
         seen.add(rawUrl);
-        const attrText = match[1] + ' ' + match[3];
         let episodeName = this.extractVodPlayEpisodeName(rawUrl);
         if (episodeName.length === 0) {
-          episodeName = this.extractEpisodeNameFromText(this.cleanHtmlSnippet(match[4]));
+          episodeName = this.extractEpisodeNameFromText(candidate.text);
         }
         if (episodeName.length === 0) {
-          episodeName = this.extractEpisodeNameFromText(this.extractTitleAttribute(attrText));
+          episodeName = this.extractEpisodeNameFromText(candidate.title);
         }
         if (episodeName.length === 0) {
           episodeName = `第${episodeNames.length + 1}集`;
@@ -770,7 +853,6 @@ export class SearchExecutor {
         episodeNames.push(episodeName);
         episodeUrls.push(this.resolvePageUrl(rawUrl, runtime));
       }
-      match = linkPattern.exec(part);
     }
 
     if (episodeUrls.length === 0) {
@@ -789,10 +871,18 @@ export class SearchExecutor {
     const urlsByRoad = new Map<string, string[]>();
     const seen = new Set<string>();
     const roadKeys: string[] = [];
-    const linkPattern: RegExp = /<a\b([^>]*)href=["']([^"']*(?:\/vodplay\/|\/vod\/play\/)[^"']*)["']([^>]*)>([\s\S]*?)<\/a>/g;
-    let match = linkPattern.exec(html);
-    while (match !== null) {
-      const rawUrl = match[2].trim();
+    const candidates = this.extractPlaybackLinkCandidates(html);
+    if (candidates.length === 0) {
+      logger.warn('Playback-link regex found no candidates for rule %{public}s, htmlLength=%{public}d, hasVodPlay=%{public}s, hasVodplay=%{public}s, hasEscapedVodPlay=%{public}s, hasUnicodeVodPlay=%{public}s, hasModulePlay=%{public}s',
+        runtime.rule.name, html.length, String(html.indexOf('/vod/play/') !== -1),
+        String(html.indexOf('/vodplay/') !== -1), String(html.indexOf('\\/vod\\/play\\/') !== -1),
+        String(html.indexOf('\\u002Fvod\\u002Fplay\\u002F') !== -1 ||
+          html.indexOf('\\u002fvod\\u002fplay\\u002f') !== -1),
+        String(html.indexOf('module-play') !== -1 || html.indexOf('vod_play') !== -1));
+    }
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const rawUrl = candidate.rawUrl.trim();
       if (!seen.has(rawUrl)) {
         seen.add(rawUrl);
         const roadKey = this.extractVodPlayRoadKey(rawUrl);
@@ -801,13 +891,12 @@ export class SearchExecutor {
           urlsByRoad.set(roadKey, []);
           roadKeys.push(roadKey);
         }
-        const attrText = match[1] + ' ' + match[3];
         let episodeName = this.extractVodPlayEpisodeName(rawUrl);
         if (episodeName.length === 0) {
-          episodeName = this.extractEpisodeNameFromText(this.cleanHtmlSnippet(match[4]));
+          episodeName = this.extractEpisodeNameFromText(candidate.text);
         }
         if (episodeName.length === 0) {
-          episodeName = this.extractEpisodeNameFromText(this.extractTitleAttribute(attrText));
+          episodeName = this.extractEpisodeNameFromText(candidate.title);
         }
         if (episodeName.length === 0) {
           const names = namesByRoad.get(roadKey) ?? [];
@@ -820,7 +909,6 @@ export class SearchExecutor {
           urls.push(this.resolvePageUrl(rawUrl, runtime));
         }
       }
-      match = linkPattern.exec(html);
     }
 
     for (let i = 0; i < roadKeys.length; i++) {
@@ -842,6 +930,73 @@ export class SearchExecutor {
       }
     }
     return roads;
+  }
+
+  private extractPlaybackLinkCandidates(html: string): PlaybackLinkCandidate[] {
+    const result: PlaybackLinkCandidate[] = [];
+    const seen = new Set<string>();
+    const linkPattern: RegExp = /href\s*=\s*["']([^"']*(?:\/vodplay\/|\/vod\/play\/)[^"']*)["']/g;
+    let match = linkPattern.exec(html);
+    while (match !== null) {
+      const candidate = new PlaybackLinkCandidate();
+      candidate.rawUrl = this.decodeHtmlEntities(match[1].trim());
+      const tagStart = html.lastIndexOf('<a', match.index);
+      const tagEnd = html.indexOf('>', match.index);
+      if (tagStart >= 0 && tagEnd > tagStart && tagEnd - tagStart < 1000) {
+        const tagText = html.substring(tagStart, tagEnd + 1);
+        candidate.title = this.extractTitleAttribute(tagText);
+        const closeEnd = html.indexOf('</a>', tagEnd);
+        if (closeEnd > tagEnd && closeEnd - tagEnd < 1000) {
+          candidate.text = this.cleanHtmlSnippet(html.substring(tagEnd + 1, closeEnd));
+        }
+      }
+      this.appendPlaybackLinkCandidate(result, seen, candidate);
+      match = linkPattern.exec(html);
+    }
+
+    const attrPattern: RegExp =
+      /\b(?:data-url|data-href|data-play|url)\s*=\s*["']([^"']*(?:\/vodplay\/|\/vod\/play\/)[^"']*)["']/g;
+    match = attrPattern.exec(html);
+    while (match !== null) {
+      const candidate = new PlaybackLinkCandidate();
+      candidate.rawUrl = this.decodeHtmlEntities(match[1].trim());
+      this.appendPlaybackLinkCandidate(result, seen, candidate);
+      match = attrPattern.exec(html);
+    }
+
+    const quotedPattern: RegExp = /["'`]([^"'`]*(?:\/vodplay\/|\/vod\/play\/)[^"'`]*)["'`]/g;
+    match = quotedPattern.exec(html);
+    while (match !== null) {
+      const candidate = new PlaybackLinkCandidate();
+      candidate.rawUrl = this.decodeHtmlEntities(match[1].trim());
+      this.appendPlaybackLinkCandidate(result, seen, candidate);
+      match = quotedPattern.exec(html);
+    }
+    return result;
+  }
+
+  private appendPlaybackLinkCandidate(result: PlaybackLinkCandidate[], seen: Set<string>,
+    candidate: PlaybackLinkCandidate): void {
+    const url = candidate.rawUrl.trim();
+    if (url.length === 0 || seen.has(url)) {
+      return;
+    }
+    seen.add(url);
+    candidate.rawUrl = url;
+    result.push(candidate);
+  }
+
+  private normalizePlaybackHtml(html: string): string {
+    return this.decodeHtmlEntities(html)
+      .replace(/\\u002[fF]/g, '/')
+      .replace(/\\x2[fF]/g, '/')
+      .replace(/\\u003[dD]/g, '=')
+      .replace(/\\u0026/g, '&')
+      .replace(/\\u0022/g, '"')
+      .replace(/\\u0027/g, "'")
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'")
+      .replace(/\\\//g, '/');
   }
 
   private extractVodPlayRoadKey(url: string): string {
@@ -926,6 +1081,14 @@ export class SearchExecutor {
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
+      .replace(/&#x([0-9a-fA-F]+);/g, (_match: string, hex: string): string => {
+        const code = parseInt(hex, 16);
+        return Number.isFinite(code) ? String.fromCharCode(code) : _match;
+      })
+      .replace(/&#([0-9]+);/g, (_match: string, dec: string): string => {
+        const code = parseInt(dec, 10);
+        return Number.isFinite(code) ? String.fromCharCode(code) : _match;
+      })
       .trim();
   }
 
@@ -954,7 +1117,7 @@ export class SearchExecutor {
   private filterNodesWithPlaybackLinks(nodes: HtmlNode[]): HtmlNode[] {
     const result: HtmlNode[] = [];
     for (let i = 0; i < nodes.length; i++) {
-      const links = this.parser.selectNodes(".//a[contains(@href,'/play/') or contains(@href,'/vodplay/')]", nodes[i]);
+      const links = this.selectPlaybackLinkNodes(nodes[i]);
       if (links.length > 0) {
         result.push(nodes[i]);
       }
@@ -963,7 +1126,27 @@ export class SearchExecutor {
   }
 
   private selectFallbackEpisodeNodes(node: HtmlNode): HtmlNode[] {
-    return this.parser.selectNodes(".//a[contains(@href,'/play/') or contains(@href,'/vodplay/')]", node);
+    return this.selectPlaybackLinkNodes(node);
+  }
+
+  private selectPlaybackLinkNodes(node: HtmlNode): HtmlNode[] {
+    const selectors: string[] = [
+      ".//a[contains(@href,'/vod/play/')]",
+      ".//a[contains(@href,'/vodplay/')]",
+      ".//a[contains(@href,'/play/')]"
+    ];
+    const result: HtmlNode[] = [];
+    const seen = new Set<HtmlNode>();
+    for (let i = 0; i < selectors.length; i++) {
+      const links = this.parser.selectNodes(selectors[i], node);
+      for (let j = 0; j < links.length; j++) {
+        if (!seen.has(links[j])) {
+          seen.add(links[j]);
+          result.push(links[j]);
+        }
+      }
+    }
+    return result;
   }
 
   private isDirectEpisodeMode(runtime: RuleRuntimeModel, roadNodes: HtmlNode[]): boolean {

@@ -105,18 +105,18 @@ export class RecommendViewModel {
 
   async loadHomeTrending(): Promise<RecommendCardModel[]> {
     await this.loadTrending()
-    return [...this.trendingList]
+    return this.copyList(this.trendingList)
   }
 
   async loadHomeSeasonal(): Promise<RecommendCardModel[]> {
     this.seasonLabel = BangumiApi.getCurrentSeasonLabel()
     await this.loadSeasonal()
-    return [...this.seasonalList]
+    return this.copyList(this.seasonalList)
   }
 
   async loadHomeHighScore(): Promise<RecommendCardModel[]> {
     await this.loadHighScore()
-    return [...this.highScoreList]
+    return this.copyList(this.highScoreList)
   }
 
   async buildHomeHeroFromTrending(): Promise<RecommendCardModel[]> {
@@ -132,9 +132,13 @@ export class RecommendViewModel {
       }
     }
 
-    await this.enrichHeroList(candidates)
     this.heroList = candidates
-    return [...this.heroList]
+    return this.copyList(this.heroList)
+  }
+
+  async enrichHomeHeroList(): Promise<RecommendCardModel[]> {
+    await this.enrichHeroList(this.heroList)
+    return this.copyList(this.heroList)
   }
 
   private async loadTrending(): Promise<void> {
@@ -256,5 +260,13 @@ export class RecommendViewModel {
     if (target.aliases.length === 0 && detail.aliases.length > 0) target.aliases = [...detail.aliases]
     if (target.airWeekday <= 0 && detail.airWeekday > 0) target.airWeekday = detail.airWeekday
     if (target.votesCount.length === 0 && detail.votesCount.length > 0) target.votesCount = [...detail.votesCount]
+  }
+
+  private copyList(items: RecommendCardModel[]): RecommendCardModel[] {
+    const models: RecommendCardModel[] = []
+    for (let i = 0; i < items.length; i++) {
+      models.push(RecommendCardModel.copyOf(items[i]))
+    }
+    return models
   }
 }

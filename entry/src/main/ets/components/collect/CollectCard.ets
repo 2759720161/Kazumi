@@ -8,36 +8,51 @@ const logger = new Logger('CollectCard')
 export struct CollectCard {
   @Prop collectedBangumi: CollectedBangumi
   @Prop isEditMode: boolean = false
+  @State isPressed: boolean = false
   onRemove?: () => void
 
   build() {
-    Stack({ alignContent: Alignment.BottomStart }) {
-      Image(this.getCoverSource())
-        .width('100%')
-        .height('100%')
-        .objectFit(this.collectedBangumi.getBestCover().length > 0 ? ImageFit.Cover : ImageFit.Contain)
-        .borderRadius(12)
-        .alt($r('app.media.ic_placeholder'))
-        .onError(() => {
-          logger.warn('Cover load failed: %{public}s', this.collectedBangumi.animeName)
-        })
+    Column({ space: 8 }) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Image(this.getCoverSource())
+          .draggable(false)
+          .width('100%')
+          .height('100%')
+          .objectFit(this.collectedBangumi.getBestCover().length > 0 ? ImageFit.Cover : ImageFit.Contain)
+          .borderRadius(12)
+          .alt($r('app.media.ic_placeholder'))
+          .onError(() => {
+            logger.warn('Cover load failed: %{public}s', this.collectedBangumi.animeName)
+          })
 
-      this.BottomGradient()
-      this.TitleOverlay()
-
-      if (this.isEditMode) {
-        this.StatusButton()
-      } else {
-        this.StatusBadge()
+        if (this.isEditMode) {
+          this.StatusButton()
+        } else {
+          this.StatusBadge()
+        }
       }
+      .width('100%')
+      .aspectRatio(3 / 4)
+      .borderRadius(12)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
+      .clip(true)
+
+      Text(this.collectedBangumi.animeName)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .lineHeight(18)
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Start)
+        .width('100%')
     }
     .width('100%')
-    .aspectRatio(3 / 4)
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
-    .clip(true)
+    .alignItems(HorizontalAlign.Start)
+    .scale({ x: this.isPressed ? 0.98 : 1, y: this.isPressed ? 0.98 : 1 })
+    .animation({ duration: 150 })
     .onClick(() => {
       if (this.isEditMode) {
         this.requestRemove()
@@ -58,43 +73,13 @@ export struct CollectCard {
         })
       }
     })
-  }
-
-  @Builder
-  private BottomGradient(): void {
-    Column()
-      .width('100%')
-      .height('48%')
-      .linearGradient({
-        direction: GradientDirection.Bottom,
-        colors: [
-          ['#00000000', 0],
-          ['#88000000', 0.55],
-          ['#D9000000', 1]
-        ]
-      })
-      .hitTestBehavior(HitTestMode.None)
-  }
-
-  @Builder
-  private TitleOverlay(): void {
-    Text(this.collectedBangumi.animeName)
-      .fontSize(14)
-      .fontWeight(FontWeight.Bold)
-      .fontColor(Color.White)
-      .lineHeight(18)
-      .maxLines(2)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
-      .textAlign(TextAlign.Start)
-      .width('100%')
-      .padding({ left: 9, right: 9, bottom: 10 })
-      .textShadow({
-        radius: 6,
-        color: '#99000000',
-        offsetX: 0,
-        offsetY: 1
-      })
-      .hitTestBehavior(HitTestMode.None)
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.isPressed = true
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.isPressed = false
+      }
+    })
   }
 
   @Builder

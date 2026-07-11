@@ -1,3 +1,5 @@
+import { ApiChapterConfig, ApiSearchConfig, RuleMode } from './ApiRuleConfig'
+
 export class AntiCrawlerConfig {
   enabled: boolean = false;
   captchaType: number = 1;
@@ -77,6 +79,10 @@ export class RuleSource {
   sortOrder: number = 0;
   createdAt: number = 0;
   updatedAt: number = 0;
+  searchMode: string = RuleMode.XPATH;
+  chapterMode: string = RuleMode.XPATH;
+  searchApiConfig: ApiSearchConfig = new ApiSearchConfig();
+  chapterApiConfig: ApiChapterConfig = new ApiChapterConfig();
 
   static fromJSON(json: Record<string, Object>): RuleSource {
     const rule = new RuleSource();
@@ -105,6 +111,14 @@ export class RuleSource {
       rule.antiCrawlerConfig = AntiCrawlerConfig.fromJSON(json['antiCrawlerConfig'] as Record<string, Object>);
     }
     if (json['enabled'] !== undefined) rule.enabled = json['enabled'] as boolean;
+    rule.searchMode = RuleMode.normalize(json['searchMode']);
+    rule.chapterMode = RuleMode.normalize(json['chapterMode']);
+    if (json['searchApiConfig'] !== undefined) {
+      rule.searchApiConfig = ApiSearchConfig.fromJSON(json['searchApiConfig'] as Record<string, Object>);
+    }
+    if (json['chapterApiConfig'] !== undefined) {
+      rule.chapterApiConfig = ApiChapterConfig.fromJSON(json['chapterApiConfig'] as Record<string, Object>);
+    }
     return rule;
   }
 
@@ -130,6 +144,14 @@ export class RuleSource {
     result['chapterResult'] = this.chapterResult;
     result['referer'] = this.referer;
     result['antiCrawlerConfig'] = this.antiCrawlerConfig.toJSON();
+    result['searchMode'] = this.searchMode;
+    result['chapterMode'] = this.chapterMode;
+    if (this.searchMode === RuleMode.API || this.searchApiConfig.request.url.length > 0) {
+      result['searchApiConfig'] = this.searchApiConfig.toJSON();
+    }
+    if (this.chapterMode === RuleMode.API || this.chapterApiConfig.request.url.length > 0) {
+      result['chapterApiConfig'] = this.chapterApiConfig.toJSON();
+    }
     return result;
   }
 }

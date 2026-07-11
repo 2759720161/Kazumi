@@ -1,9 +1,15 @@
-import { hdsMaterial, HdsTabs, HdsTabsController } from '@kit.UIDesignKit'
+import { HdsTabs, HdsTabsController } from '@kit.UIDesignKit'
 import { deviceInfo } from '@kit.BasicServicesKit'
+import {
+  buildAdaptiveMaterialEffect,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
+} from '../../utils/HdsPageStyle'
 
 @Component
 export struct DetailFloatingPlayButton {
   @StorageLink('isHdsTabsEnabled') isHdsTabsEnabled: boolean = true
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @Prop bottomSafeHeight: number = 0
 
   onPlay: (() => void) | undefined = undefined
@@ -61,10 +67,7 @@ export struct DetailFloatingPlayButton {
       },
       barBottomMargin: 0,
       barSideMargin: 0,
-      systemMaterialEffect: {
-        materialType: hdsMaterial.MaterialType.IMMERSIVE,
-        materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
-      },
+      systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
       miniBar: {
         miniBarBuilder: () => {
           this.PlayContent()

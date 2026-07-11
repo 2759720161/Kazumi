@@ -2,6 +2,7 @@ import { http } from '@kit.NetworkKit';
 import { AnimeItem } from '../../models/AnimeItem';
 import { SeasonRange } from '../../models/SeasonRange';
 import { BangumiConfig } from './BangumiConfig';
+import { BangumiMirrorSignature } from './BangumiMirrorSignature';
 import { Logger, extractErrorMsg } from '../../utils/Logger';
 
 const logger: Logger = new Logger('BangumiApi');
@@ -9,8 +10,8 @@ const logger: Logger = new Logger('BangumiApi');
 const BANGUMI_API_DOMAINS: string[] = BangumiConfig.BANGUMI_API_BASES;
 const BANGUMI_NEXT_DOMAINS: string[] = BangumiConfig.BANGUMI_NEXT_BASES;
 const BANGUMI_SEARCH_PATH = '/v0/search/subjects?limit=5&offset=0';
-const BANGUMI_METADATA_SEARCH_PATH = '/v0/search/subjects?limit=20&offset=0';
 const BANGUMI_WEB_SEARCH_URLS: string[] = BangumiConfig.BANGUMI_WEB_SEARCH_URLS;
+const BANGUMI_METADATA_SEARCH_LIMIT: number = 20;
 
 const MIRROR_CACHE_READ_TIMEOUT_MS: number = 8000;
 const MIRROR_CACHE_CONNECT_TIMEOUT_MS: number = 5000;
@@ -28,10 +29,36 @@ let webSearchAvailable: boolean = true;
 let webSearchFailedAt: number = 0;
 
 const WEB_FAILURE_COOLDOWN_MS: number = 10 * 60 * 1000;
+const CALENDAR_CACHE_MAX_SIZE: number = 8;
+const SUBJECT_DETAIL_CACHE_MAX_SIZE: number = 180;
+
+class BangumiSearchPageResult {
+  items: AnimeItem[] = [];
+  rawCount: number = 0;
+}
+
+export class BangumiSearchProgressOptions {
+  onResults?: (items: AnimeItem[]) => void;
+  shouldContinue?: () => boolean;
+}
 
 export class BangumiApi {
-  static async searchAnime(keyword: string): Promise<AnimeItem[]> {
-    if (keyword.trim().length === 0) {
+  private static calendarCache: Map<string, AnimeItem[][]> = new Map();
+  private static subjectDetailCache: Map<number, AnimeItem> = new Map();
+  private static subjectDetailInflight: Map<number, Promise<AnimeItem | null>> = new Map();
+
+  static async searchAnime(keyword: string, tags: string[] = [], sort: string = 'heat'): Promise<AnimeItem[]> {
+    return BangumiApi.searchAnimeInternal(keyword, tags, sort, new BangumiSearchProgressOptions());
+  }
+
+  static async searchAnimeProgressive(keyword: string, tags: string[] = [], sort: string = 'heat',
+    options: BangumiSearchProgressOptions = new BangumiSearchProgressOptions()): Promise<AnimeItem[]> {
+    return BangumiApi.searchAnimeInternal(keyword, tags, sort, options);
+  }
+
+  private static async searchAnimeInternal(keyword: string, tags: string[] = [], sort: string = 'heat',
+    progressOptions: BangumiSearchProgressOptions): Promise<AnimeItem[]> {
+    if (keyword.trim().length === 0 && tags.length === 0) {
       return [];
     }
 
@@ -41,24 +68,41 @@ export class BangumiApi {
     isSearching = true;
 
     try {
-      const body = BangumiApi.buildSearchBody(keyword, 'heat');
+      const normalizedSort = BangumiApi.normalizeSearchSort(sort);
+      const body = BangumiApi.buildSearchBody(keyword, normalizedSort, tags);
+      const queryLabel = keyword.trim().length > 0 ? keyword.trim() : '<empty>';
+      logger.info('Bangumi metadata query: keyword=%{public}s tag=%{public}s sort=%{public}s',
+        queryLabel, tags.join(','), normalizedSort);
+
+      const primaryDomain = BANGUMI_API_DOMAINS.length > 0 ? BANGUMI_API_DOMAINS[0] : '';
+      if (primaryDomain.length > 0) {
+        logger.info('Bangumi metadata search via %{public}s for: %{public}s', primaryDomain, queryLabel);
+        const primaryResults = await BangumiApi.tryAnimeSearchPages(primaryDomain, body, keyword, queryLabel, progressOptions);
+        if (primaryResults.length > 0) {
+          apiDomainIndex = 0;
+          apiProbeCompleted = true;
+          return primaryResults;
+        }
+      }
+
       if (apiDomainIndex >= 0 && apiDomainIndex < BANGUMI_API_DOMAINS.length) {
         const cachedDomain = BANGUMI_API_DOMAINS[apiDomainIndex];
-        const cachedResults = await BangumiApi.tryAnimeSearch(
-          cachedDomain + BANGUMI_METADATA_SEARCH_PATH, body, keyword);
+        if (cachedDomain !== primaryDomain) {
+          logger.info('Bangumi metadata cached domain via %{public}s for: %{public}s', cachedDomain, queryLabel);
+        }
+        const cachedResults = await BangumiApi.tryAnimeSearchPages(cachedDomain, body, keyword, queryLabel, progressOptions);
         if (cachedResults.length > 0) {
           return cachedResults;
         }
       }
 
       for (let i = 0; i < BANGUMI_API_DOMAINS.length; i++) {
-        if (i === apiDomainIndex) {
+        if (i === 0 || i === apiDomainIndex) {
           continue;
         }
         const domain = BANGUMI_API_DOMAINS[i];
-        const searchUrl = domain + BANGUMI_METADATA_SEARCH_PATH;
-        logger.info('Bangumi metadata search via %{public}s for: %{public}s', domain, keyword);
-        const results = await BangumiApi.tryAnimeSearch(searchUrl, body, keyword);
+        logger.info('Bangumi metadata search via %{public}s for: %{public}s', domain, queryLabel);
+        const results = await BangumiApi.tryAnimeSearchPages(domain, body, keyword, queryLabel, progressOptions);
         if (results.length > 0) {
           apiDomainIndex = i;
           apiProbeCompleted = true;
@@ -150,15 +194,14 @@ export class BangumiApi {
   }
 
   private static async tryApiSearch(searchUrl: string, body: string, keyword: string): Promise<string> {
+    if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
+      return '';
+    }
     const request = http.createHttp();
     try {
       const options: http.HttpRequestOptions = {
         method: http.RequestMethod.POST,
-        header: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
-        },
+        header: await BangumiMirrorSignature.buildSearchHeaders(searchUrl, body),
         readTimeout: API_SEARCH_READ_TIMEOUT_MS,
         connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
         expectDataType: http.HttpDataType.STRING,
@@ -188,16 +231,48 @@ export class BangumiApi {
     }
   }
 
-  private static async tryAnimeSearch(searchUrl: string, body: string, keyword: string): Promise<AnimeItem[]> {
+  private static async tryAnimeSearchPages(domain: string, body: string, keyword: string, queryLabel: string,
+    progressOptions: BangumiSearchProgressOptions): Promise<AnimeItem[]> {
+    const merged: AnimeItem[] = [];
+    const seenKeys: Set<string> = new Set();
+
+    for (let offset = 0; ; offset += BANGUMI_METADATA_SEARCH_LIMIT) {
+      if (progressOptions.shouldContinue && !progressOptions.shouldContinue()) {
+        logger.info('Bangumi metadata paging cancelled before offset=%{public}d via %{public}s', offset, domain);
+        break;
+      }
+      const searchUrl = domain + BangumiApi.buildMetadataSearchPath(offset);
+      logger.info('Bangumi metadata page via %{public}s offset=%{public}d for: %{public}s',
+        domain, offset, queryLabel);
+      const page = await BangumiApi.tryAnimeSearch(searchUrl, body, keyword);
+      const addedCount = BangumiApi.appendUniqueAnimeItems(merged, page.items, seenKeys);
+      if (addedCount > 0 && progressOptions.onResults) {
+        progressOptions.onResults(merged.slice());
+      }
+
+      if (page.rawCount < BANGUMI_METADATA_SEARCH_LIMIT) {
+        break;
+      }
+      if (page.items.length > 0 && addedCount === 0) {
+        logger.warn('Bangumi metadata page added no new unique items, stop paging via %{public}s offset=%{public}d',
+          domain, offset);
+        break;
+      }
+    }
+
+    return merged;
+  }
+
+  private static async tryAnimeSearch(searchUrl: string, body: string, keyword: string): Promise<BangumiSearchPageResult> {
+    const empty = new BangumiSearchPageResult();
+    if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
+      return empty;
+    }
     const request = http.createHttp();
     try {
       const options: http.HttpRequestOptions = {
         method: http.RequestMethod.POST,
-        header: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
-        },
+        header: await BangumiMirrorSignature.buildSearchHeaders(searchUrl, body),
         readTimeout: API_SEARCH_READ_TIMEOUT_MS,
         connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
         expectDataType: http.HttpDataType.STRING,
@@ -209,31 +284,66 @@ export class BangumiApi {
       logger.info('Bangumi metadata response: HTTP %{public}d', statusCode);
 
       if (statusCode < 200 || statusCode >= 300) {
-        return [];
+        return empty;
       }
 
       const bodyStr = response.result as string;
       if (bodyStr.length === 0) {
-        return [];
+        return empty;
       }
 
-      return BangumiApi.extractAnimeItemsFromApi(bodyStr, keyword);
+      return BangumiApi.extractAnimeSearchPageFromApi(bodyStr, keyword);
     } catch (err) {
       const msg = extractErrorMsg(err as Object);
       logger.warn('Bangumi metadata search error: %{public}s', msg);
-      return [];
+      return empty;
     } finally {
       request.destroy();
     }
   }
 
-  private static buildSearchBody(keyword: string, sort: string): string {
+  private static buildMetadataSearchPath(offset: number): string {
+    return `/v0/search/subjects?limit=${BANGUMI_METADATA_SEARCH_LIMIT}&offset=${offset}`;
+  }
+
+  private static appendUniqueAnimeItems(target: AnimeItem[], source: AnimeItem[], seenKeys: Set<string>): number {
+    let addedCount = 0;
+    for (let i = 0; i < source.length; i++) {
+      const item = source[i];
+      const key = BangumiApi.buildAnimeSearchDedupKey(item);
+      if (seenKeys.has(key)) {
+        continue;
+      }
+      seenKeys.add(key);
+      target.push(item);
+      addedCount++;
+    }
+    return addedCount;
+  }
+
+  private static buildAnimeSearchDedupKey(item: AnimeItem): string {
+    if (item.bangumiId > 0) {
+      return `id:${item.bangumiId}`;
+    }
+    return `name:${item.name}:${item.originalName}:${item.airDate}`;
+  }
+
+  private static normalizeSearchSort(sort: string): string {
+    const value = sort.trim().toLowerCase();
+    if (value === 'rank' || value === 'match' || value === 'score') {
+      return value;
+    }
+    return 'heat';
+  }
+
+  private static buildSearchBody(keyword: string, sort: string, tags: string[] = []): string {
     const bodyObj: Record<string, Object> = {};
     bodyObj['keyword'] = keyword;
     bodyObj['sort'] = sort;
     const filterObj: Record<string, Object> = {};
     filterObj['type'] = [2] as Object;
-    filterObj['rank'] = ['>=0', '<=99999'] as Object;
+    filterObj['tag'] = tags as Object;
+    filterObj['rank'] = (sort === 'rank') ? ['>0', '<=99999'] as Object : ['>=0', '<=99999'] as Object;
     filterObj['nsfw'] = false as Object;
     bodyObj['filter'] = filterObj as Object;
     return JSON.stringify(bodyObj);
@@ -337,28 +447,33 @@ export class BangumiApi {
     return '';
   }
 
-  private static extractAnimeItemsFromApi(bodyStr: string, keyword: string): AnimeItem[] {
-    const items: AnimeItem[] = [];
+  private static extractAnimeSearchPageFromApi(bodyStr: string, keyword: string): BangumiSearchPageResult {
+    const result = new BangumiSearchPageResult();
     try {
       const json = JSON.parse(bodyStr) as Record<string, Object>;
       const dataList = json['data'] as Object[];
       if (dataList === null || dataList === undefined || dataList.length === 0) {
-        return items;
+        return result;
       }
 
+      result.rawCount = dataList.length;
       logger.info('Bangumi metadata got %{public}d results for: %{public}s', dataList.length, keyword);
       for (let i = 0; i < dataList.length; i++) {
         const subject = dataList[i] as Record<string, Object>;
+        const nameCn = ((subject['name_cn'] as string) ?? (subject['nameCN'] as string) ?? '').trim();
+        if (nameCn.length === 0) {
+          continue;
+        }
         const item = BangumiApi.parseAnimeItemFromApi(subject);
         if (item.name.length > 0) {
-          items.push(item);
+          result.items.push(item);
         }
       }
     } catch (err) {
       const msg = extractErrorMsg(err as Object);
       logger.warn('Bangumi metadata parse error: %{public}s', msg);
     }
-    return items;
+    return result;
   }
 
 
@@ -711,6 +826,32 @@ export class BangumiApi {
   }
 
   static async getSubject(bangumiId: number): Promise<AnimeItem | null> {
+    const cached = BangumiApi.getSubjectCache(bangumiId);
+    if (cached !== null) {
+      logger.info('Subject detail cache hit: %{public}d', bangumiId);
+      return cached;
+    }
+
+    const inflight = BangumiApi.subjectDetailInflight.get(bangumiId);
+    if (inflight !== undefined) {
+      logger.info('Subject detail inflight hit: %{public}d', bangumiId);
+      return inflight;
+    }
+
+    const task = BangumiApi.fetchSubjectDetail(bangumiId);
+    BangumiApi.subjectDetailInflight.set(bangumiId, task);
+    try {
+      const item = await task;
+      if (item !== null) {
+        BangumiApi.setSubjectCache(bangumiId, item);
+      }
+      return item;
+    } finally {
+      BangumiApi.subjectDetailInflight.delete(bangumiId);
+    }
+  }
+
+  private static async fetchSubjectDetail(bangumiId: number): Promise<AnimeItem | null> {
     const p1Path = `/p1/subjects/${bangumiId}`;
     const detailDomains: string[] = BangumiConfig.BANGUMI_SUBJECT_DETAIL_BASES;
 
@@ -769,6 +910,34 @@ export class BangumiApi {
 
     logger.warn('All domains failed for subject %{public}d', bangumiId);
     return null;
+  }
+
+  private static getSubjectCache(bangumiId: number): AnimeItem | null {
+    const cached = BangumiApi.subjectDetailCache.get(bangumiId);
+    if (cached === undefined) {
+      return null;
+    }
+    BangumiApi.subjectDetailCache.delete(bangumiId);
+    BangumiApi.subjectDetailCache.set(bangumiId, cached);
+    return cached;
+  }
+
+  private static setSubjectCache(bangumiId: number, item: AnimeItem): void {
+    if (BangumiApi.subjectDetailCache.has(bangumiId)) {
+      BangumiApi.subjectDetailCache.delete(bangumiId);
+    }
+    BangumiApi.subjectDetailCache.set(bangumiId, item);
+    if (BangumiApi.subjectDetailCache.size <= SUBJECT_DETAIL_CACHE_MAX_SIZE) {
+      return;
+    }
+
+    const keys: number[] = [];
+    BangumiApi.subjectDetailCache.forEach((_value: AnimeItem, key: number) => {
+      keys.push(key);
+    });
+    if (keys.length > 0) {
+      BangumiApi.subjectDetailCache.delete(keys[0]);
+    }
   }
 
   private static async fetchSubjectV0(bangumiId: number): Promise<AnimeItem | null> {
@@ -837,6 +1006,12 @@ export class BangumiApi {
     if (target.coverMedium.length === 0) target.coverMedium = fallback.coverMedium;
   }
 
+  static async enrichCalendarItemsForDay(result: AnimeItem[][], weekdayIndex: number, maxItems: number = 12): Promise<void> {
+    const candidates: AnimeItem[] = [];
+    BangumiApi.collectCalendarEnrichCandidates(result, weekdayIndex, candidates);
+    await BangumiApi.enrichCalendarCandidates(candidates, maxItems, 'visible day');
+  }
+
   private static async enrichCalendarItems(result: AnimeItem[][]): Promise<void> {
     const candidates: AnimeItem[] = [];
     const todayIndex = BangumiApi.getTodayCalendarIndex();
@@ -850,9 +1025,17 @@ export class BangumiApi {
       return;
     }
 
-    const maxItems = Math.min(candidates.length, 28);
+    await BangumiApi.enrichCalendarCandidates(candidates, 28, 'calendar');
+  }
+
+  private static async enrichCalendarCandidates(candidates: AnimeItem[], maxCount: number, reason: string): Promise<void> {
+    if (candidates.length === 0) {
+      return;
+    }
+    const maxItems = Math.min(candidates.length, maxCount);
     const batchSize = 4;
-    logger.info('Enrich calendar subject details: %{public}d/%{public}d items', maxItems, candidates.length);
+    logger.info('Enrich %{public}s subject details: %{public}d/%{public}d items',
+      reason, maxItems, candidates.length);
     for (let start = 0; start < maxItems; start += batchSize) {
       const tasks: Promise<void>[] = [];
       const end = Math.min(start + batchSize, maxItems);
@@ -893,6 +1076,13 @@ export class BangumiApi {
   }
 
   static async fetchCalendarBySeason(start: string, end: string): Promise<AnimeItem[][]> {
+    const cacheKey = BangumiApi.buildCalendarCacheKey(start, end);
+    const cached = BangumiApi.getCalendarCache(cacheKey);
+    if (cached !== null) {
+      logger.info('Calendar season cache hit: %{public}s to %{public}s', start, end);
+      return cached;
+    }
+
     const result: AnimeItem[][] = []
     for (let i = 0; i < 7; i++) {
       result.push([])
@@ -935,6 +1125,7 @@ export class BangumiApi {
       }
       const totalItems = BangumiApi.countCalendarItems(result)
       logger.info('fetchCalendarBySeason loaded: %{public}d items across %{public}d days', totalItems, totalDays)
+      BangumiApi.setCalendarCache(cacheKey, result);
       request.destroy()
       return result
     } catch (err) {
@@ -967,16 +1158,15 @@ export class BangumiApi {
     for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
       const domain = BANGUMI_API_DOMAINS[d]
       const searchUrl = domain + path
+      if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
+        continue
+      }
       const request = http.createHttp()
       try {
         logger.info('searchByAirDateRange: %{public}s to %{public}s via %{public}s', start, end, domain)
         const options: http.HttpRequestOptions = {
           method: http.RequestMethod.POST,
-          header: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
-          },
+          header: await BangumiMirrorSignature.buildSearchHeaders(searchUrl, body),
           readTimeout: API_SEARCH_READ_TIMEOUT_MS,
           connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
           expectDataType: http.HttpDataType.STRING,
@@ -1026,6 +1216,13 @@ export class BangumiApi {
   }
 
   static async getCalendar(): Promise<AnimeItem[][]> {
+    const cacheKey = BangumiApi.getCurrentSeasonCalendarCacheKey();
+    const cached = BangumiApi.getCalendarCache(cacheKey);
+    if (cached !== null) {
+      logger.info('Current season calendar cache hit');
+      return cached;
+    }
+
     const result: AnimeItem[][] = [];
     for (let i = 0; i < 7; i++) {
       result.push([]);
@@ -1033,6 +1230,7 @@ export class BangumiApi {
 
     const mirrorResult = await BangumiApi.fetchMirrorCalendarSeason();
     if (mirrorResult && BangumiApi.isCalendarResultUseful(mirrorResult)) {
+      BangumiApi.setCalendarCache(cacheKey, mirrorResult);
       return mirrorResult;
     } else if (mirrorResult) {
       const mirrorItems = BangumiApi.countCalendarItems(mirrorResult);
@@ -1088,9 +1286,9 @@ export class BangumiApi {
           request.destroy();
           continue;
         }
-        await BangumiApi.enrichCalendarItems(result);
         logger.info('Calendar loaded from %{public}s: %{public}d items across %{public}d days',
           domain, totalItems, totalDays);
+        BangumiApi.setCalendarCache(cacheKey, result);
         request.destroy();
         return result;
       } catch (err) {
@@ -1208,6 +1406,44 @@ export class BangumiApi {
     const m = (d.getMonth() + 1).toString().padStart(2, '0');
     const day = d.getDate().toString().padStart(2, '0');
     return `${y}-${m}-${day}`;
+  }
+
+  private static getCurrentSeasonCalendarCacheKey(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const quarterStart = new Date(year, Math.floor(month / 3) * 3, 1);
+    const quarterEnd = new Date(year, Math.floor(month / 3) * 3 + 3, 1);
+    return BangumiApi.buildCalendarCacheKey(BangumiApi.formatDate(quarterStart), BangumiApi.formatDate(quarterEnd));
+  }
+
+  private static buildCalendarCacheKey(start: string, end: string): string {
+    return `calendar:${start}:${end}`;
+  }
+
+  private static getCalendarCache(cacheKey: string): AnimeItem[][] | null {
+    const cached = BangumiApi.calendarCache.get(cacheKey);
+    return cached === undefined ? null : cached;
+  }
+
+  private static setCalendarCache(cacheKey: string, result: AnimeItem[][]): void {
+    if (!BangumiApi.hasCalendarItems(result)) {
+      return;
+    }
+    if (BangumiApi.calendarCache.has(cacheKey)) {
+      BangumiApi.calendarCache.delete(cacheKey);
+    }
+    BangumiApi.calendarCache.set(cacheKey, result);
+    if (BangumiApi.calendarCache.size <= CALENDAR_CACHE_MAX_SIZE) {
+      return;
+    }
+    const keys: string[] = [];
+    BangumiApi.calendarCache.forEach((_value: AnimeItem[][], key: string) => {
+      keys.push(key);
+    });
+    if (keys.length > 0) {
+      BangumiApi.calendarCache.delete(keys[0]);
+    }
   }
 
   private static parseAnimeItemFromApi(item: Record<string, Object>): AnimeItem {
@@ -1471,16 +1707,15 @@ export class BangumiApi {
     for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
       const domain = BANGUMI_API_DOMAINS[d]
       const searchUrl = domain + path
+      if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
+        continue
+      }
       const request = http.createHttp()
       try {
         logger.info('searchHighScore: limit=%{public}d offset=%{public}d via %{public}s', limit, offset, domain)
         const options: http.HttpRequestOptions = {
           method: http.RequestMethod.POST,
-          header: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
-          },
+          header: await BangumiMirrorSignature.buildSearchHeaders(searchUrl, body),
           readTimeout: API_SEARCH_READ_TIMEOUT_MS,
           connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
           expectDataType: http.HttpDataType.STRING,
@@ -1577,16 +1812,15 @@ export class BangumiApi {
     for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
       const domain = BANGUMI_API_DOMAINS[d]
       const searchUrl = domain + path
+      if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
+        continue
+      }
       const request = http.createHttp()
       try {
         logger.info('searchSeasonal: %{public}s to %{public}s via %{public}s', startDate, endDate, domain)
         const options: http.HttpRequestOptions = {
           method: http.RequestMethod.POST,
-          header: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'KazumiOHOS/1.0 (HarmonyOS)'
-          },
+          header: await BangumiMirrorSignature.buildSearchHeaders(searchUrl, body),
           readTimeout: API_SEARCH_READ_TIMEOUT_MS,
           connectTimeout: API_SEARCH_CONNECT_TIMEOUT_MS,
           expectDataType: http.HttpDataType.STRING,
@@ -1746,5 +1980,14 @@ export class BangumiApi {
         resolve();
       }, ms);
     });
+  }
+
+  private static shouldSkipProtectedMirrorSearch(searchUrl: string): boolean {
+    if (BangumiMirrorSignature.isProtectedSearchUrl(searchUrl) && !BangumiMirrorSignature.hasCredentials()) {
+      logger.info('Bangumi mirror credentials missing, skip protected search via %{public}s',
+        BangumiConfig.KAZUMI_BANGUMI_PROXY_BASE)
+      return true
+    }
+    return false
   }
 }

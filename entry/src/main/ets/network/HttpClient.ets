@@ -106,6 +106,8 @@ export class HttpClient {
       const cookieHeader = this.cookieManager.getCookieHeaderForUrl(config.url);
       if (cookieHeader.length > 0) {
         requestHeaders['Cookie'] = cookieHeader;
+        logger.info('HTTP request cookie attached: host=%{public}s, length=%{public}d',
+          HttpClient.extractHost(config.url), cookieHeader.length);
       }
 
       const requestOptions: http.HttpRequestOptions = {

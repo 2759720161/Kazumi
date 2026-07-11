@@ -77,6 +77,45 @@ export class HistoryStore {
     }
   }
 
+  async upsertPreservingUpdatedAt(record: HistoryRecord): Promise<number> {
+    const existing = await this.getByAnimeId(record.animeId);
+    const updatedAt = record.updatedAt > 0 ? record.updatedAt : Date.now();
+    if (existing !== null) {
+      const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
+      predicates.equalTo(RdbConstants.COL_ANIME_ID, record.animeId);
+      const values: relationalStore.ValuesBucket = {
+        anime_name: record.animeName,
+        anime_cover: record.animeCover,
+        anime_url: record.animeUrl,
+        source_id: record.sourceId,
+        episode_name: record.episodeName,
+        episode_url: record.episodeUrl,
+        position_ms: record.positionMs,
+        duration_ms: record.durationMs,
+        road_index: record.roadIndex,
+        episode_index: record.episodeIndex,
+        updated_at: updatedAt
+      };
+      return await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
+    } else {
+      const values: relationalStore.ValuesBucket = {
+        anime_id: record.animeId,
+        anime_name: record.animeName,
+        anime_cover: record.animeCover,
+        anime_url: record.animeUrl,
+        source_id: record.sourceId,
+        episode_name: record.episodeName,
+        episode_url: record.episodeUrl,
+        position_ms: record.positionMs,
+        duration_ms: record.durationMs,
+        road_index: record.roadIndex,
+        episode_index: record.episodeIndex,
+        updated_at: updatedAt
+      };
+      return await this.rdbManager.insert(RdbConstants.TABLE_WATCH_HISTORY, values);
+    }
+  }
+
   async deleteByAnimeId(animeId: string): Promise<number> {
     const record: HistoryRecord | null = await this.getByAnimeId(animeId)
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);

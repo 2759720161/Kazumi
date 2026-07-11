@@ -3,6 +3,7 @@ import { GestureLayer } from '../../components/player/GestureLayer'
 import { DanmakuCanvas } from '../../components/player/DanmakuCanvas'
 import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode, VideoAspectModeHelper } from '../../core/player/IPlayerEngine'
 import { DanmakuManager } from '../../core/danmaku/DanmakuManager'
+import { BusinessError } from '@kit.BasicServicesKit'
 import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
 import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker'
 import { LocalVideoThumbnailStore } from '../../services/LocalVideoThumbnailStore'
@@ -14,9 +15,15 @@ import { LocalVideoRecord } from '../../models/LocalVideoRecord'
 import { DanmakuItem } from '../../models/DanmakuItem'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
-import { router, window } from '@kit.ArkUI'
+import { PiPCallbacks, PiPManager } from '../../services/PiPManager'
+import { router, window, PiPWindow } from '@kit.ArkUI'
 import { common } from '@kit.AbilityKit'
 import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
+import {
+  PLAYER_AUTO_FULLSCREEN_DEFAULT,
+  PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
+  PREFS_KEY_PLAYER_AUTO_FULLSCREEN
+} from '../../utils/PlayerAutoFullscreen'
 
 const logger = new Logger('LocalPlayerPage')
 
@@ -27,6 +34,7 @@ const HISTORY_SAVE_INTERVAL_MS: number = 5000
 export struct LocalPlayerPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
+  @StorageLink('screenWidthVp') screenWidthVp: number = 360
   @StorageLink('danmakuSettingsVersion') @Watch('onDanmakuSettingsVersionChanged') danmakuSettingsVersion: number = 0
   @State videoUri: string = ''
   @State videoFileName: string = ''
@@ -38,10 +46,15 @@ export struct LocalPlayerPage {
   @State isControlVisible: boolean = true
   @State isDraggingProgress: boolean = false
   @State isFullScreen: boolean = false
+  @State isPiPActive: boolean = false
+  @State private videoWidth: number = 0
+  @State private videoHeight: number = 0
+  @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
   @State screenBrightness: number = 0.5
   @State volume: number = 1.0
   private playerEngine: IPlayerEngine | null = null
+  private xComponentController: XComponentController | null = null
   @State hasEngine: boolean = false
   private danmakuManager: DanmakuManager | null = null
   @State isDanmakuEnabled: boolean = true
@@ -74,11 +87,23 @@ export struct LocalPlayerPage {
   private lastKnownPositionMs: number = 0
   private videoFileSize: number = 0
   private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
+  private fullscreenRestoreOrientation: window.Orientation = window.Orientation.UNSPECIFIED
+  private autoFullscreenActive: boolean = false
+  private lastPlayerAreaWidth: number = 0
+  private lastPlayerAreaHeight: number = 0
+  private isPageAlive: boolean = false
+  private pipManager: PiPManager = PiPManager.getInstance()
+  @State isAnimatingFullscreen: boolean = false
+  @State nonVideoOpacity: number = 1
+  @State suppressControlAnimation: boolean = false
+  @State hideBottomControlsForFullscreenTransition: boolean = false
 
   aboutToAppear(): void {
+    this.isPageAlive = true
+    this.pipManager.setCallbacks(this.buildPiPCallbacks())
     this.danmakuManager = new DanmakuManager()
     this.danmakuManager.init().then(() => {
-      if (this.danmakuManager !== null) {
+      if (this.isPageAlive && this.danmakuManager !== null) {
         this.isDanmakuEnabled = this.danmakuManager.getIsDanmakuEnabled()
         this.restoreDanmakuFromHistory()
       }
@@ -128,14 +153,21 @@ export struct LocalPlayerPage {
 
     this.startAutoHideTimer()
     this.loadAspectModePreference()
+    this.loadPlayerAutoFullscreenPreference().then(() => {
+      this.applyPlayerAutoFullscreenRuntimeState()
+    }).catch((_err: Error) => {
+      this.applyPlayerAutoFullscreenRuntimeState()
+    })
   }
 
   aboutToDisappear(): void {
+    this.isPageAlive = false
     this.pauseAutoHideTimer()
     this.clearHudTimer()
     if (this.videoUri.length > 0) {
       this.saveLocalHistory()
     }
+    this.stopPlaybackBeforeLeaving()
     if (this.danmakuManager !== null) {
       this.danmakuManager.release()
       this.danmakuManager = null
@@ -143,9 +175,14 @@ export struct LocalPlayerPage {
     if (this.isFullScreen) {
       this.setFullScreenMode(false)
     }
+    this.setAutoRotationEnabled(false)
+    this.pipManager.destroyPiP()
   }
 
   onBackPress(): boolean {
+    if (this.isAnimatingFullscreen) {
+      return true
+    }
     if (this.isFullScreen) {
       this.toggleFullScreen()
       return true
@@ -159,24 +196,32 @@ export struct LocalPlayerPage {
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      this.handlePlayerAreaChange(this.normalizeAreaSize(newArea.width as number),
+        this.normalizeAreaSize(newArea.height as number))
+    })
   }
 
   @Builder
   PlayerState(): void {
     Stack() {
       Column() {
-        if (!this.isFullScreen) {
-          Column()
-            .width('100%')
-            .height(getEffectiveTopSafeHeight(this.topSafeHeight))
-            .backgroundColor($r('app.color.page_background_media'))
-        }
+        Column()
+          .width('100%')
+          .height(this.isFullScreen ? 0 : getEffectiveTopSafeHeight(this.topSafeHeight))
+          .opacity(this.nonVideoOpacity)
+          .backgroundColor($r('app.color.page_background_media'))
 
         this.VideoSection()
 
-        if (!this.isFullScreen) {
+        Column() {
           this.LocalInfoSection()
         }
+          .width('100%')
+          .height(this.isFullScreen ? 0 : undefined)
+          .layoutWeight(this.isFullScreen ? 0 : 1)
+          .opacity(this.nonVideoOpacity)
+          .clip(true)
       }
       .width('100%')
       .height('100%')
@@ -186,7 +231,7 @@ export struct LocalPlayerPage {
         this.DanmakuManageOverlay()
       }
 
-      if (!this.isFullScreen && this.showDanmakuSettingsSheet) {
+      if (this.showDanmakuSettingsSheet && !this.isFullScreen) {
         this.DanmakuSettingsOverlay()
       }
     }
@@ -225,11 +270,11 @@ export struct LocalPlayerPage {
       this.VideoLayerContent()
     }
     .width('100%')
-    .height(this.isFullScreen ? '100%' : undefined)
     .aspectRatio(this.isFullScreen ? undefined : 16 / 9)
     .layoutWeight(this.isFullScreen ? 1 : 0)
     .backgroundColor(Color.Black)
     .clip(true)
+    .renderFit(RenderFit.RESIZE_FILL)
   }
 
   @Builder
@@ -243,15 +288,25 @@ export struct LocalPlayerPage {
         onStateChange: (state: PlayerState) => {
           this.handlePlayerState(state)
         },
-        onEngineReady: (engine: IPlayerEngine) => {
-          this.playerEngine = engine
-          this.hasEngine = true
-          if (this.danmakuManager !== null) {
-            this.danmakuManager.init().then(() => {
-              this.isDanmakuEnabled = this.danmakuManager!.getIsDanmakuEnabled()
-            })
+          onEngineReady: (engine: IPlayerEngine) => {
+            if (!this.isPageAlive) {
+              engine.stop()
+              return
+            }
+            this.playerEngine = engine
+            this.hasEngine = true
+            if (this.danmakuManager !== null) {
+              this.danmakuManager.init().then(() => {
+                if (!this.isPageAlive) {
+                  return
+                }
+                this.isDanmakuEnabled = this.danmakuManager!.getIsDanmakuEnabled()
+              })
+            }
+          },
+          onSurfaceReady: (controller: XComponentController) => {
+            this.xComponentController = controller
           }
-        }
       })
 
       DanmakuCanvas({
@@ -338,8 +393,8 @@ export struct LocalPlayerPage {
         onPanelClose: () => {
           this.closeDanmakuSettings()
         },
-        onToggleDanmaku: () => {
-          this.toggleDanmaku()
+        onSetDanmakuEnabled: (enabled: boolean) => {
+          this.setDanmakuEnabled(enabled)
         },
         onPauseAutoHide: () => {
           this.pauseAutoHideTimer()
@@ -440,7 +495,7 @@ export struct LocalPlayerPage {
     .zIndex(6)
     .translate({ y: this.isControlVisible ? 0 : -12 })
     .opacity(this.isControlVisible ? 1 : 0)
-    .animation({ duration: 250, curve: Curve.EaseInOut })
+    .animation({ duration: this.getControlAnimationDuration(), curve: Curve.EaseInOut })
   }
 
   @Builder
@@ -461,8 +516,8 @@ export struct LocalPlayerPage {
     })
     .zIndex(6)
     .translate({ y: this.isControlVisible ? 0 : 12 })
-    .opacity(this.isControlVisible ? 1 : 0)
-    .animation({ duration: 250, curve: Curve.EaseInOut })
+    .opacity(this.shouldShowBottomControlLayer() ? 1 : 0)
+    .animation({ duration: this.getControlAnimationDuration(), curve: Curve.EaseInOut })
   }
 
   @Builder
@@ -554,6 +609,8 @@ export struct LocalPlayerPage {
 
         this.SpeedToolButton()
 
+        this.PiPToolButton()
+
         this.SymbolToolButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '全屏', () => {
           this.toggleFullScreen()
         })
@@ -590,6 +647,8 @@ export struct LocalPlayerPage {
         .layoutWeight(1)
 
       this.SpeedToolButton()
+
+      this.PiPToolButton()
 
       this.SymbolToolButton(this.isFullScreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left') :
         $r('sys.symbol.arrow_up_left_and_arrow_down_right'), this.isFullScreen ? '退出全屏' : '全屏', () => {
@@ -645,6 +704,29 @@ export struct LocalPlayerPage {
   }
 
   @Builder
+  private PiPToolButton() {
+    if (PiPManager.isPiPSupported() && this.hasEngine) {
+      Row() {
+        Image($r('app.media.ic_pip'))
+          .draggable(false)
+          .width(22)
+          .height(22)
+      }
+      .width(44)
+      .height(40)
+      .borderRadius(20)
+      .backgroundColor('#00000000')
+      .border({ width: 0, color: '#00000000' })
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
+      .onClick(() => {
+        this.startPiP()
+        this.showControlsWithAutoHide()
+      })
+    }
+  }
+
+  @Builder
   private SymbolToolButton(symbol: Resource, accessibilityLabel: string, action: () => void) {
     Row() {
       SymbolGlyph(symbol)
@@ -667,7 +749,7 @@ export struct LocalPlayerPage {
   @Builder
   private DanmakuToggleButton() {
     Row() {
-      SymbolGlyph(this.isDanmakuEnabled ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off  '))
+      SymbolGlyph(this.isDanmakuEnabled ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off'))
         .fontSize(23)
         .renderingStrategy(this.isDanmakuEnabled ? SymbolRenderingStrategy.MULTIPLE_COLOR : SymbolRenderingStrategy.SINGLE)
         .fontColor(this.isDanmakuEnabled ?
@@ -816,7 +898,7 @@ export struct LocalPlayerPage {
   @Builder
   private LocalDanmakuStatusRow(): void {
     Row({ space: 8 }) {
-      SymbolGlyph(this.danmakuFileName.length > 0 ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off  '))
+      SymbolGlyph(this.danmakuFileName.length > 0 ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off'))
         .fontSize(17)
         .fontColor([this.danmakuFileName.length > 0 ? $r('app.color.accent_blue') : $r('sys.color.icon_secondary')])
       Text(this.buildCurrentDanmakuText())
@@ -1146,8 +1228,8 @@ export struct LocalPlayerPage {
       isFullScreen: this.isFullScreen,
       settingsVersion: this.danmakuSettingsOpenVersion,
       showSourceFilter: false,
-      onToggleDanmaku: () => {
-        this.toggleDanmaku()
+      onSetDanmakuEnabled: (enabled: boolean) => {
+        this.setDanmakuEnabled(enabled)
       },
       onPanelClose: () => {
         this.showDanmakuSettingsSheet = false
@@ -1292,6 +1374,9 @@ export struct LocalPlayerPage {
   }
 
   private handlePlayerState(state: PlayerState): void {
+    if (!this.isPageAlive) {
+      return
+    }
     this.isPlaying = state.playing
     this.positionMs = state.positionMs
     if (state.positionMs > 0) {
@@ -1301,6 +1386,17 @@ export struct LocalPlayerPage {
     this.volume = state.volume
     this.speed = state.speed
     this.speedLabel = this.speed.toFixed(this.speed % 1 === 0 ? 0 : 2) + 'x'
+    if (state.videoWidth > 0 && state.videoHeight > 0 &&
+      (state.videoWidth !== this.videoWidth || state.videoHeight !== this.videoHeight)) {
+      this.videoWidth = state.videoWidth
+      this.videoHeight = state.videoHeight
+    }
+    if (this.pipManager.isActive()) {
+      this.pipManager.updatePlaybackState(state.playing)
+      if (state.videoWidth > 0 && state.videoHeight > 0) {
+        this.pipManager.updateContentSize(state.videoWidth, state.videoHeight)
+      }
+    }
 
     if (this.danmakuManager !== null) {
       this.danmakuManager.onPlayerStateUpdate(state)
@@ -1333,6 +1429,19 @@ export struct LocalPlayerPage {
     }
   }
 
+  private stopPlaybackBeforeLeaving(): void {
+    this.isPlaying = false
+    if (this.playerEngine !== null) {
+      try {
+        this.playerEngine.stop()
+      } catch (err) {
+        logger.warn('Stop local player before leaving failed')
+      }
+    }
+    this.playerEngine = null
+    this.hasEngine = false
+  }
+
   private seekTo(positionMs: number): void {
     this.positionMs = positionMs
     if (positionMs > 0) {
@@ -1351,6 +1460,23 @@ export struct LocalPlayerPage {
     }
   }
 
+  private setDanmakuEnabled(enabled: boolean): void {
+    if (this.isDanmakuEnabled === enabled) {
+      return
+    }
+    if (this.danmakuManager === null) {
+      this.isDanmakuEnabled = enabled
+      return
+    }
+
+    const managerEnabled = this.danmakuManager.getIsDanmakuEnabled()
+    if (managerEnabled !== enabled) {
+      this.isDanmakuEnabled = this.danmakuManager.toggleDanmaku()
+    } else {
+      this.isDanmakuEnabled = enabled
+    }
+  }
+
   private toggleControls(): void {
     this.isControlVisible = !this.isControlVisible
     if (this.isControlVisible) {
@@ -1363,6 +1489,34 @@ export struct LocalPlayerPage {
   private showControlsWithAutoHide(): void {
     this.isControlVisible = true
     this.startAutoHideTimer()
+  }
+
+  private shouldShowBottomControlLayer(): boolean {
+    return this.isControlVisible && !this.hideBottomControlsForFullscreenTransition
+  }
+
+  private prepareFullscreenControlTransition(): void {
+    this.suppressControlAnimation = true
+    this.hideBottomControlsForFullscreenTransition = true
+    this.isControlVisible = true
+    this.showMoreMenu = false
+    this.showAspectModePanel = false
+    this.showDanmakuSettingsPanel = false
+    this.showDanmakuSettingsSheet = false
+    this.pauseAutoHideTimer()
+  }
+
+  private finishFullscreenControlTransition(): void {
+    this.isAnimatingFullscreen = false
+    this.hideBottomControlsForFullscreenTransition = false
+    this.showControlsWithAutoHide()
+    setTimeout(() => {
+      this.suppressControlAnimation = false
+    }, 80)
+  }
+
+  private getControlAnimationDuration(): number {
+    return this.suppressControlAnimation ? 0 : 260
   }
 
   private nextSpeed(): void {
@@ -1389,26 +1543,252 @@ export struct LocalPlayerPage {
     }
   }
 
-  private toggleFullScreen(): void {
-    this.isFullScreen = !this.isFullScreen
-    this.setFullScreenMode(this.isFullScreen)
-    this.showControlsWithAutoHide()
+  private async startPiP(): Promise<void> {
+    if (this.pipManager.isActive() || this.pipManager.isCreating()) {
+      return
+    }
+    if (this.xComponentController === null) {
+      logger.warn('PiP: XComponentController not available')
+      return
+    }
+    if (this.isFullScreen) {
+      this.toggleFullScreen()
+      await new Promise<void>((resolve) => setTimeout(resolve, 400))
+    }
+    this.pauseAutoHideTimer()
+    const context = getContext(this) as common.UIAbilityContext
+    const contentWidth = this.videoWidth > 0 ? this.videoWidth : 1920
+    const contentHeight = this.videoHeight > 0 ? this.videoHeight : 1080
+    const isWideContent = contentWidth > contentHeight
+    const controlGroups: Array<PiPWindow.VideoPlayControlGroup> = [
+      PiPWindow.VideoPlayControlGroup.VIDEO_PREVIOUS_NEXT
+    ]
+    const success = await this.pipManager.createAndStart(
+      context, this.xComponentController, contentWidth, contentHeight, controlGroups,
+      isWideContent ? 2 : 1)
+    if (success) {
+      this.isPiPActive = true
+      this.pipManager.updatePlaybackState(this.isPlaying)
+    }
   }
 
-  private async setFullScreenMode(fullScreen: boolean): Promise<void> {
+  private buildPiPCallbacks(): PiPCallbacks {
+    const callbacks = new PiPCallbacks()
+    callbacks.onPlay = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+        this.pipManager.updatePlaybackState(true)
+      }
+    }
+    callbacks.onPause = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+        this.pipManager.updatePlaybackState(false)
+      }
+    }
+    callbacks.onFastForward = () => {
+      if (this.hasEngine && this.playerEngine !== null) {
+        this.seekTo(Math.min(this.positionMs + 10000, this.durationMs))
+      }
+    }
+    callbacks.onFastBackward = () => {
+      if (this.hasEngine && this.playerEngine !== null) {
+        this.seekTo(Math.max(this.positionMs - 10000, 0))
+      }
+    }
+    callbacks.onRestore = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+      this.isPiPActive = false
+    }
+    callbacks.onPiPStopped = () => {
+      this.isPiPActive = false
+    }
+    return callbacks
+  }
+
+  private toggleFullScreen(): void {
+    if (this.isAnimatingFullscreen) {
+      return
+    }
+    this.isAnimatingFullscreen = true
+    this.autoFullscreenActive = false
+    this.prepareFullscreenControlTransition()
+
+    if (!this.isFullScreen) {
+      this.getUIContext().animateTo({
+        duration: 350,
+        curve: Curve.FastOutSlowIn,
+        onFinish: () => {
+          this.setFullScreenMode(true, true)
+          this.finishFullscreenControlTransition()
+        }
+      }, () => {
+        this.isFullScreen = true
+        this.nonVideoOpacity = 0
+      })
+    } else {
+      this.setFullScreenMode(false)
+      setTimeout(() => {
+        this.getUIContext().animateTo({
+          duration: 350,
+          curve: Curve.FastOutSlowIn,
+          onFinish: () => {
+            this.finishFullscreenControlTransition()
+          }
+        }, () => {
+          this.isFullScreen = false
+          this.nonVideoOpacity = 1
+        })
+      }, 80)
+    }
+  }
+
+  private async setFullScreenMode(fullScreen: boolean, lockLandscape: boolean = true): Promise<void> {
+    AppStorage.setOrCreate('playerFullScreen', fullScreen)
     try {
       const context = getContext(this)
       const mainWindow = await window.getLastWindow(context)
       if (fullScreen) {
+        this.fullscreenRestoreOrientation = mainWindow.getPreferredOrientation()
         mainWindow.setWindowSystemBarEnable([])
-        await mainWindow.setPreferredOrientation(window.Orientation.LANDSCAPE)
+        if (lockLandscape && this.isPhoneDevice()) {
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_LANDSCAPE)
+        }
+        mainWindow.enableLandscapeMultiWindow().catch((err: BusinessError) => {
+          logger.warn('enableLandscapeMultiWindow failed: %{public}d', err.code)
+        })
       } else {
         mainWindow.setWindowSystemBarEnable(['status', 'navigation'])
-        await mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT)
+        if (this.isPhoneDevice()) {
+          await mainWindow.setPreferredOrientation(this.fullscreenRestoreOrientation)
+        } else {
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+        }
+        mainWindow.disableLandscapeMultiWindow().catch((err: BusinessError) => {
+          logger.warn('disableLandscapeMultiWindow failed: %{public}d', err.code)
+        })
+        this.fullscreenRestoreOrientation = window.Orientation.UNSPECIFIED
       }
     } catch (_err) {
       logger.warn('Failed to toggle fullscreen mode')
     }
+  }
+
+  private async loadPlayerAutoFullscreenPreference(): Promise<void> {
+    try {
+      this.playerAutoFullscreen = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_PLAYER_AUTO_FULLSCREEN,
+        PLAYER_AUTO_FULLSCREEN_DEFAULT
+      )
+      AppStorage.setOrCreate('playerAutoFullscreen', this.playerAutoFullscreen)
+    } catch (_err) {
+      this.playerAutoFullscreen = PLAYER_AUTO_FULLSCREEN_DEFAULT
+      AppStorage.setOrCreate('playerAutoFullscreen', PLAYER_AUTO_FULLSCREEN_DEFAULT)
+    }
+  }
+
+  private applyPlayerAutoFullscreenRuntimeState(): void {
+    this.setAutoRotationEnabled(this.playerAutoFullscreen)
+    if (this.playerAutoFullscreen && this.lastPlayerAreaWidth > 0 && this.lastPlayerAreaHeight > 0) {
+      this.handlePlayerAreaChange(this.lastPlayerAreaWidth, this.lastPlayerAreaHeight)
+    }
+  }
+
+  private normalizeAreaSize(value: number): number {
+    return value > 0 ? value : 0
+  }
+
+  private handlePlayerAreaChange(width: number, height: number): void {
+    if (width <= 0 || height <= 0) {
+      return
+    }
+    this.lastPlayerAreaWidth = width
+    this.lastPlayerAreaHeight = height
+    if (!this.playerAutoFullscreen) {
+      return
+    }
+    const shortEdge = Math.min(width, height)
+    const isPhoneWindow = shortEdge <= PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX
+    if (!isPhoneWindow) {
+      return
+    }
+    if (width > height && !this.isFullScreen) {
+      this.enterAutoFullscreen()
+    } else if (height >= width && this.isFullScreen && this.autoFullscreenActive) {
+      this.exitAutoFullscreen()
+    }
+  }
+
+  private enterAutoFullscreen(): void {
+    if (this.isAnimatingFullscreen) {
+      return
+    }
+    this.isAnimatingFullscreen = true
+    this.autoFullscreenActive = true
+    this.prepareFullscreenControlTransition()
+
+    this.getUIContext().animateTo({
+      duration: 350,
+      curve: Curve.FastOutSlowIn,
+      onFinish: () => {
+        this.setFullScreenMode(true, false)
+        this.finishFullscreenControlTransition()
+      }
+    }, () => {
+      this.isFullScreen = true
+      this.nonVideoOpacity = 0
+    })
+  }
+
+  private exitAutoFullscreen(): void {
+    if (this.isAnimatingFullscreen) {
+      return
+    }
+    this.isAnimatingFullscreen = true
+    this.autoFullscreenActive = false
+    this.prepareFullscreenControlTransition()
+    this.setFullScreenMode(false)
+    this.setAutoRotationEnabled(true)
+    setTimeout(() => {
+      this.getUIContext().animateTo({
+        duration: 350,
+        curve: Curve.FastOutSlowIn,
+        onFinish: () => {
+          this.finishFullscreenControlTransition()
+        }
+      }, () => {
+        this.isFullScreen = false
+        this.nonVideoOpacity = 1
+      })
+    }, 80)
+  }
+
+  private async setAutoRotationEnabled(enabled: boolean): Promise<void> {
+    try {
+      const context = getContext(this)
+      const mainWindow = await window.getLastWindow(context)
+      if (this.isPhoneDevice()) {
+        if (enabled) {
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+        } else {
+          await mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT)
+        }
+      } else {
+        // Tablet: always allow auto rotation
+        await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+      }
+    } catch (_err) {
+      logger.warn('Failed to set auto rotation: %{public}s', _err instanceof Error ? _err.message : String(_err))
+    }
+  }
+
+  private isPhoneDevice(): boolean {
+    return this.screenWidthVp < 600
   }
 
   private async requestWindowBrightness(brightness: number): Promise<void> {

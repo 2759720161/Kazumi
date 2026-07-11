@@ -16,7 +16,9 @@ import {
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
-  buildImmersiveTitleBarStyle
+  buildImmersiveTitleBarStyle,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
@@ -27,6 +29,7 @@ import {
 } from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('FavoritePage')
+const COLLECT_CARD_GAP: number = 8
 
 @Component
 export struct FavoritePage {
@@ -37,6 +40,7 @@ export struct FavoritePage {
   @StorageLink('collectVersion') @Watch('onCollectVersionChanged') collectVersion: number = 0
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State collectedList: CollectedBangumi[] = []
   @State visibleCollectedList: CollectedBangumi[] = []
   @State isEditMode: boolean = false
@@ -52,6 +56,10 @@ export struct FavoritePage {
     this.loadCollectibles()
   }
 
+  aboutToDisappear(): void {
+    this.resetEditState()
+  }
+
   private onCollectVersionChanged(): void {
     this.loadCollectibles()
   }
@@ -59,6 +67,9 @@ export struct FavoritePage {
   private onCurrentTabChanged(): void {
     if (this.currentTab === 2) {
       this.loadCollectibles()
+      this.scroller.scrollEdge(Edge.Top)
+    } else {
+      this.resetEditState()
     }
   }
 
@@ -98,6 +109,7 @@ export struct FavoritePage {
               .hitTestBehavior(HitTestMode.None)
           }
           .width('100%')
+          .constraintSize({ minHeight: '100%' })
         }
         .width('100%')
         .height('100%')
@@ -115,6 +127,7 @@ export struct FavoritePage {
       .height('100%')
       .mode(NavigationMode.Stack)
       .titleBar(this.buildTitleBarOptions())
+      .bindToScrollable([this.scroller])
       .titleMode(HdsNavigationTitleMode.MINI)
       .hideBackButton(true)
       .backgroundColor(Color.Transparent)
@@ -151,27 +164,55 @@ export struct FavoritePage {
       .layoutWeight(1)
       .justifyContent(FlexAlign.Center)
     } else {
-      Grid() {
-        ForEach(this.visibleCollectedList, (item: CollectedBangumi) => {
-          GridItem() {
-            CollectCard({
-              collectedBangumi: item,
-              isEditMode: this.isEditMode,
-              onRemove: () => {
-                this.requestDelete(item)
-              }
-            })
+      Column({ space: 10 }) {
+        ForEach(this.getCollectRows(), (row: CollectedBangumi[], rowIndex?: number) => {
+          Row() {
+            this.CollectGridSlot(row, 0)
+            Blank()
+              .width(COLLECT_CARD_GAP)
+            this.CollectGridSlot(row, 1)
+            if (this.getGridColumnCount() >= 3) {
+              Blank()
+                .width(COLLECT_CARD_GAP)
+              this.CollectGridSlot(row, 2)
+            }
+            if (this.getGridColumnCount() >= 4) {
+              Blank()
+                .width(COLLECT_CARD_GAP)
+              this.CollectGridSlot(row, 3)
+            }
+            if (this.getGridColumnCount() >= 5) {
+              Blank()
+                .width(COLLECT_CARD_GAP)
+              this.CollectGridSlot(row, 4)
+            }
           }
-        }, (item: CollectedBangumi) => `collect_${item.animeId}`)
+          .width('100%')
+          .alignItems(VerticalAlign.Top)
+        }, (_row: CollectedBangumi[], rowIndex?: number) => `collect_row_${rowIndex}`)
       }
-      .columnsTemplate(this.getGridColumnsTemplate())
-      .columnsGap(8)
-      .rowsGap(8)
-      .scrollBar(BarState.Off)
       .width('100%')
-      .layoutWeight(1)
       .padding({ left: 12, right: 12, top: 6, bottom: 8 })
+      .alignItems(HorizontalAlign.Start)
     }
+  }
+
+  @Builder
+  private CollectGridSlot(row: CollectedBangumi[], columnIndex: number): void {
+    Column() {
+      if (columnIndex < row.length) {
+        CollectCard({
+          collectedBangumi: row[columnIndex],
+          isEditMode: this.isEditMode,
+          onRemove: () => {
+            this.requestDelete(row[columnIndex])
+          }
+        })
+      }
+    }
+    .layoutWeight(1)
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -179,56 +220,70 @@ export struct FavoritePage {
     Column() {
       Column() {
         Text('取消收藏')
-          .fontSize(18)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .width('100%')
-          .margin({ bottom: 12 })
+          .margin({ bottom: 24 })
 
         Text(`确定要取消收藏「${this.deleteTargetName}」吗？`)
-          .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .lineHeight(26)
           .width('100%')
-          .margin({ bottom: 20 })
+          .margin({ bottom: 26 })
 
         Row() {
-          Button('取消')
+          Text('取消')
             .layoutWeight(1)
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.surface_button_bg'))
-            .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-            .border({ width: 0.5, color: $r('app.color.border_subtle') })
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Center)
+            .clip(true)
             .onClick(() => {
               this.showDeleteDialog = false
             })
 
-          Button('删除')
+          Divider()
+            .vertical(true)
+            .height(34)
+            .color($r('app.color.divider_color'))
+            .margin({ left: 4, right: 4 })
+
+          Text('删除')
             .layoutWeight(1)
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.status_error'))
-            .fontColor($r('app.color.text_on_primary'))
-            .margin({ left: 12 })
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.status_error'))
+            .textAlign(TextAlign.Center)
+            .clip(true)
             .onClick(() => {
               this.confirmDelete()
             })
         }
         .width('100%')
+        .height(52)
+        .alignItems(VerticalAlign.Center)
       }
-      .padding(24)
-      .borderRadius(16)
+      .width('100%')
+      .padding({ left: 30, right: 30, top: 30, bottom: 20 })
+      .borderRadius(34)
       .backgroundColor($r('app.color.card_background'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(0x66000000)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .padding({ left: 32, right: 32 })
+    .padding({ left: 20, right: 20, bottom: 28 })
+    .onClick(() => {
+      this.showDeleteDialog = false
+    })
   }
 
   @Builder
@@ -286,10 +341,13 @@ export struct FavoritePage {
     return 3
   }
 
-  private getGridColumnsTemplate(): string {
+  private getCollectRows(): CollectedBangumi[][] {
+    const rows: CollectedBangumi[][] = []
     const count = this.getGridColumnCount()
-    const fraction = '1fr '
-    return fraction.repeat(count).trim()
+    for (let i = 0; i < this.visibleCollectedList.length; i += count) {
+      rows.push(this.visibleCollectedList.slice(i, i + count))
+    }
+    return rows
   }
 
   private updateBottomTabOffset(deltaY: number): void {
@@ -337,6 +395,9 @@ export struct FavoritePage {
       logger.error('Load collectibles failed: %{public}s', JSON.stringify(err))
     } finally {
       this.isLoading = false
+      setTimeout(() => {
+        this.scroller.scrollEdge(Edge.Top)
+      }, 50)
     }
   }
 
@@ -345,6 +406,8 @@ export struct FavoritePage {
     try {
       await this.collectController.deleteCollectByAnimeId(this.deleteTargetAnimeId)
       await this.loadCollectibles()
+      this.exitEditMode()
+      this.clearDeleteTarget()
     } catch (err) {
       logger.error('Delete favorite failed: %{public}s', JSON.stringify(err))
     }
@@ -354,6 +417,22 @@ export struct FavoritePage {
     this.deleteTargetAnimeId = item.animeId
     this.deleteTargetName = item.animeName
     this.showDeleteDialog = true
+  }
+
+  private exitEditMode(): void {
+    this.isEditMode = false
+  }
+
+  private clearDeleteTarget(): void {
+    this.deleteTargetAnimeId = ''
+    this.deleteTargetName = ''
+  }
+
+  private resetEditState(): void {
+    this.exitEditMode()
+    this.showEditTipDialog = false
+    this.showDeleteDialog = false
+    this.clearDeleteTarget()
   }
 
   private buildEditIcon(): HdsNavigationIconOptions {
@@ -396,7 +475,7 @@ export struct FavoritePage {
   }
 
   private buildTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle()
+    const style: TitleBarStyleOptions = buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     if (style.originalStyle?.backgroundStyle) {
       style.originalStyle.backgroundStyle.maskExtraHeight = 0
     }

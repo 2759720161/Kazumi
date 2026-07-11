@@ -6,8 +6,28 @@ import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { RuleRuntimeModel } from '../../models/RuleRuntimeModel'
 import { RuleSource } from '../../models/RuleSource'
 import { Logger } from '../../utils/Logger'
+import { webview } from '@kit.ArkWeb'
 
 const logger = new Logger('SourceSheet')
+const TABLET_SOURCE_SHEET_BREAKPOINT: number = 840
+const TABLET_SOURCE_RAIL_WIDTH: number = 220
+const WIDE_TABLET_SOURCE_RAIL_WIDTH: number = 260
+const CAPTCHA_RETRY_DELAY_MS: number = 3200
+const SOURCE_SHEET_PILL_RADIUS: number = 19
+
+function normalizeWebScriptStringResult(result: Object): string {
+  const raw = String(result).trim()
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      return String(JSON.parse(raw))
+    } catch (e) {
+    }
+  }
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.substring(1, raw.length - 1)
+  }
+  return raw
+}
 
 export class SourceSheetSnapshot {
   pluginStates: PluginSearchState[] = []
@@ -35,7 +55,12 @@ export struct SourceSheet {
   @State showAliasDialog: boolean = false
   @State showManualSearchDialog: boolean = false
   @State manualSearchKeyword: string = ''
-  @State showKeywordMenu: boolean = false
+  @State captchaRetrying: boolean = false
+  @State webRoadFallbackActive: boolean = false
+  @State webRoadFallbackUrl: string = ''
+  @State sheetWidthVp: number = 0
+  @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink('keyboardAvoidHeight') keyboardAvoidHeight: number = 0
   @Prop animeName: string = ''
   @Prop animeOriginalName: string = ''
   @Prop animeAliases: string[] = []
@@ -45,9 +70,11 @@ export struct SourceSheet {
   private searchService: PluginSearchService = new PluginSearchService()
   private ruleStore: RuleSourceStore = new RuleSourceStore()
   private isClosed: boolean = false
-  private captchaRetrying: boolean = false
   private hasUserSelectedPlugin: boolean = false
   private roadsRequestToken: number = 0
+  private webRoadFallbackToken: number = 0
+  private webRoadFallbackResult: SearchResultRef | null = null
+  private webRoadFallbackController: webview.WebviewController = new webview.WebviewController()
   onRoadsReady?: ((source: PlaybackSource) => void)
   onSnapshotChanged?: ((snapshot: SourceSheetSnapshot) => void)
 
@@ -74,21 +101,10 @@ export struct SourceSheet {
   build() {
     Stack() {
       Column() {
-        this.CompactHeader()
-        this.SourceChips()
-
-        if (this.pluginStates.length > 0 && this.selectedPluginIndex < this.pluginStates.length) {
-          this.PluginContentArea()
+        if (this.isTabletSheetLayout()) {
+          this.TabletSheetContent()
         } else {
-          Column() {
-            Text('暂无可用播放源')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-              .margin({ top: 32 })
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
+          this.PhoneSheetContent()
         }
       }
       .width('100%')
@@ -115,7 +131,7 @@ export struct SourceSheet {
           },
           onCancelled: () => {
             this.showCaptchaDialog = false
-            this.searchService.updatePluginError(this.selectedPluginIndex, '验证取消或超时，可重试')
+            this.searchService.updatePluginErrorById(this.getSelectedPluginId(), '验证取消或超时，可重试')
           }
         })
       }
@@ -127,9 +143,76 @@ export struct SourceSheet {
       if (this.showManualSearchDialog) {
         this.ManualSearchDialogOverlay()
       }
+
+      if (this.webRoadFallbackActive) {
+        Web({ src: this.webRoadFallbackUrl, controller: this.webRoadFallbackController })
+          .width(1)
+          .height(1)
+          .opacity(0.01)
+          .onPageEnd(() => {
+            this.onWebRoadFallbackPageEnd()
+          })
+          .onErrorReceive((event) => {
+            if (event && event.error) {
+              logger.warn('Road fallback WebView error: %{public}s', event.error.getErrorInfo())
+            }
+          })
+      }
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      this.sheetWidthVp = this.normalizeSize(newArea.width)
+    })
+  }
+
+  @Builder
+  private PhoneSheetContent(): void {
+    this.CompactHeader()
+    this.SourceChips()
+
+    if (this.pluginStates.length > 0 && this.selectedPluginIndex < this.pluginStates.length) {
+      this.PluginContentArea()
+    } else {
+      this.EmptySourceState()
+    }
+  }
+
+  @Builder
+  private TabletSheetContent(): void {
+    this.CompactHeader()
+
+    Row() {
+      this.TabletSourceRail()
+
+      Column()
+        .width(0.5)
+        .height('100%')
+        .backgroundColor($r('app.color.border_subtle'))
+        .opacity(0.8)
+
+      if (this.pluginStates.length > 0 && this.selectedPluginIndex < this.pluginStates.length) {
+        this.PluginContentArea()
+      } else {
+        this.EmptySourceState()
+      }
+    }
+    .width('100%')
+    .layoutWeight(1)
+    .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  private EmptySourceState(): void {
+    Column() {
+      Text('暂无可用播放源')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .margin({ top: 32 })
+    }
+    .width('100%')
+    .layoutWeight(1)
+    .justifyContent(FlexAlign.Center)
   }
 
   @Builder
@@ -153,10 +236,6 @@ export struct SourceSheet {
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
               .layoutWeight(1)
-            Text('换关键词')
-              .fontSize(12)
-              .fontColor($r('app.color.accent_blue'))
-              .margin({ left: 8 })
           }
           .width('100%')
           .margin({ top: 3 })
@@ -175,7 +254,7 @@ export struct SourceSheet {
             .fontWeight(FontWeight.Medium)
         }
         .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-        .borderRadius(10)
+        .borderRadius(SOURCE_SHEET_PILL_RADIUS)
         .backgroundColor($r('app.color.button_ghost_bg'))
 
         Row() {
@@ -185,7 +264,7 @@ export struct SourceSheet {
             .fontWeight(FontWeight.Medium)
         }
         .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-        .borderRadius(10)
+        .borderRadius(SOURCE_SHEET_PILL_RADIUS)
         .backgroundColor($r('app.color.button_ghost_bg'))
         .margin({ left: 8 })
 
@@ -210,11 +289,11 @@ export struct SourceSheet {
               .margin({ right: 6 })
             Text('已完成')
               .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
+              .fontColor($r('app.color.text_primary'))
           }
         }
         .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-        .borderRadius(10)
+        .borderRadius(SOURCE_SHEET_PILL_RADIUS)
         .backgroundColor($r('app.color.button_ghost_bg'))
       }
       .width('100%')
@@ -222,57 +301,112 @@ export struct SourceSheet {
     }
     .width('100%')
     .padding({ left: 20, right: 20, top: 14, bottom: 8 })
-    .bindMenu(this.showKeywordMenu, this.KeywordMenuContent, {
-      placement: Placement.Bottom,
-      showInSubWindow: false,
-      onDisappear: () => {
-        this.showKeywordMenu = false
-      }
-    })
   }
 
   @Builder
-  private KeywordMenuContent(): void {
-    Menu() {
-      if (this.animeOriginalName.length > 0 && this.animeOriginalName !== this.getCurrentKeyword()) {
-        this.KeywordMenuItem('使用原名', () => {
-          this.showKeywordMenu = false
-          this.queryCurrentSource(this.animeOriginalName)
-        })
-      }
-
-      if (this.getAliasList().length > 0) {
-        this.KeywordMenuItem('使用别名', () => {
-          this.showKeywordMenu = false
-          this.openAliasDialog()
-        })
-      }
-
-      this.KeywordMenuItem('手动输入', () => {
-        this.showKeywordMenu = false
-        this.openManualSearchDialog()
-      })
-    }
-    .width(160)
-    .fontColor($r('app.color.text_primary'))
-    .radius(20)
-  }
-
-  @Builder
-  private KeywordMenuItem(label: string, action: () => void): void {
-    MenuItem() {
+  private TabletSourceRail(): void {
+    Column() {
       Row() {
-        Text(label)
+        Text('播放源')
           .fontSize(15)
-          .fontWeight(FontWeight.Medium)
+          .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .layoutWeight(1)
+        Text(`${this.getMatchedSourceCount()}/${this.pluginStates.length}`)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
       }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      .alignItems(VerticalAlign.Center)
+
+      if (this.pluginStates.length > 0) {
+        Scroll() {
+          Column({ space: 8 }) {
+            ForEach(this.pluginStates, (state: PluginSearchState, index?: number) => {
+              this.TabletSourceItem(state, index === undefined ? 0 : index)
+            }, (state: PluginSearchState, index?: number) =>
+              `tablet_source_${state.pluginId}_${state.status}_${state.searchResults.length}_${index}`)
+          }
+          .width('100%')
+          .padding({ left: 12, right: 12, bottom: 12 })
+        }
         .width('100%')
-        .height(48)
-        .padding({ left: 14, right: 14 })
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
+      }
     }
-    .onClick(action)
+    .width(this.getTabletSourceRailWidth())
+    .height('100%')
+    .backgroundColor($r('app.color.card_background'))
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+  }
+
+  @Builder
+  private TabletSourceItem(state: PluginSearchState, index: number): void {
+    Row() {
+      Column()
+        .width(7)
+        .height(7)
+        .borderRadius(3.5)
+        .backgroundColor(this.getChipStatusColor(state))
+        .margin({ right: 10 })
+
+      Column() {
+        Text(state.pluginName)
+          .fontSize(14)
+          .fontWeight(this.selectedPluginIndex === index ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.selectedPluginIndex === index ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(this.buildSourceItemStatusText(state))
+          .fontSize(12)
+          .fontColor(this.selectedPluginIndex === index ? $r('app.color.accent_blue') : $r('app.color.text_secondary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 3 })
+          .width('100%')
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      if (state.status === 'pending' && this.isSearchInProgress()) {
+        LoadingProgress()
+          .width(14)
+          .height(14)
+          .color($r('app.color.accent_blue'))
+          .margin({ left: 8 })
+      } else if (this.hasSearchResults(state)) {
+        Row() {
+          Text(`${state.searchResults.length}`)
+            .fontSize(11)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.White)
+        }
+        .width(22)
+        .height(22)
+        .borderRadius(11)
+        .backgroundColor($r('app.color.accent_blue'))
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .margin({ left: 8 })
+      }
+    }
+    .width('100%')
+    .height(58)
+    .padding({ left: 12, right: 10 })
+    .borderRadius(12)
+    .backgroundColor(this.selectedPluginIndex === index ? $r('app.color.button_ghost_bg') : Color.Transparent)
+    .border({
+      width: this.selectedPluginIndex === index ? 1 : 0,
+      color: this.selectedPluginIndex === index ? $r('app.color.accent_blue') : Color.Transparent
+    })
+    .onClick(() => {
+      this.onPluginSelected(index)
+    })
   }
 
   @Builder
@@ -356,7 +490,7 @@ export struct SourceSheet {
     }
     .height(38)
     .padding({ left: 14, right: 10 })
-    .borderRadius(19)
+    .borderRadius(SOURCE_SHEET_PILL_RADIUS)
     .backgroundColor(this.selectedPluginIndex === index ? $r('app.color.button_ghost_bg') : $r('app.color.card_background'))
     .border({
       width: this.selectedPluginIndex === index ? 1.2 : 0.5,
@@ -374,37 +508,45 @@ export struct SourceSheet {
 
   @Builder
   private PluginContentArea(): void {
-    if (this.hasSearchResults(this.pluginStates[this.selectedPluginIndex])) {
-      if (this.isQueryingRoads) {
-        this.LoadingStateCard('正在解析',
-          this.selectedResult !== null ? this.selectedResult.name : '正在解析可播放剧集')
-      } else if (this.queryRoadsError.length > 0) {
-        this.RoadsErrorCard()
-      } else {
-        this.SuccessResultArea()
+    Column() {
+      if (this.captchaRetrying) {
+        this.LoadingStateCard('验证成功', '正在重新检索播放源，请稍候')
+      } else if (this.hasSearchResults(this.pluginStates[this.selectedPluginIndex])) {
+        if (this.isQueryingRoads) {
+          this.LoadingStateCard('正在解析',
+            this.selectedResult !== null ? this.selectedResult.name : '正在解析可播放剧集')
+        } else if (this.queryRoadsError.length > 0) {
+          this.RoadsErrorCard()
+        } else {
+          this.SuccessResultArea()
+        }
+      } else if (this.pluginStates[this.selectedPluginIndex].status === 'pending') {
+        if (this.isSearchInProgress()) {
+          this.LoadingStateCard('正在检索播放源', '正在使用当前规则源匹配番剧资源')
+        } else {
+          this.PendingFinishedStateCard()
+        }
+      } else if (this.pluginStates[this.selectedPluginIndex].status === 'success') {
+        if (this.isQueryingRoads) {
+          this.LoadingStateCard('正在解析',
+            this.selectedResult !== null ? this.selectedResult.name : '正在解析可播放剧集')
+        } else if (this.queryRoadsError.length > 0) {
+          this.RoadsErrorCard()
+        } else {
+          this.SuccessResultArea()
+        }
+      } else if (this.pluginStates[this.selectedPluginIndex].status === 'noResult') {
+        this.NoResultStateCard()
+      } else if (this.pluginStates[this.selectedPluginIndex].status === 'captcha') {
+        this.CaptchaStateCard()
+      } else if (this.pluginStates[this.selectedPluginIndex].status === 'error') {
+        this.ErrorStateCard()
       }
-    } else if (this.pluginStates[this.selectedPluginIndex].status === 'pending') {
-      if (this.isSearchInProgress()) {
-        this.LoadingStateCard('正在检索播放源', '正在使用当前规则源匹配番剧资源')
-      } else {
-        this.PendingFinishedStateCard()
-      }
-    } else if (this.pluginStates[this.selectedPluginIndex].status === 'success') {
-      if (this.isQueryingRoads) {
-        this.LoadingStateCard('正在解析',
-          this.selectedResult !== null ? this.selectedResult.name : '正在解析可播放剧集')
-      } else if (this.queryRoadsError.length > 0) {
-        this.RoadsErrorCard()
-      } else {
-        this.SuccessResultArea()
-      }
-    } else if (this.pluginStates[this.selectedPluginIndex].status === 'noResult') {
-      this.NoResultStateCard()
-    } else if (this.pluginStates[this.selectedPluginIndex].status === 'captcha') {
-      this.CaptchaStateCard()
-    } else if (this.pluginStates[this.selectedPluginIndex].status === 'error') {
-      this.ErrorStateCard()
     }
+    .width('100%')
+    .layoutWeight(1)
+    .justifyContent(FlexAlign.Start)
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -441,29 +583,27 @@ export struct SourceSheet {
       if (this.pluginStates[this.selectedPluginIndex].searchResults.length === 0) {
         this.NoResultStateCard()
       } else {
-        Scroll() {
-          Column() {
-            ForEach(this.pluginStates[this.selectedPluginIndex].searchResults, (result: SearchResultRef, index?: number) => {
+        List({ space: 10 }) {
+          ForEach(this.pluginStates[this.selectedPluginIndex].searchResults, (result: SearchResultRef, index?: number) => {
+            ListItem() {
               this.ResultCard(result)
-            }, (result: SearchResultRef, index?: number) => `result_${result.sourceId}_${index}`)
+            }
+          }, (result: SearchResultRef, index?: number) => `result_${result.sourceId}_${index}`)
 
+          ListItem() {
             this.SupplementarySearchEntry()
           }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .justifyContent(FlexAlign.Start)
         }
         .width('100%')
         .layoutWeight(1)
-        .scrollable(ScrollDirection.Vertical)
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
       }
     }
     .width('100%')
-    .height('100%')
     .layoutWeight(1)
     .justifyContent(FlexAlign.Start)
+    .alignItems(HorizontalAlign.Start)
     .padding({ left: 18, right: 18, top: 8, bottom: 0 })
   }
 
@@ -497,15 +637,16 @@ export struct SourceSheet {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Button('解析播放')
-        .fontSize(13)
+      Button({ type: ButtonType.Normal }) {
+        Text('解析播放')
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_on_primary'))
+      }
         .height(32)
         .padding({ left: 14, right: 14 })
-        .backgroundColor($r('app.color.button_accent_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .fontColor($r('app.color.text_on_primary'))
+        .backgroundColor($r('app.color.accent_blue'))
         .borderRadius(16)
-        .shadow({ radius: 8, color: $r('app.color.shadow_button_accent'), offsetY: 2 })
         .onClick(() => {
           this.onSearchResultSelected(result)
         })
@@ -517,7 +658,6 @@ export struct SourceSheet {
     .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
     .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-    .margin({ bottom: 10 })
     .onClick(() => {
       this.onSearchResultSelected(result)
     })
@@ -528,14 +668,13 @@ export struct SourceSheet {
     Row() {
       Text('仍未找到？')
         .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor($r('app.color.text_primary'))
       Button('别名检索')
         .fontSize(12)
         .height(28)
         .padding({ left: 10, right: 10 })
-        .backgroundColor($r('app.color.button_ghost_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .fontColor($r('app.color.text_secondary'))
+        .backgroundColor(Color.White)
+        .fontColor(Color.Black)
         .borderRadius(14)
         .border({ width: 0.5, color: $r('app.color.border_subtle') })
         .margin({ left: 8 })
@@ -546,8 +685,7 @@ export struct SourceSheet {
         .fontSize(12)
         .height(28)
         .padding({ left: 10, right: 10 })
-        .backgroundColor($r('app.color.button_accent_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+        .backgroundColor($r('app.color.accent_blue'))
         .fontColor($r('app.color.text_on_primary'))
         .borderRadius(14)
         .margin({ left: 8 })
@@ -589,21 +727,37 @@ export struct SourceSheet {
   private RoadsErrorCard(): void {
     Column() {
       this.StateBadge('线路解析失败', this.queryRoadsError.length > 0 ? this.queryRoadsError : '当前资源暂时无法获取可播放剧集')
-      Button('重试解析')
-        .fontSize(14)
-        .height(42)
-        .padding({ left: 22, right: 22 })
-        .backgroundColor($r('app.color.button_accent_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .fontColor($r('app.color.text_on_primary'))
-        .borderRadius(21)
-        .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
-        .margin({ top: 18 })
-        .onClick(() => {
-          if (this.selectedResult !== null) {
-            this.onSearchResultSelected(this.selectedResult)
-          }
-        })
+      Row() {
+        Button('重试解析')
+          .fontSize(14)
+          .height(42)
+          .padding({ left: 20, right: 20 })
+          .backgroundColor($r('app.color.button_accent_bg'))
+          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+          .fontColor($r('app.color.text_on_primary'))
+          .borderRadius(21)
+          .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
+          .margin({ right: 12 })
+          .onClick(() => {
+            if (this.selectedResult !== null) {
+              this.onSearchResultSelected(this.selectedResult)
+            }
+          })
+
+        Button('返回匹配')
+          .fontSize(14)
+          .height(42)
+          .padding({ left: 20, right: 20 })
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+          .fontColor($r('app.color.text_secondary'))
+          .borderRadius(21)
+          .border({ width: 0.5, color: $r('app.color.border_subtle') })
+          .onClick(() => {
+            this.returnToMatchedResults()
+          })
+      }
+      .margin({ top: 18 })
     }
     .width('100%')
     .layoutWeight(1)
@@ -617,14 +771,13 @@ export struct SourceSheet {
       this.StateBadge('未匹配到资源', '当前规则源没有返回结果，可换源或使用别名重新检索')
       Row() {
         Button('别名检索')
-          .fontSize(14)
-          .height(42)
-          .padding({ left: 20, right: 20 })
-          .backgroundColor($r('app.color.button_accent_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_on_primary'))
+        .fontSize(14)
+        .height(42)
+        .padding({ left: 20, right: 20 })
+          .backgroundColor(Color.White)
+          .fontColor(Color.Black)
           .borderRadius(21)
-          .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
+          .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .margin({ right: 12 })
           .onClick(() => {
             this.openAliasDialog()
@@ -633,11 +786,9 @@ export struct SourceSheet {
           .fontSize(14)
           .height(42)
           .padding({ left: 20, right: 20 })
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_secondary'))
+          .backgroundColor($r('app.color.accent_blue'))
+          .fontColor($r('app.color.text_on_primary'))
           .borderRadius(21)
-          .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .onClick(() => {
             this.openManualSearchDialog()
           })
@@ -672,11 +823,9 @@ export struct SourceSheet {
           .fontSize(14)
           .height(42)
           .padding({ left: 20, right: 20 })
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_secondary'))
+          .backgroundColor($r('app.color.accent_blue'))
+          .fontColor($r('app.color.text_on_primary'))
           .borderRadius(21)
-          .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .onClick(() => {
             this.openManualSearchDialog()
           })
@@ -707,7 +856,7 @@ export struct SourceSheet {
           .onClick(() => {
             this.openCaptchaDialog()
           })
-        Button('换个源')
+        Button('重试')
           .fontSize(14)
           .height(42)
           .padding({ left: 20, right: 20 })
@@ -717,7 +866,7 @@ export struct SourceSheet {
           .borderRadius(21)
           .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .onClick(() => {
-            this.switchToNextPlugin()
+            this.retryCurrentPlugin()
           })
       }
       .margin({ top: 18 })
@@ -751,9 +900,8 @@ export struct SourceSheet {
           .fontSize(14)
           .height(42)
           .padding({ left: 18, right: 18 })
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_secondary'))
+          .backgroundColor(Color.White)
+          .fontColor(Color.Black)
           .borderRadius(21)
           .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .margin({ right: 10 })
@@ -764,11 +912,9 @@ export struct SourceSheet {
           .fontSize(14)
           .height(42)
           .padding({ left: 18, right: 18 })
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-          .fontColor($r('app.color.text_secondary'))
+          .backgroundColor($r('app.color.accent_blue'))
+          .fontColor($r('app.color.text_on_primary'))
           .borderRadius(21)
-          .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .onClick(() => {
             this.openManualSearchDialog()
           })
@@ -869,7 +1015,7 @@ export struct SourceSheet {
         }
         .width('100%')
       }
-      .width('85%')
+      .width(this.getFloatingDialogWidth())
       .padding(20)
       .borderRadius(16)
       .backgroundColor($r('app.color.card_background'))
@@ -888,34 +1034,43 @@ export struct SourceSheet {
       .width('100%')
       .height('100%')
       .backgroundColor($r('app.color.overlay_topbar_bg'))
+      .onClick(() => {
+        this.showManualSearchDialog = false
+      })
 
     Column() {
       Column() {
         Text('手动检索')
           .fontSize(16)
           .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
           .margin({ bottom: 16 })
 
         TextInput({ text: this.manualSearchKeyword, placeholder: '输入搜索关键词' })
           .fontSize(14)
           .width('100%')
+          .height(44)
           .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-          .borderRadius(8)
-          .backgroundColor($r('app.color.card_background'))
+          .borderRadius(12)
+          .fontColor($r('app.color.text_primary'))
+          .placeholderColor($r('app.color.text_hint'))
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .onChange((value: string) => {
             this.manualSearchKeyword = value
           })
-          .margin({ bottom: 16 })
+          .margin({ bottom: 18 })
 
         Row() {
           Button('取消')
             .fontSize(13)
-            .backgroundColor($r('app.color.button_neutral_bg'))
+            .fontWeight(FontWeight.Medium)
+            .height(42)
+            .backgroundColor($r('app.color.button_ghost_bg'))
             .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-            .fontColor($r('app.color.text_on_primary'))
-            .borderRadius(18)
-            .border({ width: 0.5, color: $r('app.color.border_specular') })
-            .shadow({ radius: 12, color: $r('app.color.shadow_surface'), offsetY: 4 })
+            .fontColor($r('app.color.text_primary'))
+            .borderRadius(21)
+            .border({ width: 0.5, color: $r('app.color.border_subtle') })
             .layoutWeight(1)
             .margin({ right: 8 })
             .onClick(() => {
@@ -923,14 +1078,14 @@ export struct SourceSheet {
             })
           Button('搜索')
             .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .height(42)
             .backgroundColor($r('app.color.button_accent_bg'))
             .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
             .fontColor($r('app.color.text_on_primary'))
-            .borderRadius(18)
-            .border({ width: 0.5, color: $r('app.color.border_specular') })
+            .borderRadius(21)
             .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
             .layoutWeight(1)
-            .enabled(this.manualSearchKeyword.trim().length > 0)
             .onClick(() => {
               const keyword = this.manualSearchKeyword.trim()
               if (keyword.length > 0) {
@@ -941,17 +1096,20 @@ export struct SourceSheet {
         }
         .width('100%')
       }
-      .width('85%')
+      .width(this.getFloatingDialogWidth())
       .padding(20)
       .borderRadius(16)
       .backgroundColor($r('app.color.card_background'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 6 })
+      .onClick(() => {})
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
+    .padding({ left: 18, right: 18, bottom: this.getManualSearchKeyboardPadding() })
+    .translate({ y: this.getManualSearchDialogOffsetY() })
   }
 
   private getChipStatusColor(state: PluginSearchState): ResourceStr {
@@ -968,6 +1126,61 @@ export struct SourceSheet {
       return $r('app.color.text_secondary')
     }
     return state.getStatusColor()
+  }
+
+  private isTabletSheetLayout(): boolean {
+    return this.getEffectiveSheetWidth() >= TABLET_SOURCE_SHEET_BREAKPOINT
+  }
+
+  private getTabletSourceRailWidth(): number {
+    if (this.getEffectiveSheetWidth() >= 1200) {
+      return WIDE_TABLET_SOURCE_RAIL_WIDTH
+    }
+    return TABLET_SOURCE_RAIL_WIDTH
+  }
+
+  private getEffectiveSheetWidth(): number {
+    return this.sheetWidthVp > 0 ? this.sheetWidthVp : this.screenWidthVp
+  }
+
+  private normalizeSize(value: Length): number {
+    if (typeof value === 'number') {
+      return Math.ceil(value)
+    }
+    const parsed = parseFloat(String(value))
+    if (isNaN(parsed)) {
+      return 0
+    }
+    return Math.ceil(parsed)
+  }
+
+  private getFloatingDialogWidth(): Length {
+    if (this.isTabletSheetLayout()) {
+      return 420
+    }
+    return '85%'
+  }
+
+  private buildSourceItemStatusText(state: PluginSearchState): string {
+    if (this.hasSearchResults(state)) {
+      return `${state.searchResults.length} 个匹配结果`
+    }
+    if (state.status === 'pending') {
+      return this.isSearchInProgress() ? '检索中' : '等待结果'
+    }
+    if (state.status === 'captcha') {
+      return '需要验证'
+    }
+    if (state.status === 'noResult') {
+      return '暂无匹配'
+    }
+    if (state.status === 'error') {
+      return '检索失败'
+    }
+    if (state.status === 'success') {
+      return '暂无匹配'
+    }
+    return '等待检索'
   }
 
   private getMatchedSourceCount(): number {
@@ -1059,6 +1272,11 @@ export struct SourceSheet {
     if (this.isClosed) {
       return
     }
+    const resultPluginIndex = this.findPluginIndexById(result.sourceId)
+    if (resultPluginIndex >= 0) {
+      this.selectedPluginIndex = resultPluginIndex
+    }
+    this.hasUserSelectedPlugin = true
     const requestToken = ++this.roadsRequestToken
     const requestPluginId = result.sourceId
     const currentResult = result
@@ -1089,6 +1307,10 @@ export struct SourceSheet {
         this.queryRoadsError = source.message.length > 0 ? source.message : '获取线路失败'
         logger.error('Query roads failed for %{public}s: %{public}s', result.name, this.queryRoadsError)
       } else if (source.status === 'empty') {
+        if (this.startWebRoadFallback(result, requestToken)) {
+          this.queryRoadsError = '正在通过网页模式解析线路'
+          return
+        }
         this.queryRoadsError = '该源无可用剧集'
       } else if (this.onRoadsReady) {
         logger.info('onRoadsReady emit pluginId=%{public}d roads=%{public}d', requestPluginId, source.roads.length)
@@ -1101,9 +1323,99 @@ export struct SourceSheet {
       this.queryRoadsError = err instanceof Error ? err.message : '获取线路异常'
       logger.error('Query roads exception: %{public}s', this.queryRoadsError)
     } finally {
-      if (!this.isClosed && (requestToken === this.roadsRequestToken || this.selectedResult === currentResult)) {
+      if (!this.isClosed && !this.webRoadFallbackActive &&
+        (requestToken === this.roadsRequestToken || this.selectedResult === currentResult)) {
         this.isQueryingRoads = false
       }
+    }
+  }
+
+  private startWebRoadFallback(result: SearchResultRef, requestToken: number): boolean {
+    if (result.url.length === 0 || !result.url.startsWith('http')) {
+      return false
+    }
+    this.webRoadFallbackToken = requestToken
+    this.webRoadFallbackResult = result
+    this.webRoadFallbackUrl = result.url
+    this.webRoadFallbackActive = true
+    this.isQueryingRoads = true
+    logger.info('Road WebView fallback start token=%{public}d pluginId=%{public}d url=%{public}s',
+      requestToken, result.sourceId, result.url.substring(0, 120))
+    return true
+  }
+
+  private onWebRoadFallbackPageEnd(): void {
+    const token = this.webRoadFallbackToken
+    const result = this.webRoadFallbackResult
+    if (!this.webRoadFallbackActive || result === null) {
+      return
+    }
+    setTimeout(() => {
+      this.captureWebRoadFallbackHtml(token)
+    }, 500)
+  }
+
+  private captureWebRoadFallbackHtml(token: number): void {
+    const result = this.webRoadFallbackResult
+    if (!this.webRoadFallbackActive || result === null || token !== this.roadsRequestToken) {
+      return
+    }
+    const script = 'document.documentElement ? document.documentElement.outerHTML : document.body.outerHTML'
+    this.webRoadFallbackController.runJavaScript(script, (err, jsResult) => {
+      if (err) {
+        logger.warn('Road WebView fallback HTML capture failed')
+        this.finishWebRoadFallbackError(token, '网页模式解析失败')
+        return
+      }
+      const html = normalizeWebScriptStringResult(jsResult)
+      const normalizedHtml = html.replace(/\\\//g, '/')
+      logger.info('Road WebView fallback captured token=%{public}d htmlLength=%{public}d hasVodPlay=%{public}s',
+        token, html.length, String(normalizedHtml.indexOf('/vod/play/') !== -1 || normalizedHtml.indexOf('/vodplay/') !== -1))
+      this.parseWebRoadFallbackHtml(token, result, html)
+    })
+  }
+
+  private async parseWebRoadFallbackHtml(token: number, result: SearchResultRef, html: string): Promise<void> {
+    if (this.isClosed || token !== this.roadsRequestToken) {
+      return
+    }
+    try {
+      const source = await this.searchService.queryRoadsFromHtml(result, html)
+      if (this.isClosed || token !== this.roadsRequestToken) {
+        return
+      }
+      logger.info('Road WebView fallback parsed token=%{public}d status=%{public}s roads=%{public}d',
+        token, source.status, source.roads.length)
+      if (source.status === 'success' && this.onRoadsReady) {
+        this.clearWebRoadFallback()
+        this.queryRoadsError = ''
+        this.isQueryingRoads = false
+        this.onRoadsReady(source)
+      } else {
+        this.finishWebRoadFallbackError(token, source.message.length > 0 ? source.message : '网页模式未解析到线路')
+      }
+    } catch (err) {
+      this.finishWebRoadFallbackError(token, err instanceof Error ? err.message : '网页模式解析异常')
+    }
+  }
+
+  private finishWebRoadFallbackError(token: number, message: string): void {
+    if (this.isClosed || token !== this.roadsRequestToken) {
+      return
+    }
+    this.clearWebRoadFallback()
+    this.isQueryingRoads = false
+    this.queryRoadsError = message
+    logger.warn('Road WebView fallback failed token=%{public}d: %{public}s', token, message)
+  }
+
+  private clearWebRoadFallback(): void {
+    this.webRoadFallbackActive = false
+    this.webRoadFallbackUrl = ''
+    this.webRoadFallbackResult = null
+    try {
+      this.webRoadFallbackController.loadUrl('about:blank')
+    } catch (e) {
     }
   }
 
@@ -1114,26 +1426,28 @@ export struct SourceSheet {
     if (this.captchaRetrying) {
       return
     }
+    const pluginId = this.getSelectedPluginId()
+    if (pluginId < 0) {
+      return
+    }
     this.captchaRetrying = true
     this.resetRoadQueryState()
     this.isSearching = true
     const keyword = this.getCurrentKeyword()
-    const maxAttempts = afterCaptcha ? 3 : 1
+    const maxAttempts = 1
     try {
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         if (this.isClosed) {
           return
         }
         if (afterCaptcha) {
-          const delayMs = attempt === 0 ? 1200 : 2200
+          const delayMs = CAPTCHA_RETRY_DELAY_MS
           logger.info('Retry plugin after captcha, attempt=%{public}d/%{public}d, delay=%{public}d',
             attempt + 1, maxAttempts, delayMs)
           await this.sleep(delayMs)
         }
-        await this.searchService.retryPlugin(this.selectedPluginIndex, keyword)
-        if (!afterCaptcha || !this.shouldRetryAfterCaptcha()) {
-          return
-        }
+        await this.searchService.retryPluginById(pluginId, keyword)
+        return
       }
     } finally {
       this.captchaRetrying = false
@@ -1195,6 +1509,15 @@ export struct SourceSheet {
       }
     }
 
+    if ((this.selectedResult !== null || this.isQueryingRoads) && selectedPluginId >= 0) {
+      const lockedIndex = this.findPluginIndexById(selectedPluginId)
+      if (lockedIndex >= 0) {
+        this.selectedPluginIndex = lockedIndex
+        this.emitSnapshot()
+        return
+      }
+    }
+
     const matchedIndex = this.findFirstMatchedPluginIndex()
     if (matchedIndex >= 0) {
       this.selectedPluginIndex = matchedIndex
@@ -1238,6 +1561,17 @@ export struct SourceSheet {
     this.showManualSearchDialog = true
   }
 
+  private getManualSearchKeyboardPadding(): number {
+    return this.keyboardAvoidHeight > 0 ? Math.min(this.keyboardAvoidHeight, 260) : 0
+  }
+
+  private getManualSearchDialogOffsetY(): number {
+    if (this.keyboardAvoidHeight <= 0) {
+      return 0
+    }
+    return -Math.min(this.keyboardAvoidHeight * 0.32, 120)
+  }
+
   private getAliasList(): string[] {
     const list: string[] = []
     const current = this.getCurrentKeyword()
@@ -1267,7 +1601,7 @@ export struct SourceSheet {
     const state = this.pluginStates[this.selectedPluginIndex]
     const rule = await this.ruleStore.getById(state.pluginId)
     if (rule === null) {
-      this.searchService.updatePluginError(this.selectedPluginIndex, '规则源不存在')
+      this.searchService.updatePluginErrorById(state.pluginId, '规则源不存在')
       return
     }
 
@@ -1376,10 +1710,10 @@ export struct SourceSheet {
   private cancelSearch(): void {
     this.isClosed = true
     this.selectedResult = null
+    this.clearWebRoadFallback()
     this.showCaptchaDialog = false
     this.showAliasDialog = false
     this.showManualSearchDialog = false
-    this.showKeywordMenu = false
     this.searchService.cancel()
   }
 
@@ -1397,22 +1731,34 @@ export struct SourceSheet {
   }
 
   private resetRoadQueryState(): void {
+    this.roadsRequestToken++
+    this.clearWebRoadFallback()
     this.selectedResult = null
     this.isQueryingRoads = false
     this.queryRoadsError = ''
+  }
+
+  private returnToMatchedResults(): void {
+    this.roadsRequestToken++
+    this.clearWebRoadFallback()
+    this.selectedResult = null
+    this.isQueryingRoads = false
+    this.queryRoadsError = ''
+    this.emitSnapshot()
   }
 
   private getCurrentKeyword(): string {
     return this.animeName.length > 0 ? this.animeName : this.animeOriginalName
   }
 
-  private shouldRetryAfterCaptcha(): boolean {
+  private shouldRetryAfterCaptcha(pluginId: number): boolean {
     const states = this.searchService.getPluginStates()
-    if (this.selectedPluginIndex < 0 || this.selectedPluginIndex >= states.length) {
-      return false
+    for (let i = 0; i < states.length; i++) {
+      if (states[i].pluginId === pluginId) {
+        return states[i].status === 'captcha' || states[i].status === 'noResult'
+      }
     }
-    const state = states[this.selectedPluginIndex]
-    return state.status === 'captcha' || state.status === 'noResult'
+    return false
   }
 
   private sleep(delayMs: number): Promise<void> {

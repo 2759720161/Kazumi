@@ -48,7 +48,9 @@ export class HistoryStore {
         anime_name: record.animeName,
         anime_cover: record.animeCover,
         anime_url: record.animeUrl,
+        bangumi_id: record.bangumiId,
         source_id: record.sourceId,
+        source_name: record.sourceName,
         episode_name: record.episodeName,
         episode_url: record.episodeUrl,
         position_ms: record.positionMs,
@@ -64,7 +66,9 @@ export class HistoryStore {
         anime_name: record.animeName,
         anime_cover: record.animeCover,
         anime_url: record.animeUrl,
+        bangumi_id: record.bangumiId,
         source_id: record.sourceId,
+        source_name: record.sourceName,
         episode_name: record.episodeName,
         episode_url: record.episodeUrl,
         position_ms: record.positionMs,
@@ -87,7 +91,9 @@ export class HistoryStore {
         anime_name: record.animeName,
         anime_cover: record.animeCover,
         anime_url: record.animeUrl,
+        bangumi_id: record.bangumiId,
         source_id: record.sourceId,
+        source_name: record.sourceName,
         episode_name: record.episodeName,
         episode_url: record.episodeUrl,
         position_ms: record.positionMs,
@@ -103,7 +109,9 @@ export class HistoryStore {
         anime_name: record.animeName,
         anime_cover: record.animeCover,
         anime_url: record.animeUrl,
+        bangumi_id: record.bangumiId,
         source_id: record.sourceId,
+        source_name: record.sourceName,
         episode_name: record.episodeName,
         episode_url: record.episodeUrl,
         position_ms: record.positionMs,
@@ -114,6 +122,48 @@ export class HistoryStore {
       };
       return await this.rdbManager.insert(RdbConstants.TABLE_WATCH_HISTORY, values);
     }
+  }
+
+  async replaceAnimeId(oldAnimeId: string, record: HistoryRecord): Promise<number> {
+    if (oldAnimeId.length === 0 || oldAnimeId === record.animeId) {
+      return await this.upsertPreservingUpdatedAt(record);
+    }
+
+    const existingNew: HistoryRecord | null = await this.getByAnimeId(record.animeId);
+    if (existingNew !== null) {
+      const merged: HistoryRecord = this.mergeDuplicateRecord(
+        record.updatedAt >= existingNew.updatedAt ? record : existingNew,
+        record.updatedAt >= existingNew.updatedAt ? existingNew : record
+      );
+      merged.animeId = record.animeId;
+      const result = await this.upsertPreservingUpdatedAt(merged);
+      await this.deleteByAnimeId(oldAnimeId);
+      return result;
+    }
+
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
+    predicates.equalTo(RdbConstants.COL_ANIME_ID, oldAnimeId);
+    const values: relationalStore.ValuesBucket = {
+      anime_id: record.animeId,
+      anime_name: record.animeName,
+      anime_cover: record.animeCover,
+      anime_url: record.animeUrl,
+      bangumi_id: record.bangumiId,
+      source_id: record.sourceId,
+      source_name: record.sourceName,
+      episode_name: record.episodeName,
+      episode_url: record.episodeUrl,
+      position_ms: record.positionMs,
+      duration_ms: record.durationMs,
+      road_index: record.roadIndex,
+      episode_index: record.episodeIndex,
+      updated_at: record.updatedAt > 0 ? record.updatedAt : Date.now()
+    };
+    const updated = await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
+    if (updated > 0) {
+      return updated;
+    }
+    return await this.upsertPreservingUpdatedAt(record);
   }
 
   async deleteByAnimeId(animeId: string): Promise<number> {
@@ -156,7 +206,9 @@ export class HistoryStore {
           record.animeName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_ANIME_NAME));
           record.animeCover = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_ANIME_COVER));
           record.animeUrl = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_ANIME_URL));
+          record.bangumiId = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_BANGUMI_ID));
           record.sourceId = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_SOURCE_ID));
+          record.sourceName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_SOURCE_NAME));
           record.episodeName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_EPISODE_NAME));
           record.episodeUrl = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_EPISODE_URL));
           record.positionMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_POSITION_MS));
@@ -206,5 +258,45 @@ export class HistoryStore {
         records[i].sourceName = name;
       }
     }
+  }
+
+  private mergeDuplicateRecord(primary: HistoryRecord, fallback: HistoryRecord): HistoryRecord {
+    if (primary.animeName.length === 0) {
+      primary.animeName = fallback.animeName;
+    }
+    if (primary.animeCover.length === 0) {
+      primary.animeCover = fallback.animeCover;
+    }
+    if (primary.animeUrl.length === 0) {
+      primary.animeUrl = fallback.animeUrl;
+    }
+    if (primary.bangumiId <= 0) {
+      primary.bangumiId = fallback.bangumiId;
+    }
+    if (primary.sourceId < 0) {
+      primary.sourceId = fallback.sourceId;
+    }
+    if (primary.sourceName.length === 0) {
+      primary.sourceName = fallback.sourceName;
+    }
+    if (primary.episodeName.length === 0) {
+      primary.episodeName = fallback.episodeName;
+    }
+    if (primary.episodeUrl.length === 0) {
+      primary.episodeUrl = fallback.episodeUrl;
+    }
+    if (primary.positionMs <= 0) {
+      primary.positionMs = fallback.positionMs;
+    }
+    if (primary.durationMs <= 0) {
+      primary.durationMs = fallback.durationMs;
+    }
+    if (primary.roadIndex < 0) {
+      primary.roadIndex = fallback.roadIndex;
+    }
+    if (primary.episodeIndex < 0) {
+      primary.episodeIndex = fallback.episodeIndex;
+    }
+    return primary;
   }
 }

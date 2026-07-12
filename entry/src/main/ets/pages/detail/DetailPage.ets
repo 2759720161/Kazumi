@@ -661,7 +661,7 @@ export struct DetailPage {
     playerParams.bangumiCover = this.animeBangumiCover
     playerParams.coverFallback = this.animeCoverFallback
     playerParams.animeDesc = this.animeDesc
-    playerParams.sourceName = this.sourceName
+    playerParams.sourceName = source.name.length > 0 ? source.name : this.sourceName
     playerParams.historyPositionMs = historyPositionMs
     ContinuationState.markPlayer(playerParams, historyPositionMs)
     router.pushUrl({

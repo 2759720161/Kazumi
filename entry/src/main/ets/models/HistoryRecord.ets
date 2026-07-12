@@ -4,6 +4,7 @@ export class HistoryRecord {
   animeName: string = '';
   animeCover: string = '';
   animeUrl: string = '';
+  bangumiId: number = -1;
   sourceId: number = -1;
   episodeName: string = '';
   episodeUrl: string = '';
@@ -21,6 +22,7 @@ export class HistoryRecord {
     if (json['animeName'] !== undefined) record.animeName = json['animeName'] as string;
     if (json['animeCover'] !== undefined) record.animeCover = json['animeCover'] as string;
     if (json['animeUrl'] !== undefined) record.animeUrl = json['animeUrl'] as string;
+    if (json['bangumiId'] !== undefined) record.bangumiId = json['bangumiId'] as number;
     if (json['sourceId'] !== undefined) record.sourceId = json['sourceId'] as number;
     if (json['episodeName'] !== undefined) record.episodeName = json['episodeName'] as string;
     if (json['episodeUrl'] !== undefined) record.episodeUrl = json['episodeUrl'] as string;
@@ -29,6 +31,7 @@ export class HistoryRecord {
     if (json['roadIndex'] !== undefined) record.roadIndex = json['roadIndex'] as number;
     if (json['episodeIndex'] !== undefined) record.episodeIndex = json['episodeIndex'] as number;
     if (json['updatedAt'] !== undefined) record.updatedAt = json['updatedAt'] as number;
+    if (json['sourceName'] !== undefined) record.sourceName = json['sourceName'] as string;
     return record;
   }
 
@@ -39,6 +42,7 @@ export class HistoryRecord {
     result['animeName'] = this.animeName;
     result['animeCover'] = this.animeCover;
     result['animeUrl'] = this.animeUrl;
+    result['bangumiId'] = this.bangumiId;
     result['sourceId'] = this.sourceId;
     result['episodeName'] = this.episodeName;
     result['episodeUrl'] = this.episodeUrl;
@@ -47,6 +51,7 @@ export class HistoryRecord {
     result['roadIndex'] = this.roadIndex;
     result['episodeIndex'] = this.episodeIndex;
     result['updatedAt'] = this.updatedAt;
+    result['sourceName'] = this.sourceName;
     return result;
   }
 

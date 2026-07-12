@@ -4,6 +4,9 @@ import { BusinessError } from '@kit.BasicServicesKit'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('CastSessionManager')
+const MEDIA_SKIP_INTERVAL_SECONDS: number = 15
+const MEDIA_SKIP_INTERVAL_MS: number = MEDIA_SKIP_INTERVAL_SECONDS * 1000
+const MEDIA_SKIP_INTERVALS: avSession.SkipIntervals = avSession.SkipIntervals.SECONDS_15
 
 export class CastMediaInfo {
   url: string = ''
@@ -12,12 +15,16 @@ export class CastMediaInfo {
   cover: string = ''
   durationMs: number = 0
   positionMs: number = 0
+  hasNext: boolean = false
+  hasPrevious: boolean = false
 }
 
 export class CastEventCallbacks {
   onPlay?: () => void
   onPause?: () => void
   onSeek?: (positionMs: number) => void
+  onFastForward?: (positionMs: number) => void
+  onRewind?: (positionMs: number) => void
   onPlayNext?: () => void
   onPlayPrevious?: () => void
   onEndOfStream?: () => void
@@ -102,6 +109,7 @@ export class CastSessionManager {
         subtitle: this.currentMedia.subtitle,
         mediaImage: this.currentMedia.cover,
         duration: this.currentMedia.durationMs,
+        skipIntervals: MEDIA_SKIP_INTERVALS,
         filter: 0
       })
     } catch (err) {
@@ -176,12 +184,36 @@ export class CastSessionManager {
         this.callbacks.onSeek(positionMs)
       }
     })
+    this.session.on('fastForward', () => {
+      const targetPositionMs = this.clampPosition(this.currentMedia.positionMs + MEDIA_SKIP_INTERVAL_MS)
+      if (this.isCasting) {
+        this.sendFastForward()
+      } else if (this.callbacks.onFastForward !== undefined) {
+        this.callbacks.onFastForward(targetPositionMs)
+      }
+      this.updatePlaybackState(targetPositionMs, true)
+    })
+    this.session.on('rewind', () => {
+      const targetPositionMs = this.clampPosition(this.currentMedia.positionMs - MEDIA_SKIP_INTERVAL_MS)
+      if (this.isCasting) {
+        this.sendRewind()
+      } else if (this.callbacks.onRewind !== undefined) {
+        this.callbacks.onRewind(targetPositionMs)
+      }
+      this.updatePlaybackState(targetPositionMs, true)
+    })
     this.session.on('playNext', () => {
+      if (!this.currentMedia.hasNext) {
+        return
+      }
       if (this.callbacks.onPlayNext !== undefined) {
         this.callbacks.onPlayNext()
       }
     })
     this.session.on('playPrevious', () => {
+      if (!this.currentMedia.hasPrevious) {
+        return
+      }
       if (this.callbacks.onPlayPrevious !== undefined) {
         this.callbacks.onPlayPrevious()
       }
@@ -227,11 +259,17 @@ export class CastSessionManager {
       }
     })
     this.castController.on('playNext', () => {
+      if (!this.currentMedia.hasNext) {
+        return
+      }
       if (this.callbacks.onPlayNext !== undefined) {
         this.callbacks.onPlayNext()
       }
     })
     this.castController.on('playPrevious', () => {
+      if (!this.currentMedia.hasPrevious) {
+        return
+      }
       if (this.callbacks.onPlayPrevious !== undefined) {
         this.callbacks.onPlayPrevious()
       }
@@ -249,15 +287,24 @@ export class CastSessionManager {
       return
     }
 
-    try {
-      await this.session.setAVMetadata({
+    const metadata: avSession.AVMetadata = {
         assetId: this.currentMedia.url,
         title: this.currentMedia.title.length > 0 ? this.currentMedia.title : '正在播放',
         subtitle: this.currentMedia.subtitle,
         mediaImage: this.currentMedia.cover,
         duration: this.currentMedia.durationMs,
+        skipIntervals: MEDIA_SKIP_INTERVALS,
         filter: avSession.ProtocolType.TYPE_CAST_PLUS_STREAM | avSession.ProtocolType.TYPE_DLNA
-      })
+    }
+    if (this.currentMedia.hasPrevious) {
+      metadata.previousAssetId = this.currentMedia.url + '#previous'
+    }
+    if (this.currentMedia.hasNext) {
+      metadata.nextAssetId = this.currentMedia.url + '#next'
+    }
+
+    try {
+      await this.session.setAVMetadata(metadata)
     } catch (err) {
       logger.debug('setAVMetadata failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
@@ -314,6 +361,26 @@ export class CastSessionManager {
       const businessError = err as BusinessError
       logger.debug('sendCastCommand failed: %{public}s', businessError.message)
     }
+  }
+
+  private async sendFastForward(): Promise<void> {
+    const targetPositionMs = this.clampPosition(this.currentMedia.positionMs + MEDIA_SKIP_INTERVAL_MS)
+    await this.sendCastCommand('fastForward', MEDIA_SKIP_INTERVALS)
+    await this.updatePlaybackState(targetPositionMs, true)
+  }
+
+  private async sendRewind(): Promise<void> {
+    const targetPositionMs = this.clampPosition(this.currentMedia.positionMs - MEDIA_SKIP_INTERVAL_MS)
+    await this.sendCastCommand('rewind', MEDIA_SKIP_INTERVALS)
+    await this.updatePlaybackState(targetPositionMs, true)
+  }
+
+  private clampPosition(positionMs: number): number {
+    const lowerBound = 0
+    if (this.currentMedia.durationMs <= 0) {
+      return Math.max(lowerBound, positionMs)
+    }
+    return Math.max(lowerBound, Math.min(positionMs, this.currentMedia.durationMs))
   }
 
   async stopCasting(): Promise<void> {

@@ -1,6 +1,6 @@
 export class RdbConstants {
   static readonly DB_NAME: string = 'kazumi_main.db'
-  static readonly DB_VERSION: number = 9
+  static readonly DB_VERSION: number = 11
   static readonly DB_SECURITY_LEVEL: number = 1
 
   static readonly TABLE_RULE_SOURCE: string = 'rule_source'
@@ -43,6 +43,7 @@ export class RdbConstants {
   static readonly COL_ANIME_DESC: string = 'anime_desc'
   static readonly COL_ANIME_URL: string = 'anime_url'
   static readonly COL_SOURCE_ID: string = 'source_id'
+  static readonly COL_SOURCE_NAME: string = 'source_name'
   static readonly COL_EPISODE_NAME: string = 'episode_name'
   static readonly COL_EPISODE_URL: string = 'episode_url'
   static readonly COL_POSITION_MS: string = 'position_ms'

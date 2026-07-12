@@ -129,6 +129,7 @@ export struct ContinueWatchingSection {
         sourceId: record.sourceId,
         episodeUrl: record.episodeUrl,
         sourceName: record.sourceName,
+        bangumiId: record.bangumiId,
         historyPositionMs: record.positionMs
       }
     })
@@ -143,7 +144,7 @@ export struct ContinueWatchingSection {
         animeUrl: record.animeUrl,
         sourceId: record.sourceId,
         sourceName: record.sourceName,
-        bangumiId: -1
+        bangumiId: record.bangumiId
       }
     })
   }

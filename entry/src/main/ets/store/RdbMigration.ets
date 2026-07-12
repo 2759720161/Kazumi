@@ -176,6 +176,29 @@ export class RdbMigration {
           'TEXT NOT NULL DEFAULT \'\'');
         logger.info('Migration v9: added cover_uri to local_video_history');
       }
+    },
+    {
+      version: 10,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.addColumnIfMissing(rdbManager,
+          RdbConstants.TABLE_WATCH_HISTORY,
+          RdbConstants.COL_BANGUMI_ID,
+          'INTEGER NOT NULL DEFAULT -1');
+        await rdbManager.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_watch_history_bangumi_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_BANGUMI_ID})`
+        );
+        logger.info('Migration v10: added bangumi_id to watch_history');
+      }
+    },
+    {
+      version: 11,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.addColumnIfMissing(rdbManager,
+          RdbConstants.TABLE_WATCH_HISTORY,
+          RdbConstants.COL_SOURCE_NAME,
+          'TEXT NOT NULL DEFAULT \'\'');
+        logger.info('Migration v11: added source_name to watch_history');
+      }
     }
   ];
 

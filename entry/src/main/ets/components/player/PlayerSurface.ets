@@ -4,6 +4,12 @@ import { MpvPlayerEngine } from '../../core/player/MpvPlayerEngine'
 import { PlayerEngineFactory } from '../../core/player/PlayerEngineFactory'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
+import {
+  MPV_DETAIL_ENHANCER_ENABLED_DEFAULT,
+  MPV_DETAIL_ENHANCER_QUALITY_DEFAULT,
+  PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
+  PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY
+} from '../../utils/MpvSettings'
 
 const logger = new Logger('PlayerSurface')
 
@@ -301,11 +307,19 @@ export struct PlayerSurface {
       const hwdecMode = await prefs.getString('mpvHwdecMode', 'auto')
       const hlsAdFilter = await prefs.getBoolean('mpvHlsAdFilter', true)
       const segAllowImg = await prefs.getBoolean('mpvSegAllowImg', true)
-      const detailEnhancerQuality = await prefs.getNumber('mpvDetailEnhancerQuality', -1)
+      const hasDetailEnhancerQuality = await prefs.has(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY)
+      const detailEnhancerQuality = await prefs.getNumber(
+        PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY,
+        2
+      )
+      const detailEnhancerEnabled = await prefs.getBoolean(
+        PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
+        hasDetailEnhancerQuality ? detailEnhancerQuality >= 0 : MPV_DETAIL_ENHANCER_ENABLED_DEFAULT
+      )
       engine.setHwdecMode(hwdecMode)
       engine.setHlsAdFilterEnabled(hlsAdFilter)
       engine.setSegAllowImgEnabled(segAllowImg)
-      engine.setDetailEnhancerQuality(detailEnhancerQuality)
+      engine.setDetailEnhancerQuality(detailEnhancerEnabled ? detailEnhancerQuality : MPV_DETAIL_ENHANCER_QUALITY_DEFAULT)
     } catch (err) {
       logger.warn('applyMpvSettings failed, using defaults')
     }

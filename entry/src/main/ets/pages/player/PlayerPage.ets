@@ -118,6 +118,7 @@ export struct PlayerPage {
   @State showMoreMenu: boolean = false
   @State showDanmakuMatchPanel: boolean = false
   @State showEpisodeSidePanel: boolean = false
+  @State showSpeedPanel: boolean = false
   @State episodePanelOffsetX: number = 0
   @State @Watch('onDanmakuSettingsVisibilityChanged') showDanmakuSettingsPanel: boolean = false
   @State @Watch('onDanmakuSettingsVisibilityChanged') showDanmakuSettingsSheet: boolean = false
@@ -181,6 +182,7 @@ export struct PlayerPage {
   private sourceName: string = ''
   private historySeekMs: number = -1
   private temporarySpeedBeforeLongPress: number = -1
+  private readonly speedOptions: number[] = [0.5, 0.75, 1.0, 1.25, 1.75, 2.0]
   private audioManager: audio.AudioManager | null = null
   private mediaVolumeMinLevel: number = -1
   private mediaVolumeMaxLevel: number = -1
@@ -683,6 +685,7 @@ export struct PlayerPage {
           screenBrightness: this.screenBrightness,
           isPlaying: this.isPlaying,
           isControlVisible: this.isControlVisible,
+          gestureEnabled: this.isPlayerGestureEnabled(),
           onSeek: (positionMs: number) => {
             this.seekTo(positionMs)
             this.showHudText(`跳转到 ${this.formatTime(positionMs)}`)
@@ -811,6 +814,10 @@ export struct PlayerPage {
       if (this.showAspectModePanel) {
         this.AspectModePanelOverlay()
       }
+
+      if (this.isFullScreen && this.showSpeedPanel) {
+        this.SpeedPanelOverlay()
+      }
     }
       .width('100%')
       .height('100%')
@@ -931,7 +938,7 @@ export struct PlayerPage {
             this.showAspectModePanel = true
           })
           this.MoreMenuItem('倍速', () => {
-            this.nextSpeed()
+            this.openSpeedPanel()
             this.showMoreMenu = false
           })
 
@@ -979,6 +986,109 @@ export struct PlayerPage {
       .zIndex(9)
       .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
     }
+  }
+
+  @Builder
+  private SpeedPanelOverlay() {
+    Stack({ alignContent: Alignment.End }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#66000000')
+        .onClick(() => {
+          this.closeSpeedPanel()
+        })
+        .transition(TransitionEffect.OPACITY.animation({ duration: 260, curve: Curve.FastOutSlowIn }))
+
+      Column() {
+        Row() {
+          Text('播放速度')
+            .fontSize(21)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_title'))
+
+          Blank()
+
+          Button({ type: ButtonType.Circle }) {
+            SymbolGlyph($r('sys.symbol.xmark'))
+              .fontSize(20)
+              .fontColor([$r('app.color.text_title')])
+          }
+          .width(40)
+          .height(40)
+          .margin({ left: 12 })
+          .backgroundColor($r('app.color.episode_item_unselected_bg'))
+          .onClick(() => {
+            this.closeSpeedPanel()
+          })
+        }
+        .width('100%')
+        .height(72)
+        .padding({ left: 22, right: 14, top: 10, bottom: 8 })
+        .alignItems(VerticalAlign.Center)
+
+        Column({ space: 10 }) {
+          ForEach(this.speedOptions, (item: number, index?: number) => {
+            this.SpeedOptionRow(item, index)
+          }, (item: number) => `player_speed_${item}`)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: this.bottomSafeHeight + 24 })
+      }
+      .width(this.getSpeedSidePanelWidth())
+      .height('100%')
+      .backgroundColor($r('app.color.player_side_panel_surface'))
+      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .borderRadius({ topLeft: 32, bottomLeft: 32 })
+      .border({ width: { left: 0.5 }, color: $r('app.color.divider_blue') })
+      .shadow({ radius: 32, color: $r('app.color.shadow_surface'), offsetX: -12 })
+      .transition(
+        TransitionEffect.move(TransitionEdge.END)
+          .combine(TransitionEffect.OPACITY)
+          .animation({ duration: 300, curve: Curve.FastOutSlowIn })
+      )
+    }
+    .width('100%')
+    .height('100%')
+    .zIndex(10)
+    .onAppear(() => {
+      this.pauseAutoHideTimer()
+    })
+    .onDisAppear(() => {
+      this.startAutoHideTimer()
+    })
+  }
+
+  @Builder
+  private SpeedOptionRow(item: number, index?: number) {
+    Row() {
+      Text(this.formatSpeedLabel(item))
+        .fontSize(17)
+        .fontWeight(this.isSpeedSelected(item) ? FontWeight.Bold : FontWeight.Medium)
+        .fontColor(this.isSpeedSelected(item) ? $r('app.color.accent_blue') : $r('app.color.text_title'))
+        .maxLines(1)
+
+      Blank()
+
+      if (this.isSpeedSelected(item)) {
+        SymbolGlyph($r('sys.symbol.checkmark'))
+          .fontSize(18)
+          .fontColor([$r('app.color.accent_blue')])
+      }
+    }
+    .width('100%')
+    .height(50)
+    .padding({ left: 18, right: 18 })
+    .borderRadius(18)
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(this.isSpeedSelected(item) ? '#1F0A84FF' : $r('app.color.episode_item_unselected_bg'))
+    .border({
+      width: 0.5,
+      color: this.isSpeedSelected(item) ? $r('app.color.divider_blue') : $r('app.color.card_specular_border')
+    })
+    .onClick(() => {
+      this.selectSpeed(item)
+    })
   }
 
   @Builder
@@ -1206,8 +1316,12 @@ export struct PlayerPage {
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .onClick(() => {
-        this.nextSpeed()
-        this.showControlsWithAutoHide()
+        if (this.isFullScreen) {
+          this.openSpeedPanel()
+        } else {
+          this.nextSpeed()
+          this.showControlsWithAutoHide()
+        }
       })
   }
 
@@ -1938,6 +2052,37 @@ export struct PlayerPage {
     logger.info('Player speed changed by UI: %{public}s', this.formatSpeedLabel(speeds[nextIdx]))
   }
 
+  private openSpeedPanel(): void {
+    if (!this.isFullScreen) {
+      this.nextSpeed()
+      this.showControlsWithAutoHide()
+      return
+    }
+
+    this.showMoreMenu = false
+    this.showAspectModePanel = false
+    this.showEpisodeSidePanel = false
+    this.showDanmakuSettingsPanel = false
+    this.showSpeedPanel = true
+    this.pauseAutoHideTimer()
+  }
+
+  private closeSpeedPanel(): void {
+    this.showSpeedPanel = false
+  }
+
+  private selectSpeed(speed: number): void {
+    this.changeSpeed(speed)
+    this.showHudText(this.formatSpeedLabel(speed))
+    this.showSpeedPanel = false
+    this.showControlsWithAutoHide()
+    logger.info('Player speed selected by UI: %{public}s', this.formatSpeedLabel(speed))
+  }
+
+  private isSpeedSelected(speed: number): boolean {
+    return Math.abs(this.speed - speed) < 0.01
+  }
+
   private findCurrentSpeedIndex(speeds: number[]): number {
     let closestIndex = -1
     let closestDelta = Number.MAX_VALUE
@@ -2063,6 +2208,7 @@ export struct PlayerPage {
     this.showSideRoadPickerPopup = false
     if (this.isFullScreen) {
       this.showMoreMenu = false
+      this.showSpeedPanel = false
       this.showDanmakuMatchPanel = false
       this.showDanmakuSettingsPanel = false
       this.showDanmakuSettingsSheet = false
@@ -2471,6 +2617,7 @@ export struct PlayerPage {
       this.showMoreMenu = false
       this.showAspectModePanel = false
       this.showEpisodeSidePanel = false
+      this.showSpeedPanel = false
       this.pauseAutoHideTimer()
       return
     }
@@ -2495,7 +2642,7 @@ export struct PlayerPage {
 
   private showControlsWithAutoHide(): void {
     this.isControlVisible = true
-    if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && this.selectedPanelTab !== 1) {
+    if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedPanel && this.selectedPanelTab !== 1) {
       this.startAutoHideTimer()
     }
   }
@@ -2503,11 +2650,21 @@ export struct PlayerPage {
   private startAutoHideTimer(): void {
     this.pauseAutoHideTimer()
     this.controlHideTimer = setTimeout(() => {
-      if (!this.isDraggingProgress && !this.showMoreMenu && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && this.selectedPanelTab !== 1) {
+      if (!this.isDraggingProgress && !this.showMoreMenu && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedPanel && this.selectedPanelTab !== 1) {
         this.isControlVisible = false
       }
       this.controlHideTimer = -1
     }, 3000)
+  }
+
+  private isPlayerGestureEnabled(): boolean {
+    return !this.showMoreMenu &&
+      !this.showDanmakuMatchPanel &&
+      !this.showDanmakuSettingsPanel &&
+      !this.showDanmakuSettingsSheet &&
+      !this.showEpisodeSidePanel &&
+      !this.showAspectModePanel &&
+      !this.showSpeedPanel
   }
 
   private pauseAutoHideTimer(): void {
@@ -2704,6 +2861,7 @@ export struct PlayerPage {
     this.showRoadPickerPopup = false
     this.showSideRoadPickerPopup = false
     this.showEpisodeSidePanel = false
+    this.showSpeedPanel = false
     this.pauseAutoHideTimer()
     this.danmakuSettingsOpenVersion++
     if (this.isFullScreen) {
@@ -2745,6 +2903,7 @@ export struct PlayerPage {
 
   private async openDanmakuMatchPanel(): Promise<void> {
     this.showMoreMenu = false
+    this.showSpeedPanel = false
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
     this.showEpisodeSidePanel = false
@@ -2908,6 +3067,7 @@ export struct PlayerPage {
     this.isControlVisible = true
     this.showMoreMenu = false
     this.showAspectModePanel = false
+    this.showSpeedPanel = false
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
     this.showEpisodeSidePanel = false
@@ -3120,6 +3280,16 @@ export struct PlayerPage {
       return Math.max(320, targetWidth)
     }
     return Math.min(Math.max(360, targetWidth), 560)
+  }
+
+  private getSpeedSidePanelWidth(): Dimension {
+    if (this.screenWidthVp <= 0) {
+      return 300
+    }
+    if (this.screenWidthVp < 720) {
+      return Math.min(300, Math.max(260, Math.round(this.screenWidthVp * 0.42)))
+    }
+    return Math.min(340, Math.max(300, Math.round(this.screenWidthVp * 0.28)))
   }
 
   private hasNextEpisode(): boolean {
@@ -3353,6 +3523,7 @@ export struct PlayerPage {
       record.animeName = this.animeName
       record.animeCover = this.animeCover
       record.animeUrl = this.animeUrl
+      record.bangumiId = this.bangumiId
       record.sourceId = this.sourceId >= 0 ? this.sourceId : this.ruleSourceId
       record.episodeName = this.episodeName
       record.episodeUrl = historyEpisodeUrl
@@ -3451,6 +3622,12 @@ export struct PlayerPage {
     callbacks.onSeek = (positionMs: number) => {
       this.seekTo(positionMs)
     }
+    callbacks.onFastForward = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    callbacks.onRewind = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
     callbacks.onPlayNext = () => {
       this.playNextEpisode()
     }
@@ -3497,6 +3674,8 @@ export struct PlayerPage {
     info.cover = this.getCastCover()
     info.durationMs = this.durationMs
     info.positionMs = this.positionMs
+    info.hasNext = this.hasNextEpisode()
+    info.hasPrevious = this.hasPreviousEpisode()
     this.castSessionManager.updateMedia(info)
     this.castSessionManager.setCastSupported(true)
     if (this.pipManager.isActive()) {
@@ -3575,12 +3754,12 @@ export struct PlayerPage {
     }
     callbacks.onFastForward = () => {
       if (this.hasEngine && this.playerEngine !== null) {
-        this.seekTo(Math.min(this.positionMs + 10000, this.durationMs))
+        this.seekTo(Math.min(this.positionMs + 15000, this.durationMs))
       }
     }
     callbacks.onFastBackward = () => {
       if (this.hasEngine && this.playerEngine !== null) {
-        this.seekTo(Math.max(this.positionMs - 10000, 0))
+        this.seekTo(Math.max(this.positionMs - 15000, 0))
       }
     }
     callbacks.onRestore = () => {

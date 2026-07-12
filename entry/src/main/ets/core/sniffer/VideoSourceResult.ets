@@ -85,17 +85,6 @@ export class VideoSourceResult {
     return result
   }
 
-  static noSupportedFormat(candidates: SnifferResult[], durationMs: number): VideoSourceResult {
-    const result = new VideoSourceResult()
-    result.status = 'error'
-    result.errorMessage = '嗅探到视频地址，但格式不受播放器支持（如 DASH/RTMP）'
-    result.candidates = candidates
-    result.sniffDurationMs = durationMs
-    result.errorCode = ResolveErrorCode.NoSupportedFormat
-    result.retriable = false
-    return result
-  }
-
   isPlayable(): boolean {
     return this.status === 'success' && this.videoUrl.length > 0
   }

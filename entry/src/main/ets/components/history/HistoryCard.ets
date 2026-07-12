@@ -109,11 +109,11 @@ export struct HistoryCard {
         }
         return
       }
+      if (this.onOpen) {
+        this.onOpen!(this.record)
+        return
+      }
       if (this.record.episodeUrl.length > 0) {
-        if (this.onOpen) {
-          this.onOpen!(this.record)
-          return
-        }
         router.pushUrl({
           url: 'pages/player/PlayerPage',
           params: {
@@ -125,6 +125,7 @@ export struct HistoryCard {
             animeUrl: this.record.animeUrl,
             ruleSourceId: this.record.sourceId,
             sourceId: this.record.sourceId,
+            bangumiId: this.record.bangumiId,
             bangumiCover: '',
             coverFallback: '',
             animeDesc: '',

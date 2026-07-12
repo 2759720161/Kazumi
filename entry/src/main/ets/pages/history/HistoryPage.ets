@@ -351,8 +351,16 @@ export struct HistoryPage {
   }
 
   private async openHistoryRecord(record: HistoryRecord): Promise<void> {
-    if (record.episodeUrl.length === 0) {
-      return
+    logger.info('Open history record animeId=%{public}s sourceId=%{public}d sourceName=%{public}s animeUrl=%{public}s episodeUrl=%{public}s',
+      record.animeId, record.sourceId, record.sourceName,
+      record.animeUrl.length > 0 ? 'ok' : 'empty',
+      record.episodeUrl.length > 0 ? 'ok' : 'empty')
+    if (record.animeUrl.length === 0 && record.episodeUrl.length === 0) {
+      const recovered = await this.recoverMissingHistoryAnimeUrl(record)
+      if (!recovered) {
+        promptAction.showToast({ message: '未找到关联资源' })
+        return
+      }
     }
 
     try {
@@ -366,20 +374,138 @@ export struct HistoryPage {
       }
       logger.warn('Open history without roads fallback: animeId=%{public}s status=%{public}s',
         record.animeId, source.status)
+      if (record.episodeUrl.length === 0 || record.episodeUrl === record.animeUrl) {
+        promptAction.showToast({ message: source.message.length > 0 ? source.message : '无法加载剧集' })
+        return
+      }
     } catch (err) {
-      logger.warn('Query history roads failed: %{public}s', err instanceof Error ? err.message : String(err))
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.warn('Query history roads failed: %{public}s', msg)
+      if (msg.indexOf('未找到关联番剧源') >= 0 || msg.indexOf('规则源不存在') >= 0) {
+        promptAction.showToast({ message: msg })
+        return
+      }
+      if (record.episodeUrl.length === 0 || record.episodeUrl === record.animeUrl) {
+        promptAction.showToast({ message: msg.length > 0 ? msg : '无法加载剧集' })
+        return
+      }
     }
 
     this.openPlayerFallback(record)
   }
 
   private async queryPlaybackSource(record: HistoryRecord): Promise<PlaybackSource> {
+    await this.resolveRecordRuleSource(record)
     const ref = new SearchResultRef()
     ref.name = record.animeName
-    ref.url = record.animeUrl
+    ref.url = record.animeUrl.length > 0 ? record.animeUrl : record.episodeUrl
+    if (ref.url.length === 0) {
+      throw new Error('历史记录缺少播放页地址')
+    }
     ref.sourceId = record.sourceId
     ref.sourceName = record.sourceName
+    logger.info('Query history roads sourceId=%{public}d sourceName=%{public}s url=%{public}s',
+      ref.sourceId, ref.sourceName, ref.url.length > 0 ? 'ok' : 'empty')
     return await this.playbackSearchService.queryRoads(ref)
+  }
+
+  private async recoverMissingHistoryAnimeUrl(record: HistoryRecord): Promise<boolean> {
+    try {
+      const originalAnimeId: string = record.animeId
+      await this.resolveRecordRuleSource(record)
+      const refs: SearchResultRef[] = await this.playbackSearchService.searchRuleResults(record.sourceId, record.animeName)
+      const matched: SearchResultRef | null = this.pickHistorySearchResult(refs, record.animeName)
+      if (matched === null || matched.url.length === 0) {
+        logger.warn('Recover history animeUrl no matched result: animeId=%{public}s name=%{public}s count=%{public}d',
+          record.animeId, record.animeName, refs.length)
+        return false
+      }
+      record.animeUrl = matched.url
+      record.sourceId = matched.sourceId
+      record.sourceName = matched.sourceName
+      record.animeId = String(record.sourceId) + '_' + record.animeUrl
+      await this.historyStore.replaceAnimeId(originalAnimeId, record)
+      this.replaceHistoryRecordInView(originalAnimeId, record)
+      logger.info('Recovered history animeUrl: name=%{public}s source=%{public}s',
+        record.animeName, record.sourceName)
+      return true
+    } catch (err) {
+      logger.warn('Recover history animeUrl failed: %{public}s', err instanceof Error ? err.message : String(err))
+      return false
+    }
+  }
+
+  private pickHistorySearchResult(refs: SearchResultRef[], animeName: string): SearchResultRef | null {
+    if (refs.length === 0) {
+      return null
+    }
+    const target = this.normalizeAnimeTitle(animeName)
+    for (let i = 0; i < refs.length; i++) {
+      if (this.normalizeAnimeTitle(refs[i].name) === target) {
+        return refs[i]
+      }
+    }
+    for (let i = 0; i < refs.length; i++) {
+      const candidate = this.normalizeAnimeTitle(refs[i].name)
+      if (candidate.indexOf(target) >= 0 || target.indexOf(candidate) >= 0) {
+        return refs[i]
+      }
+    }
+    return refs[0]
+  }
+
+  private normalizeAnimeTitle(title: string): string {
+    return title.trim().toLowerCase()
+      .replace(/\s/g, '')
+      .replace(/[!！?？:：,，.。·・、\-—_＿~～]/g, '')
+  }
+
+  private async resolveRecordRuleSource(record: HistoryRecord): Promise<void> {
+    if (record.sourceId >= 0) {
+      return
+    }
+    if (record.sourceName.length === 0) {
+      record.sourceName = this.resolveLegacySourceNameFromAnimeId(record)
+    }
+    if (record.sourceName.length === 0) {
+      throw new Error('未找到关联番剧源')
+    }
+    const sources: RuleSource[] = await this.ruleSourceStore.getAll()
+    const normalizedSourceName = this.normalizeRuleName(record.sourceName)
+    for (let i = 0; i < sources.length; i++) {
+      if (this.normalizeRuleName(sources[i].name) === normalizedSourceName) {
+        const originalAnimeId: string = record.animeId
+        record.sourceId = sources[i].id
+        record.sourceName = sources[i].name
+        if (record.animeUrl.length > 0) {
+          record.animeId = String(record.sourceId) + '_' + record.animeUrl
+        }
+        try {
+          await this.historyStore.replaceAnimeId(originalAnimeId, record)
+          this.replaceHistoryRecordInView(originalAnimeId, record)
+        } catch (err) {
+          logger.warn('Persist resolved history source failed: %{public}s',
+            err instanceof Error ? err.message : String(err))
+        }
+        return
+      }
+    }
+    throw new Error('未找到关联番剧源')
+  }
+
+  private resolveLegacySourceNameFromAnimeId(record: HistoryRecord): string {
+    if (record.bangumiId <= 0 || record.animeId.length === 0) {
+      return ''
+    }
+    const suffix = String(record.bangumiId)
+    if (!record.animeId.endsWith(suffix) || record.animeId.length <= suffix.length) {
+      return ''
+    }
+    return record.animeId.substring(0, record.animeId.length - suffix.length)
+  }
+
+  private normalizeRuleName(name: string): string {
+    return name.trim().toLowerCase()
   }
 
   private openPlayerWithRoads(record: HistoryRecord, source: PlaybackSource, selected: HistoryEpisodeSelection): void {
@@ -406,6 +532,7 @@ export struct HistoryPage {
         currentEpisodeIndex: selected.episodeIndex,
         roadsJson: JSON.stringify(source.roads),
         selectedRoadIndex: selected.roadIndex,
+        bangumiId: record.bangumiId,
         bangumiCover: '',
         coverFallback: '',
         animeDesc: '',
@@ -427,6 +554,7 @@ export struct HistoryPage {
         animeUrl: record.animeUrl,
         ruleSourceId: record.sourceId,
         sourceId: record.sourceId,
+        bangumiId: record.bangumiId,
         bangumiCover: '',
         coverFallback: '',
         animeDesc: '',
@@ -659,6 +787,29 @@ export struct HistoryPage {
     }
     restored.sort((a: HistoryRecord, b: HistoryRecord) => b.updatedAt - a.updatedAt)
     this.histories = restored
+    this.bumpHistoryRenderVersion()
+  }
+
+  private replaceHistoryRecordInView(oldAnimeId: string, record: HistoryRecord): void {
+    const nextHistories: HistoryRecord[] = []
+    let inserted = false
+    for (let i = 0; i < this.histories.length; i++) {
+      const current = this.histories[i]
+      if (current.animeId === oldAnimeId || current.animeId === record.animeId) {
+        if (!inserted) {
+          nextHistories.push(record)
+          inserted = true
+        }
+      } else {
+        nextHistories.push(current)
+      }
+    }
+    if (!inserted) {
+      nextHistories.push(record)
+    }
+    nextHistories.sort((a: HistoryRecord, b: HistoryRecord) => b.updatedAt - a.updatedAt)
+    this.histories = nextHistories
+    this.selectedIds = this.selectedIds.map((id: string) => id === oldAnimeId ? record.animeId : id)
     this.bumpHistoryRenderVersion()
   }
 

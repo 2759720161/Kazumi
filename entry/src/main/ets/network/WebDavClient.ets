@@ -79,6 +79,65 @@ export class WebDavClient {
     throw new Error('上传远端文件失败: HTTP ' + String(response.statusCode))
   }
 
+  async downloadTextAtPath(remotePath: string): Promise<string | null> {
+    const response = await this.request('GET', this.buildUrl(remotePath))
+    if (response.statusCode === 200) {
+      return response.body
+    }
+    if (response.statusCode === 404) {
+      return null
+    }
+    throw new Error('下载远端文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  async uploadTextAtPath(remotePath: string, content: string): Promise<void> {
+    const response = await this.request('PUT', this.buildUrl(remotePath), content, {
+      'Content-Type': 'application/json; charset=utf-8'
+    })
+    if (response.statusCode === 200 || response.statusCode === 201 || response.statusCode === 204) {
+      return
+    }
+    throw new Error('上传远端文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  async deleteAtPath(remotePath: string): Promise<void> {
+    const response = await this.request('DELETE', this.buildUrl(remotePath))
+    if (response.statusCode === 200 || response.statusCode === 202 || response.statusCode === 204 ||
+      response.statusCode === 404) {
+      return
+    }
+    throw new Error('删除远端文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  async ensureRemoteDirAtPath(remotePath: string): Promise<void> {
+    const dirUrl = this.buildUrl(remotePath)
+    const headers: Record<string, string> = {}
+    headers['Depth'] = '0'
+    const propfind = await this.request('PROPFIND', dirUrl, '', headers)
+    if (propfind.statusCode === 207 || propfind.statusCode === 200) {
+      return
+    }
+    const mkcol = await this.request('MKCOL', dirUrl)
+    if (mkcol.statusCode === 201 || mkcol.statusCode === 405 || mkcol.statusCode === 301 ||
+      mkcol.statusCode === 302) {
+      return
+    }
+    throw new Error('创建远端目录失败: HTTP ' + String(mkcol.statusCode))
+  }
+
+  async listFileNamesAtPath(remotePath: string): Promise<string[]> {
+    const headers: Record<string, string> = {}
+    headers['Depth'] = '1'
+    const response = await this.request('PROPFIND', this.buildUrl(remotePath), '', headers)
+    if (response.statusCode === 404) {
+      return []
+    }
+    if (response.statusCode !== 207 && response.statusCode !== 200) {
+      throw new Error('读取远端目录失败: HTTP ' + String(response.statusCode))
+    }
+    return WebDavClient.extractChildNames(response.body, remotePath)
+  }
+
   private async request(method: string, url: string, body: string = '',
     headers?: Record<string, string>): Promise<WebDavResponse> {
     const httpRequest = http.createHttp()
@@ -164,6 +223,77 @@ export class WebDavClient {
       encoded.push(encodeURIComponent(parts[i]))
     }
     return encoded.join('/')
+  }
+
+  private static extractChildNames(body: string, remotePath: string): string[] {
+    const names: string[] = []
+    const normalizedDir = WebDavClient.normalizeDirPath(remotePath)
+    const hrefRegex = /<[^>]*href[^>]*>([^<]+)<\/[^>]*href>/g
+    let match: RegExpExecArray | null = hrefRegex.exec(body)
+    while (match !== null) {
+      const rawHref = WebDavClient.decodeHref(match[1])
+      let path = rawHref
+      const queryIndex = path.indexOf('?')
+      if (queryIndex >= 0) {
+        path = path.substring(0, queryIndex)
+      }
+      const normalizedHref = WebDavClient.normalizeDirPath(path)
+      const relative = WebDavClient.relativeChildPath(normalizedHref, normalizedDir)
+      if (relative.length > 0) {
+        const slashIndex = relative.indexOf('/')
+        const name = slashIndex >= 0 ? relative.substring(0, slashIndex) : relative
+        if (name.length > 0 && names.indexOf(name) < 0) {
+          names.push(name)
+        }
+      }
+      match = hrefRegex.exec(body)
+    }
+    return names
+  }
+
+  private static relativeChildPath(normalizedHref: string, normalizedDir: string): string {
+    if (normalizedHref === normalizedDir) {
+      return ''
+    }
+    if (normalizedHref.startsWith(normalizedDir)) {
+      return normalizedHref.substring(normalizedDir.length)
+    }
+    const markerIndex = normalizedHref.indexOf(normalizedDir)
+    if (markerIndex >= 0) {
+      return normalizedHref.substring(markerIndex + normalizedDir.length)
+    }
+    const dirWithoutLeadingSlash = normalizedDir.startsWith('/') ? normalizedDir.substring(1) : normalizedDir
+    const fallbackMarker = '/' + dirWithoutLeadingSlash
+    const fallbackIndex = normalizedHref.indexOf(fallbackMarker)
+    if (fallbackIndex >= 0) {
+      return normalizedHref.substring(fallbackIndex + fallbackMarker.length)
+    }
+    return ''
+  }
+
+  private static normalizeDirPath(path: string): string {
+    let value = path.trim()
+    const schemeIndex = value.indexOf('://')
+    if (schemeIndex >= 0) {
+      const pathStart = value.indexOf('/', schemeIndex + 3)
+      value = pathStart >= 0 ? value.substring(pathStart) : '/'
+    }
+    if (!value.startsWith('/')) {
+      value = '/' + value
+    }
+    try {
+      value = decodeURIComponent(value)
+    } catch (_err) {
+      // Keep the raw href if the server returns a partially encoded path.
+    }
+    while (value.length > 1 && value.endsWith('/')) {
+      value = value.substring(0, value.length - 1)
+    }
+    return value + '/'
+  }
+
+  private static decodeHref(input: string): string {
+    return input.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   }
 
   private static encodeUtf8(input: string): Uint8Array {

@@ -6,6 +6,7 @@ export struct GestureLayer {
   @Prop screenBrightness: number = 0.5
   @Prop isPlaying: boolean = false
   @Prop isControlVisible: boolean = false
+  @Prop gestureEnabled: boolean = true
   @State gestureType: number = 0
   @State gestureValue: number = 0
   @State seekDeltaMs: number = 0
@@ -94,7 +95,7 @@ export struct GestureLayer {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.color_transparent'))
-    .hitTestBehavior(HitTestMode.Default)
+    .hitTestBehavior(this.gestureEnabled ? HitTestMode.Default : HitTestMode.None)
     .onAreaChange((_oldArea: Area, newArea: Area) => {
       const width = Number(newArea.width)
       const height = Number(newArea.height)

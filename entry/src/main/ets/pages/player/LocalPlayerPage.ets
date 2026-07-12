@@ -1590,12 +1590,12 @@ export struct LocalPlayerPage {
     }
     callbacks.onFastForward = () => {
       if (this.hasEngine && this.playerEngine !== null) {
-        this.seekTo(Math.min(this.positionMs + 10000, this.durationMs))
+        this.seekTo(Math.min(this.positionMs + 15000, this.durationMs))
       }
     }
     callbacks.onFastBackward = () => {
       if (this.hasEngine && this.playerEngine !== null) {
-        this.seekTo(Math.max(this.positionMs - 10000, 0))
+        this.seekTo(Math.max(this.positionMs - 15000, 0))
       }
     }
     callbacks.onRestore = () => {

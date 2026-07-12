@@ -57,7 +57,9 @@ export class RdbSchema {
       `${RdbConstants.COL_ANIME_NAME} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_ANIME_COVER} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_ANIME_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_BANGUMI_ID} INTEGER NOT NULL DEFAULT -1, ` +
       `${RdbConstants.COL_SOURCE_ID} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_SOURCE_NAME} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_EPISODE_NAME} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_EPISODE_URL} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_POSITION_MS} INTEGER NOT NULL DEFAULT 0, ` +
@@ -114,6 +116,7 @@ export class RdbSchema {
       `CREATE INDEX IF NOT EXISTS idx_favorite_collect_type ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_COLLECT_TYPE})`,
       `CREATE INDEX IF NOT EXISTS idx_favorite_bangumi_id ON ${RdbConstants.TABLE_FAVORITE}(${RdbConstants.COL_BANGUMI_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_watch_history_anime_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_ANIME_ID})`,
+      `CREATE INDEX IF NOT EXISTS idx_watch_history_bangumi_id ON ${RdbConstants.TABLE_WATCH_HISTORY}(${RdbConstants.COL_BANGUMI_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`,
       `CREATE INDEX IF NOT EXISTS idx_collect_change_bangumi_id ON ${RdbConstants.TABLE_COLLECT_CHANGE}(${RdbConstants.COL_BANGUMI_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_key ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_KEY})`,

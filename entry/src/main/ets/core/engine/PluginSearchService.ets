@@ -179,6 +179,40 @@ export class PluginSearchService {
     await this.retryPlugin(stateIndex, keyword)
   }
 
+  async searchRuleResults(ruleId: number, keyword: string): Promise<SearchResultRef[]> {
+    const rule = await this.ruleStore.getById(ruleId)
+    if (rule === null) {
+      throw new Error('规则源不存在')
+    }
+    const trimmedKeyword = keyword.trim()
+    if (trimmedKeyword.length === 0) {
+      throw new Error('历史记录缺少番剧名')
+    }
+    let results: AnimeItem[] = []
+    if (rule.searchMode === RuleMode.API) {
+      results = await this.apiRuleStrategy.search(rule, trimmedKeyword)
+    } else {
+      const runtime = new RuleRuntimeModel(rule)
+      const html = await this.requestHandler.fetchWithRule(runtime, trimmedKeyword)
+      if (runtime.hasAntiCrawler && this.antiCrawlHandler.isCaptchaResponse(html)) {
+        throw new Error('需要验证码验证')
+      }
+      results = this.searchExecutor.parseSearchResults(html, runtime)
+    }
+    const refs: SearchResultRef[] = []
+    for (let i = 0; i < results.length; i++) {
+      const ref = new SearchResultRef()
+      ref.name = results[i].name
+      ref.url = results[i].url
+      ref.sourceId = rule.id
+      ref.sourceName = rule.name
+      refs.push(ref)
+    }
+    logger.info('Search rule results for history: rule=%{public}s keyword=%{public}s count=%{public}d',
+      rule.name, trimmedKeyword, refs.length)
+    return refs
+  }
+
   updatePluginError(index: number, message: string): void {
     if (index < 0 || index >= this.pluginStates.length) {
       return

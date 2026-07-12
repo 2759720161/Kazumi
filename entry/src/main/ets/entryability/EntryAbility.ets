@@ -10,7 +10,6 @@ import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
 import { UserDownloadFolder } from '../services/UserDownloadFolder';
-import { HistorySyncService } from '../services/HistorySyncService';
 import {
   BOTTOM_TAB_ANIMATION_HIDDEN_KEY,
   BOTTOM_TAB_ANIMATION_TOKEN_KEY,
@@ -34,6 +33,12 @@ import {
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../utils/HdsPageStyle';
 import {
+  MPV_DETAIL_ENHANCER_ENABLED_DEFAULT,
+  MPV_DETAIL_ENHANCER_QUALITY_DEFAULT,
+  PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
+  PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY
+} from '../utils/MpvSettings';
+import {
   CONTINUATION_PAYLOAD_KEY,
   CONTINUATION_RESTORE_PAYLOAD_KEY,
   CONTINUATION_RESTORE_TOKEN_KEY,
@@ -47,7 +52,7 @@ export default class EntryAbility extends UIAbility {
   private displayDensity: number = 3.0;
   private pendingContinuationPayload: string = '';
   private storesInitialized: boolean = false;
-  private appOpenHistorySyncRunning: boolean = false;
+
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate('topSafeHeight', 0);
@@ -69,6 +74,8 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, '');
     AppStorage.setOrCreate(CONTINUATION_RESTORE_PAYLOAD_KEY, '');
     AppStorage.setOrCreate(CONTINUATION_RESTORE_TOKEN_KEY, 0);
+    AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, MPV_DETAIL_ENHANCER_ENABLED_DEFAULT);
+    AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, MPV_DETAIL_ENHANCER_QUALITY_DEFAULT);
     SettingsChangeSignal.initDanmakuVersion();
     this.captureContinuationPayload(want);
 
@@ -208,7 +215,6 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     logger.info('Ability onForeground');
-    this.syncHistoryOnAppOpen();
   }
 
   onBackground(): void {
@@ -266,6 +272,30 @@ export default class EntryAbility extends UIAbility {
         HIDE_LOCAL_PAGE_DEFAULT
       );
       AppStorage.setOrCreate(HIDE_LOCAL_PAGE_KEY, hideLocalPage);
+
+      const detailEnhancerEnabled = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
+        MPV_DETAIL_ENHANCER_ENABLED_DEFAULT
+      );
+      const hasDetailEnhancerEnabled = await PreferencesStore.getInstance().has(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED);
+      const hasOldQualityKey = await PreferencesStore.getInstance().has('mpvDetailEnhancerQuality');
+      let detailEnhancerQuality = await PreferencesStore.getInstance().getNumber(
+        PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY,
+        2
+      );
+      let effectiveEnabled = detailEnhancerEnabled;
+      if (!hasDetailEnhancerEnabled && hasOldQualityKey) {
+        const oldQuality = await PreferencesStore.getInstance().getNumber('mpvDetailEnhancerQuality', -1);
+        effectiveEnabled = oldQuality >= 0;
+        detailEnhancerQuality = oldQuality >= 0 ? oldQuality : 2;
+        await PreferencesStore.getInstance().setBoolean(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, effectiveEnabled);
+        await PreferencesStore.getInstance().setNumber(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, detailEnhancerQuality);
+      }
+      if (detailEnhancerQuality < 1 || detailEnhancerQuality > 3) {
+        detailEnhancerQuality = 2;
+      }
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, effectiveEnabled);
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, detailEnhancerQuality);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to init Preferences: %{public}s', msg);
@@ -297,28 +327,6 @@ export default class EntryAbility extends UIAbility {
     }
 
     this.storesInitialized = true;
-    this.syncHistoryOnAppOpen();
-  }
-
-  private async syncHistoryOnAppOpen(): Promise<void> {
-    if (!this.storesInitialized || this.appOpenHistorySyncRunning) {
-      return;
-    }
-    this.appOpenHistorySyncRunning = true;
-    try {
-      const syncService = HistorySyncService.getInstance();
-      const config = await syncService.getConfig();
-      if (!config.enabled || !config.autoSync) {
-        return;
-      }
-      await syncService.syncNow();
-      logger.info('App open history sync finished');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn('App open history sync failed: %{public}s', msg);
-    } finally {
-      this.appOpenHistorySyncRunning = false;
-    }
   }
 
   private updateSystemSafeArea(mainWindow: window.Window): void {

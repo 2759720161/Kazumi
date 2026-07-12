@@ -38,6 +38,12 @@ import {
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
 } from '../../utils/PlayerAutoFullscreen'
 import {
+  MPV_DETAIL_ENHANCER_ENABLED_DEFAULT,
+  MPV_DETAIL_ENHANCER_QUALITY_DEFAULT,
+  PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
+  PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY
+} from '../../utils/MpvSettings'
+import {
   ADVANCED_OPTIONS_UNLOCKED_KEY,
   ADVANCED_OPTIONS_UNLOCK_TAP_COUNT,
   HIDE_LOCAL_PAGE_KEY,
@@ -115,7 +121,8 @@ export struct SettingsPage {
   @State mpvHwdecMode: string = 'auto'
   @State mpvHlsAdFilter: boolean = true
   @State mpvSegAllowImg: boolean = true
-  @State mpvDetailEnhancerQuality: number = -1
+  @StorageLink(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED) mpvDetailEnhancerEnabled: boolean = MPV_DETAIL_ENHANCER_ENABLED_DEFAULT
+  @StorageLink(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY) mpvDetailEnhancerQuality: number = MPV_DETAIL_ENHANCER_QUALITY_DEFAULT
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @State snifferTimeout: number = 15
   @State rules: RuleSource[] = []
@@ -424,11 +431,20 @@ export struct SettingsPage {
 
           this.ItemDivider()
 
-          this.ToggleItem($r('sys.symbol.wand_and_stars'), '视频画质增强', 'AI 细节增强与超分辨率缩放', this.mpvDetailEnhancerQuality >= 0, (isOn: boolean) => {
-            this.setDetailEnhancerEnabled(isOn)
-          })
+          Row() {
+            this.SettingIcon($r('sys.symbol.wand_and_stars'))
+            this.SettingTitle('视频画质增强', 'AI 细节增强与超分辨率缩放')
 
-          if (this.mpvDetailEnhancerQuality >= 0) {
+            Toggle({ type: ToggleType.Switch, isOn: this.mpvDetailEnhancerEnabled })
+              .onChange((isOn: boolean) => {
+                this.setDetailEnhancerEnabled(isOn)
+              })
+          }
+          .width('100%')
+          .height(64)
+          .padding({ left: 16, right: 16 })
+
+          if (this.mpvDetailEnhancerEnabled) {
             this.ItemDivider()
 
             Row() {
@@ -685,8 +701,13 @@ export struct SettingsPage {
       this.SettingIcon(icon)
       this.SettingTitle(title, desc)
 
-      Toggle({ type: ToggleType.Switch, isOn: isOn })
-        .onChange(onChange)
+      if (isOn) {
+        Toggle({ type: ToggleType.Switch, isOn: true })
+          .onChange(onChange)
+      } else {
+        Toggle({ type: ToggleType.Switch, isOn: false })
+          .onChange(onChange)
+      }
     }
     .width('100%')
     .height(64)
@@ -1083,7 +1104,24 @@ export struct SettingsPage {
       this.mpvHwdecMode = savedHwdecMode
       this.mpvHlsAdFilter = await prefs.getBoolean('mpvHlsAdFilter', true)
       this.mpvSegAllowImg = await prefs.getBoolean('mpvSegAllowImg', true)
-      this.mpvDetailEnhancerQuality = await prefs.getNumber('mpvDetailEnhancerQuality', -1)
+      const hasDetailEnhancerEnabled = await prefs.has(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED)
+      const hasDetailEnhancerQuality = await prefs.has(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY)
+      this.mpvDetailEnhancerQuality = await prefs.getNumber(
+        PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY,
+        2
+      )
+      this.mpvDetailEnhancerEnabled = await prefs.getBoolean(
+        PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
+        hasDetailEnhancerQuality ? this.mpvDetailEnhancerQuality >= 0 : MPV_DETAIL_ENHANCER_ENABLED_DEFAULT
+      )
+      if (this.mpvDetailEnhancerQuality < 1 || this.mpvDetailEnhancerQuality > 3) {
+        this.mpvDetailEnhancerQuality = 2
+      }
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, this.mpvDetailEnhancerEnabled)
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, this.mpvDetailEnhancerQuality)
+      if (!hasDetailEnhancerEnabled && hasDetailEnhancerQuality) {
+        await prefs.setBoolean(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, this.mpvDetailEnhancerEnabled)
+      }
       this.playerAutoFullscreen = await prefs.getBoolean(
         PREFS_KEY_PLAYER_AUTO_FULLSCREEN,
         PLAYER_AUTO_FULLSCREEN_DEFAULT
@@ -1208,10 +1246,16 @@ export struct SettingsPage {
   }
 
   private async setDetailEnhancerEnabled(enabled: boolean): Promise<void> {
-    this.mpvDetailEnhancerQuality = enabled ? 2 : -1
+    this.mpvDetailEnhancerEnabled = enabled
+    if (this.mpvDetailEnhancerQuality < 1 || this.mpvDetailEnhancerQuality > 3) {
+      this.mpvDetailEnhancerQuality = 2
+    }
     try {
       const prefs = PreferencesStore.getInstance()
-      await prefs.setNumber('mpvDetailEnhancerQuality', this.mpvDetailEnhancerQuality)
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, enabled)
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, this.mpvDetailEnhancerQuality)
+      await prefs.setBoolean(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, enabled)
+      await prefs.setNumber(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, this.mpvDetailEnhancerQuality)
     } catch (err) {
       logger.error('Set detail enhancer enabled failed: %{public}s', JSON.stringify(err))
     }
@@ -1221,7 +1265,8 @@ export struct SettingsPage {
     this.mpvDetailEnhancerQuality = quality
     try {
       const prefs = PreferencesStore.getInstance()
-      await prefs.setNumber('mpvDetailEnhancerQuality', quality)
+      AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, quality)
+      await prefs.setNumber(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, quality)
     } catch (err) {
       logger.error('Set detail enhancer quality failed: %{public}s', JSON.stringify(err))
     }

@@ -13,7 +13,6 @@ import { HttpClient } from '../../network/HttpClient'
 import { NetworkPolicy } from './NetworkPolicy'
 import { SnifferSessionPool } from './SnifferSessionPool'
 import { SnifferLease, WebViewCleanupLevel } from './SnifferSessionPool'
-import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 import { Logger } from '../../utils/Logger'
 import { HlsManifestParser } from './HlsManifestParser'
 
@@ -40,10 +39,6 @@ export class VideoSourceResolver {
   private currentLease: SnifferLease | null = null
   private backgroundLease: SnifferLease | null = null
   private isPreparingNext: boolean = false
-  /** 用于协议能力查询（如过滤 DASH）的规则评估器 */
-  private readonly protocolEvaluator: SniffRuleEvaluator = new SniffRuleEvaluator()
-  /** 当前兼容模式会话固定的随机 UA，保证一次嗅探内 UA 不变化。 */
-  private currentSessionUA: string = ''
 
   setWebController(controller: webview.WebviewController): void {
     this.setWorkerWebController(1, controller)
@@ -82,38 +77,6 @@ export class VideoSourceResolver {
     }
   }
 
-  private getEffectiveUserAgent(preferred: string = ''): string {
-    if (preferred.length > 0) {
-      return preferred
-    }
-    if (this.currentSessionUA.length > 0) {
-      return this.currentSessionUA
-    }
-    return DEFAULT_PLAYER_USER_AGENT
-  }
-
-  private shouldUseCompatibilityUserAgent(ruleSource: RuleSource | null): boolean {
-    if (ruleSource === null) {
-      return false
-    }
-    const ruleName = ruleSource.name.toLowerCase()
-    return ruleName === '7sefun' || ruleName === 'tvtfun'
-  }
-
-  private buildSnifferUserAgent(request: VideoSourceRequest, ruleSource: RuleSource | null): string {
-    if (request.userAgent.length > 0) {
-      return request.userAgent
-    }
-    if (ruleSource !== null && ruleSource.userAgent.length > 0) {
-      return ruleSource.userAgent
-    }
-    if (!this.shouldUseCompatibilityUserAgent(ruleSource)) {
-      return ''
-    }
-    this.currentSessionUA = NetworkPolicy.getRandomUA()
-    return this.currentSessionUA
-  }
-
   async resolve(request: VideoSourceRequest): Promise<VideoSourceResult> {
     const mySession = ++this.sessionId
     const myEpoch = this.resolveEpoch
@@ -135,8 +98,6 @@ export class VideoSourceResolver {
     if (request.ruleSourceId >= 0) {
       ruleSource = await this.ruleStore.getById(request.ruleSourceId)
     }
-    this.currentSessionUA = ''
-    this.sniffer.setUserAgent(this.buildSnifferUserAgent(request, ruleSource))
 
     if (this.activeSessionId !== mySession || this.resolveEpoch !== myEpoch) {
       this.isResolving = false
@@ -238,11 +199,11 @@ export class VideoSourceResolver {
     this.activePrepareSessionId = mySession
     this.isPreparingNext = true
     const prepareStartTime = Date.now()
+
     let ruleSource: RuleSource | null = null
     if (request.ruleSourceId >= 0) {
       ruleSource = await this.ruleStore.getById(request.ruleSourceId)
     }
-    this.backgroundSniffer.setUserAgent(this.buildSnifferUserAgent(request, ruleSource))
     if (!this.isResolverSessionActive(mySession, myEpoch, 2)) {
       this.finishPrepareSession(mySession)
       return VideoSourceResult.cancelled(Date.now() - prepareStartTime)
@@ -371,7 +332,7 @@ export class VideoSourceResolver {
       headers['Referer'] = request.episodeUrl.indexOf('/api/videos/resolve-play-url?') >= 0
         ? 'https://www.tvtfun.net/'
         : request.episodeUrl
-      headers['User-Agent'] = this.getEffectiveUserAgent(request.userAgent)
+      headers['User-Agent'] = request.userAgent.length > 0 ? request.userAgent : DEFAULT_PLAYER_USER_AGENT
       const client = new HttpClient()
       const response = await client.get(url, headers)
       if (!response.isSuccessful || response.body.length === 0) {
@@ -593,7 +554,7 @@ export class VideoSourceResolver {
       }
     }
     if (headers['User-Agent'] === undefined) {
-      headers['User-Agent'] = this.getEffectiveUserAgent()
+      headers['User-Agent'] = DEFAULT_PLAYER_USER_AGENT
     }
     headers['Accept'] = 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*'
     return headers
@@ -613,7 +574,7 @@ export class VideoSourceResolver {
     try {
       const client = new HttpClient()
       const response = await client.get(url, {
-        'User-Agent': this.getEffectiveUserAgent(),
+        'User-Agent': DEFAULT_PLAYER_USER_AGENT,
         'Referer': 'https://www.7sefun.top/',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       })
@@ -805,20 +766,7 @@ export class VideoSourceResolver {
         if (bestResult !== null) {
           resolveOnce(VideoSourceResult.success(bestResult.url, bestResult.type, results, elapsed))
         } else if (results.length > 0) {
-          // selectBestResult 返回 null 但仍有候选时，区分“全是不支持格式”和“低优先级候选”。
-          const hasUnsupportedOnly = results.every(r => !this.isSupportedProtocol(r.type))
-          if (hasUnsupportedOnly) {
-            resolveOnce(VideoSourceResult.noSupportedFormat(results, elapsed))
-          } else {
-            // 有候选但不在优先类型内（blob/unknown），取评分最高的
-            let fallback = results[0]
-            for (let i = 1; i < results.length; i++) {
-              if (results[i].score > fallback.score) {
-                fallback = results[i]
-              }
-            }
-            resolveOnce(VideoSourceResult.success(fallback.url, fallback.type, results, elapsed))
-          }
+          resolveOnce(VideoSourceResult.success(results[0].url, results[0].type, results, elapsed))
         } else {
           resolveOnce(VideoSourceResult.fail('未嗅探到视频流地址', retryCount, elapsed))
         }
@@ -875,21 +823,10 @@ export class VideoSourceResolver {
     })
   }
 
-  /**
-   * 从候选列表中选出最优结果：
-   * 1. 过滤掉协议不受支持的候选（如 DASH .mpd、RTMP）。
-   * 2. 优先从 m3u8/mp4/flv/ts/range_video 中按 score 选最高分。
-   * 3. 若无上述类型，再从 blob/unknown 中选最高分。
-   * 4. 若所有候选都被过滤，返回 null，由调用方返回 noSupportedFormat。
-   */
   private selectBestResult(results: SnifferResult[]): SnifferResult | null {
     let best: SnifferResult | null = null
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
-      // 跳过明确不支持的协议
-      if (!this.isSupportedProtocol(r.type)) {
-        continue
-      }
       if (r.type === 'm3u8' || r.type === 'mp4' || r.type === 'flv' ||
         r.type === 'ts' || r.type === 'range_video') {
         if (best === null || r.score > best.score) {
@@ -897,46 +834,17 @@ export class VideoSourceResolver {
         }
       }
     }
-    if (best !== null) {
-      return best
-    }
-    // 第二轮：blob / unknown 类型（可能有效）
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i]
-      if (!this.isSupportedProtocol(r.type)) {
-        continue
-      }
-      if (r.type === 'blob' || r.type === 'unknown') {
-        if (best === null || r.score > best.score) {
-          best = r
+    if (best === null) {
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]
+        if (r.type === 'blob' || r.type === 'unknown') {
+          if (best === null || r.score > best.score) {
+            best = r
+          }
         }
       }
     }
     return best
-  }
-
-  /**
-   * 判断给定类型/协议是否被播放器支持。
-   */
-  private isSupportedProtocol(type: string): boolean {
-    if (type === 'blob' || type === 'unknown' || type === 'range_video') {
-      return true
-    }
-    const extMap: Record<string, string> = {
-      'm3u8': '.m3u8',
-      'mp4': '.mp4',
-      'flv': '.flv',
-      'ts': '.ts',
-      'mpd': '.mpd',
-      'rtmp': 'rtmp://',
-    }
-    const ext = extMap[type]
-    if (ext === undefined) {
-      // 未知类型默认允许
-      return true
-    }
-    const cap = this.protocolEvaluator.evaluateProtocolCapability(ext)
-    return cap.supported
   }
 
   private applyRuleSourceToResult(result: VideoSourceResult, rule: RuleSource): VideoSourceResult {
@@ -1161,24 +1069,23 @@ export class VideoSourceResolver {
 
   async buildPlaybackOptionsWithRule(result: VideoSourceResult, request: VideoSourceRequest): Promise<PlaybackOptions> {
     const options = this.buildPlaybackOptions(result, request)
-    let ruleSource: RuleSource | null = null
 
     if (request.ruleSourceId >= 0) {
-      ruleSource = await this.ruleStore.getById(request.ruleSourceId)
-      if (ruleSource !== null) {
-        if (options.referer.length === 0 && ruleSource.referer.length > 0) {
-          options.referer = ruleSource.referer
+      const rule = await this.ruleStore.getById(request.ruleSourceId)
+      if (rule !== null) {
+        if (options.referer.length === 0 && rule.referer.length > 0) {
+          options.referer = rule.referer
         }
-        if (options.userAgent.length === 0 && ruleSource.userAgent.length > 0) {
-          options.userAgent = ruleSource.userAgent
+        if (options.userAgent.length === 0 && rule.userAgent.length > 0) {
+          options.userAgent = rule.userAgent
         }
-        if (ruleSource.name.toLowerCase() === '7sefun') {
+        if (rule.name.toLowerCase() === '7sefun') {
           const fallbackReferer = this.build7sefunPlaybackReferer(result.videoUrl, request.episodeUrl)
           if (this.shouldOverride7sefunReferer(result.videoUrl) || options.referer.length === 0) {
             options.referer = fallbackReferer
           }
           if (options.userAgent.length === 0) {
-            options.userAgent = this.getEffectiveUserAgent()
+            options.userAgent = DEFAULT_PLAYER_USER_AGENT
           }
           const existingReferer = this.findPlaybackHttpHeaderKey(options.headers, 'Referer')
           if (options.referer.length > 0) {
@@ -1198,12 +1105,12 @@ export class VideoSourceResolver {
           logger.info('7sefun playback headers: referer=%{public}s, url=%{public}s',
             options.referer.length > 0 ? options.referer : '<empty>',
             result.videoUrl.substring(0, 80))
-        } else if (ruleSource.name.toLowerCase() === 'tvtfun') {
+        } else if (rule.name.toLowerCase() === 'tvtfun') {
           if (options.referer.length === 0) {
             options.referer = 'https://www.tvtfun.net/'
           }
           if (options.userAgent.length === 0) {
-            options.userAgent = this.getEffectiveUserAgent()
+            options.userAgent = DEFAULT_PLAYER_USER_AGENT
           }
           options.headers['Referer'] = options.referer
           options.headers['User-Agent'] = options.userAgent
@@ -1212,8 +1119,8 @@ export class VideoSourceResolver {
         }
       }
     }
-    if (options.userAgent.length === 0 && this.shouldUseCompatibilityUserAgent(ruleSource)) {
-      options.userAgent = this.getEffectiveUserAgent()
+    if (options.userAgent.length === 0) {
+      options.userAgent = DEFAULT_PLAYER_USER_AGENT
     }
 
     return options

@@ -66,7 +66,9 @@ export struct TimelinePage {
   @State selectedYear: number = 0
   @State selectedQuarter: number = 0
   @State isViewingCurrentSeason: boolean = true
+  @State weekdayTabWindowStart: number = 0
   private contentScroller: Scroller = new Scroller()
+  private weekdayTabScroller: Scroller = new Scroller()
   private enrichingWeekdayKeys: string[] = []
   private enrichedWeekdayKeys: string[] = []
 
@@ -75,6 +77,7 @@ export struct TimelinePage {
     this.selectedQuarter = AnimeSeason.getSeasonQuarter()
     this.seasonString = AnimeSeason.getSeasonString()
     this.selectedWeekdayIndex = AnimeSeason.getCurrentWeekdayIndex()
+    this.weekdayTabWindowStart = this.resolveWeekdayTabWindowStart(this.selectedWeekdayIndex)
     if (!this.hasLoaded) {
       this.loadCalendar()
     }
@@ -140,23 +143,31 @@ export struct TimelinePage {
                 return
               }
               if (event.offsetX < 0 && this.selectedWeekdayIndex < WEEKDAY_TAB_COUNT - 1) {
+                const nextIndex = this.selectedWeekdayIndex + 1
+                const nextWindowStart = this.resolveWeekdayTabWindowStart(nextIndex)
                 this.getUIContext().animateTo({
                   duration: 250,
                   curve: curves.springMotion()
                 }, () => {
-                  this.selectedWeekdayIndex += 1
+                  this.selectedWeekdayIndex = nextIndex
+                  this.weekdayTabWindowStart = nextWindowStart
                 })
+                this.scrollWeekdayTabWindowToStart(nextWindowStart)
                 this.contentScroller.scrollToIndex(0)
-                this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
+                this.enrichSelectedWeekdayInBackground(nextIndex)
               } else if (event.offsetX > 0 && this.selectedWeekdayIndex > 0) {
+                const nextIndex = this.selectedWeekdayIndex - 1
+                const nextWindowStart = this.resolveWeekdayTabWindowStart(nextIndex)
                 this.getUIContext().animateTo({
                   duration: 250,
                   curve: curves.springMotion()
                 }, () => {
-                  this.selectedWeekdayIndex -= 1
+                  this.selectedWeekdayIndex = nextIndex
+                  this.weekdayTabWindowStart = nextWindowStart
                 })
+                this.scrollWeekdayTabWindowToStart(nextWindowStart)
                 this.contentScroller.scrollToIndex(0)
-                this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
+                this.enrichSelectedWeekdayInBackground(nextIndex)
               }
             })
         )
@@ -308,33 +319,62 @@ export struct TimelinePage {
   @Builder
   private WeekdayTabBar(): void {
     Column() {
-      Row() {
-        ForEach(this.getVisibleWeekdayIndices(), (weekdayIndex: number) => {
-          Column() {
-            WeekdayTabItem({
-              label: TIMELINE_WEEKDAY_LABELS[weekdayIndex],
-              index: weekdayIndex,
-              selectedIndex: this.selectedWeekdayIndex,
-              tabWidth: WEEKDAY_TAB_ITEM_MAX_WIDTH,
-              onSelected: (selectedIndex: number) => {
-                this.getUIContext().animateTo({
-                  duration: 250,
-                  curve: curves.springMotion()
-                }, () => {
-                  this.selectedWeekdayIndex = selectedIndex
+      Stack() {
+        List({
+          space: WEEKDAY_TAB_ITEM_GAP,
+          initialIndex: this.weekdayTabWindowStart,
+          scroller: this.weekdayTabScroller
+        }) {
+          ForEach(this.getAllWeekdayIndices(), (weekdayIndex: number) => {
+            ListItem() {
+              Column() {
+                WeekdayTabItem({
+                  label: TIMELINE_WEEKDAY_LABELS[weekdayIndex],
+                  index: weekdayIndex,
+                selectedIndex: this.selectedWeekdayIndex,
+                tabWidth: WEEKDAY_TAB_ITEM_MAX_WIDTH,
+                onSelected: (selectedIndex: number) => {
+                  const nextWindowStart = this.resolveWeekdayTabWindowStart(selectedIndex)
+                  this.getUIContext().animateTo({
+                    duration: 250,
+                    curve: curves.springMotion()
+                  }, () => {
+                      this.selectedWeekdayIndex = selectedIndex
+                      this.weekdayTabWindowStart = nextWindowStart
+                    })
+                    this.scrollWeekdayTabWindowToStart(nextWindowStart)
+                    this.contentScroller.scrollToIndex(0)
+                    this.enrichSelectedWeekdayInBackground(selectedIndex)
+                  }
                 })
-                this.contentScroller.scrollToIndex(0)
-                this.enrichSelectedWeekdayInBackground(selectedIndex)
               }
-            })
-          }
-          .layoutWeight(1)
-        }, (weekdayIndex: number) => `weekday_tab_${weekdayIndex}`)
+              .clip(true)
+              .backgroundColor(Color.Transparent)
+              .borderRadius(WEEKDAY_TAB_BAR_HEIGHT / 2)
+              .width('100%')
+              .height(WEEKDAY_TAB_BAR_HEIGHT)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+            }
+            .clip(true)
+            .backgroundColor(Color.Transparent)
+            .borderRadius(WEEKDAY_TAB_BAR_HEIGHT / 2)
+            .width(this.getWeekdayTabCellWidth())
+            .height(WEEKDAY_TAB_BAR_HEIGHT)
+          }, (weekdayIndex: number) => `weekday_tab_${weekdayIndex}`)
+        }
+        .clip(true)
+        .backgroundColor(Color.Transparent)
+        .width('100%')
+        .height(WEEKDAY_TAB_BAR_HEIGHT)
+        .padding({ left: 12, right: 12 })
+        .listDirection(Axis.Horizontal)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.None)
+        .alignListItem(ListItemAlign.Center)
       }
       .width('100%')
       .height(WEEKDAY_TAB_BAR_HEIGHT)
-      .alignItems(VerticalAlign.Center)
-      .justifyContent(FlexAlign.SpaceEvenly)
     }
     .width('100%')
     .height(WEEKDAY_TAB_BAR_HEIGHT)
@@ -616,31 +656,11 @@ export struct TimelinePage {
     return 3
   }
 
-  private getVisibleWeekdayIndices(): number[] {
-    const count = this.getVisibleWeekdayCount()
+  private getAllWeekdayIndices(): number[] {
     const result: number[] = []
-    const selected = this.selectedWeekdayIndex
-    
-    if (count === 3) {
-      if (selected === 0) {
-        result.push(0, 1, 2)
-      } else if (selected === 6) {
-        result.push(4, 5, 6)
-      } else {
-        result.push(selected - 1, selected, selected + 1)
-      }
-    } else if (count === 5) {
-      if (selected <= 1) {
-        for (let i = 0; i < 5; i++) result.push(i)
-      } else if (selected >= 5) {
-        for (let i = 2; i < 7; i++) result.push(i)
-      } else {
-        for (let i = selected - 2; i <= selected + 2; i++) result.push(i)
-      }
-    } else {
-      for (let i = 0; i < 7; i++) result.push(i)
+    for (let i = 0; i < WEEKDAY_TAB_COUNT; i++) {
+      result.push(i)
     }
-    
     return result
   }
 
@@ -650,6 +670,45 @@ export struct TimelinePage {
     const gapTotal = WEEKDAY_TAB_ITEM_GAP * (count - 1)
     const fittedWidth = (availableWidth - gapTotal) / count
     return Math.max(WEEKDAY_TAB_ITEM_MIN_WIDTH, Math.min(WEEKDAY_TAB_ITEM_MAX_WIDTH, fittedWidth))
+  }
+
+  private getWeekdayTabCellWidth(): number {
+    const count = this.getVisibleWeekdayCount()
+    const availableWidth = this.screenWidthVp - 24
+    const gapTotal = WEEKDAY_TAB_ITEM_GAP * (count - 1)
+    return Math.max(WEEKDAY_TAB_ITEM_MIN_WIDTH, (availableWidth - gapTotal) / count)
+  }
+
+  private handleWeekdayTabWindowSwipe(offsetX: number): void {
+    if (Math.abs(offsetX) < 24) {
+      return
+    }
+    const direction = offsetX < 0 ? 1 : -1
+    const nextStart = this.clampWeekdayTabWindowStart(this.weekdayTabWindowStart + direction)
+    if (nextStart === this.weekdayTabWindowStart) {
+      return
+    }
+    this.weekdayTabWindowStart = nextStart
+    this.scrollWeekdayTabWindowToStart(nextStart)
+  }
+
+  private scrollWeekdayTabWindowToStart(start: number): void {
+    try {
+      this.weekdayTabScroller.scrollToIndex(start, true, ScrollAlign.START)
+    } catch (error) {
+      logger.warn(`scroll weekday window failed: ${JSON.stringify(error)}`)
+    }
+  }
+
+  private resolveWeekdayTabWindowStart(selectedIndex: number): number {
+    const count = this.getVisibleWeekdayCount()
+    const centeredStart = selectedIndex - Math.floor(count / 2)
+    return this.clampWeekdayTabWindowStart(centeredStart)
+  }
+
+  private clampWeekdayTabWindowStart(start: number): number {
+    const maxStart = Math.max(0, WEEKDAY_TAB_COUNT - this.getVisibleWeekdayCount())
+    return Math.max(0, Math.min(maxStart, start))
   }
 
   private getTimelineCardColumns(): string {
@@ -825,7 +884,9 @@ struct WeekdayTabItem {
       .clip(false)
       .hitTestBehavior(HitTestMode.None)
       .align(Alignment.Center)
+      .width(this.tabWidth)
       .height(WEEKDAY_TAB_BAR_HEIGHT)
+      .enabled(false)
       .barWidth(this.tabWidth)
       .barHeight(WEEKDAY_TAB_BAR_HEIGHT)
       .barOverlap(true)
@@ -849,12 +910,16 @@ struct WeekdayTabItem {
       })
     }
     .backgroundColor(Color.Transparent)
-    .clip(false)
+    .clip(true)
+    .borderRadius(WEEKDAY_TAB_BAR_HEIGHT / 2)
     .width(this.tabWidth)
     .height(WEEKDAY_TAB_BAR_HEIGHT)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
+    .onClick(() => {
+      this.selectTab()
+    })
   }
 
   @Builder
@@ -877,11 +942,10 @@ struct WeekdayTabItem {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(Color.Transparent)
+    .shadow(undefined)
     .hitTestBehavior(HitTestMode.Transparent)
     .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-    .onClick(() => {
-      this.selectTab()
-    })
   }
 
   private selectTab(): void {

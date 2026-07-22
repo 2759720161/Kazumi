@@ -86,6 +86,42 @@ static napi_value NativeCommand(napi_env env, napi_callback_info info)
     return result;
 }
 
+static napi_value NativeCommandAsync(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int64_t ctxId;
+    napi_get_value_int64(env, args[0], &ctxId);
+
+    napi_value cmd_array = args[1];
+    uint32_t cmd_count;
+    napi_get_array_length(env, cmd_array, &cmd_count);
+
+    const char **cmd_args = new const char *[cmd_count + 1];
+    for (uint32_t i = 0; i < cmd_count; i++) {
+        napi_value elem;
+        napi_get_element(env, cmd_array, i, &elem);
+        size_t len = 0;
+        napi_get_value_string_utf8(env, elem, nullptr, 0, &len);
+        cmd_args[i] = new char[len + 1];
+        napi_get_value_string_utf8(env, elem, const_cast<char *>(cmd_args[i]), len + 1, &len);
+    }
+    cmd_args[cmd_count] = nullptr;
+
+    int err = mpv_wrapper_command_async(ctxId, cmd_args);
+
+    for (uint32_t i = 0; i < cmd_count; i++) {
+        delete[] cmd_args[i];
+    }
+    delete[] cmd_args;
+
+    napi_value result;
+    napi_create_int32(env, err, &result);
+    return result;
+}
+
 static napi_value NativeSetProperty(napi_env env, napi_callback_info info)
 {
     size_t argc = 3;
@@ -318,6 +354,7 @@ static napi_value Init(napi_env env, napi_value exports)
         DECLARE_NAPI_FUNCTION("nativeCreate", NativeCreate),
         DECLARE_NAPI_FUNCTION("nativeInitialize", NativeInitialize),
         DECLARE_NAPI_FUNCTION("nativeCommand", NativeCommand),
+        DECLARE_NAPI_FUNCTION("nativeCommandAsync", NativeCommandAsync),
         DECLARE_NAPI_FUNCTION("nativeSetProperty", NativeSetProperty),
         DECLARE_NAPI_FUNCTION("nativeGetProperty", NativeGetProperty),
         DECLARE_NAPI_FUNCTION("nativeObserveProperty", NativeObserveProperty),

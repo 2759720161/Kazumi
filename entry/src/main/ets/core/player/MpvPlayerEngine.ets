@@ -3,6 +3,7 @@ import { Logger } from '../../utils/Logger'
 import mpvNapi from 'libmpv_napi.so'
 
 const logger = new Logger('MpvPlayerEngine')
+let mpvEngineSeq: number = 0
 
 const MPV_FORMAT_FLAG = 3
 const MPV_FORMAT_DOUBLE = 5
@@ -16,6 +17,7 @@ interface MpvNapiInterface {
   nativeCreate(): number
   nativeInitialize(ctxId: number): number
   nativeCommand(ctxId: number, args: string[]): number
+  nativeCommandAsync(ctxId: number, args: string[]): number
   nativeSetProperty(ctxId: number, name: string, value: string): number
   nativeGetProperty(ctxId: number, name: string): string | null
   nativeObserveProperty(ctxId: number, replyUserdata: number, name: string, format: number): number
@@ -96,6 +98,7 @@ function formatNativeError(err: Object): string {
 }
 
 export class MpvPlayerEngine implements IPlayerEngine {
+  private readonly diagId: number = ++mpvEngineSeq
   private state: PlayerState = new PlayerState()
   private stateCallback: ((state: PlayerState) => void) | null = null
   private surfaceId: string = ''
@@ -181,6 +184,9 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   prepare(options: PlaybackOptions): void {
+    const prepareStartMs = Date.now()
+    logger.warn('CrashDiag mpv prepare start: id=%{public}d urlLength=%{public}d surfaceId=%{public}s',
+      this.diagId, options.url.length, this.surfaceId)
     logger.info('mpv prepare start, urlLength=%{public}d, surfaceId=%{public}s', options.url.length, this.surfaceId)
     this.clearPrepareTimeout()
     this.isReleasing = false
@@ -194,8 +200,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
     }
 
     try {
+      let stepStartMs = Date.now()
       logger.info('mpv nativeCreate begin')
       this.ctxId = napi.nativeCreate()
+      logger.warn('CrashDiag mpv nativeCreate returned: id=%{public}d ctxId=%{public}d elapsed=%{public}dms',
+        this.diagId, this.ctxId, Date.now() - stepStartMs)
       if (this.ctxId < 0) {
         this.failPlayback('mpv_create failed')
         return
@@ -203,8 +212,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
       logger.info('mpv instance created, ctxId=%{public}d', this.ctxId)
 
       if (this.surfaceId.length > 0) {
+        stepStartMs = Date.now()
         logger.info('mpv nativeSetSurfaceId begin, ctxId=%{public}d, surfaceId=%{public}s', this.ctxId, this.surfaceId)
         const surfaceErr = napi.nativeSetSurfaceId(this.ctxId, this.surfaceId)
+        logger.warn('CrashDiag mpv nativeSetSurfaceId returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms',
+          this.diagId, this.ctxId, surfaceErr, Date.now() - stepStartMs)
         if (surfaceErr < 0) {
           logger.warn('nativeSetSurfaceId failed: %{public}d, continuing without surface', surfaceErr)
         } else {
@@ -216,8 +228,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
       this.applyMpvOptions(options)
       logger.info('mpv apply options done')
 
+      stepStartMs = Date.now()
       logger.info('mpv nativeInitialize begin, ctxId=%{public}d', this.ctxId)
       const initErr = napi.nativeInitialize(this.ctxId)
+      logger.warn('CrashDiag mpv nativeInitialize returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms',
+        this.diagId, this.ctxId, initErr, Date.now() - stepStartMs)
       if (initErr < 0) {
         this.failPlayback('mpv_initialize failed: ' + String(initErr))
         return
@@ -241,7 +256,10 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
       if (options.url.length > 0) {
         const loadArgs: string[] = ['loadfile', options.url]
+        stepStartMs = Date.now()
         const loadErr = napi.nativeCommand(this.ctxId, loadArgs)
+        logger.warn('CrashDiag mpv loadfile returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms total=%{public}dms',
+          this.diagId, this.ctxId, loadErr, Date.now() - stepStartMs, Date.now() - prepareStartMs)
         logger.info('mpv loadfile command result: %{public}d', loadErr)
         if (loadErr < 0) {
           this.failPlayback('mpv loadfile failed: ' + String(loadErr))
@@ -263,7 +281,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
       return
     }
     try {
-      napi.nativeSetProperty(this.ctxId, 'pause', 'no')
+      const startMs = Date.now()
+      logger.warn('CrashDiag mpv play begin: id=%{public}d ctxId=%{public}d', this.diagId, this.ctxId)
+      const err = this.commandControlPause(false)
+      logger.warn('CrashDiag mpv play returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms',
+        this.diagId, this.ctxId, err, Date.now() - startMs)
       this.state.playing = true
       this.state.stateName = 'playing'
       this.notifyStateChange()
@@ -277,7 +299,11 @@ export class MpvPlayerEngine implements IPlayerEngine {
       return
     }
     try {
-      napi.nativeSetProperty(this.ctxId, 'pause', 'yes')
+      const startMs = Date.now()
+      logger.warn('CrashDiag mpv pause begin: id=%{public}d ctxId=%{public}d', this.diagId, this.ctxId)
+      const err = this.commandControlPause(true)
+      logger.warn('CrashDiag mpv pause returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms',
+        this.diagId, this.ctxId, err, Date.now() - startMs)
       this.state.playing = false
       this.state.stateName = 'paused'
       this.notifyStateChange()
@@ -291,7 +317,13 @@ export class MpvPlayerEngine implements IPlayerEngine {
       return
     }
     try {
-      napi.nativeCommand(this.ctxId, ['stop'])
+      const startMs = Date.now()
+      logger.warn('CrashDiag mpv stop begin: id=%{public}d ctxId=%{public}d', this.diagId, this.ctxId)
+      const err = napi.nativeCommandAsync !== undefined ?
+        napi.nativeCommandAsync(this.ctxId, ['stop']) :
+        napi.nativeCommand(this.ctxId, ['stop'])
+      logger.warn('CrashDiag mpv stop returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms',
+        this.diagId, this.ctxId, err, Date.now() - startMs)
       this.state.playing = false
       this.state.stateName = 'stopped'
       this.notifyStateChange()
@@ -366,13 +398,28 @@ export class MpvPlayerEngine implements IPlayerEngine {
     return this.state
   }
 
+  private commandControlPause(paused: boolean): number {
+    if (napi === null || this.ctxId < 0) {
+      return -1
+    }
+    const value = paused ? 'yes' : 'no'
+    if (napi.nativeCommandAsync !== undefined) {
+      return napi.nativeCommandAsync(this.ctxId, ['set', 'pause', value])
+    }
+    return napi.nativeSetProperty(this.ctxId, 'pause', value)
+  }
+
   onStateChange(callback: (state: PlayerState) => void): void {
     this.stateCallback = callback
   }
 
   release(): void {
+    const releaseStartMs = Date.now()
+    logger.warn('CrashDiag mpv release begin: id=%{public}d ctxId=%{public}d initialized=%{public}s releasing=%{public}s',
+      this.diagId, this.ctxId, String(this.isInitialized), String(this.isReleasing))
     this.clearPrepareTimeout()
     if (this.isReleasing) {
+      logger.warn('CrashDiag mpv release skipped: id=%{public}d reason=already-releasing', this.diagId)
       return
     }
     if (napi !== null && this.detailEnhancerQuality >= 0) {
@@ -390,13 +437,18 @@ export class MpvPlayerEngine implements IPlayerEngine {
       this.isInitialized = false
       this.ctxId = -1
       try {
+        const destroyStartMs = Date.now()
         napi.nativeDestroy(releasingCtxId)
+        logger.warn('CrashDiag mpv nativeDestroy returned: id=%{public}d ctxId=%{public}d elapsed=%{public}dms',
+          this.diagId, releasingCtxId, Date.now() - destroyStartMs)
         logger.info('mpv instance destroy scheduled, ctxId=%{public}d', releasingCtxId)
       } catch (_err) {
         logger.error('mpv destroy failed')
       }
     }
     this.resetState()
+    logger.warn('CrashDiag mpv release end: id=%{public}d elapsed=%{public}dms',
+      this.diagId, Date.now() - releaseStartMs)
   }
 
   addSubtitle(path: string): void {
@@ -421,6 +473,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.state.stateName = 'preparing'
         this.state.playing = false
         this.notifyStateChange()
+        logger.info('CrashDiag mpv event: id=%{public}d start-file', this.diagId)
         logger.info('mpv event: start-file')
         break
 
@@ -434,6 +487,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.state.playing = true
         this.fetchVideoSize()
         this.notifyStateChange()
+        logger.info('CrashDiag mpv event: id=%{public}d file-loaded', this.diagId)
         logger.info('mpv event: file-loaded')
         break
 
@@ -448,6 +502,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
           if (event.errorCode !== 0) {
             this.state.stateName = 'error'
             this.state.error = 'mpv playback error, code=' + String(event.errorCode)
+            logger.error('CrashDiag mpv event: id=%{public}d end-file-error code=%{public}d reason=%{public}d',
+              this.diagId, event.errorCode, event.reason)
             logger.error('mpv event: end-file (error), code=%{public}d, reason=%{public}d', event.errorCode, event.reason)
           } else {
             this.state.stateName = 'stopped'

@@ -87,6 +87,15 @@ extern "C" int mpv_wrapper_command(int64_t ctxId, const char **args)
     return mpv_command(ctx->handle, args);
 }
 
+extern "C" int mpv_wrapper_command_async(int64_t ctxId, const char **args)
+{
+    MpvContext *ctx = find_context(ctxId);
+    if (!ctx || !ctx->handle) {
+        return MPV_ERROR_INVALID_PARAMETER;
+    }
+    return mpv_command_async(ctx->handle, 0, args);
+}
+
 extern "C" int mpv_wrapper_command_string(int64_t ctxId, const char *args)
 {
     MpvContext *ctx = find_context(ctxId);

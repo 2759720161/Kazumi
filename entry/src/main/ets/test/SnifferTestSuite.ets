@@ -159,12 +159,23 @@ export class SnifferTestSuite {
     verdict = this.ruleEvaluator.evaluateWeakCandidate('https://cdn.example.com/video.m3u8')
     this.assert('RuleEvaluator-weak-normal', !verdict.isWeak, 'isWeak=' + verdict.isWeak)
 
+    verdict = this.ruleEvaluator.evaluateWeakCandidate(
+      'https://groupvideo.photo.qq.com/10002-1071_example.f0.mp4?dis_t=1')
+    this.assert('RuleEvaluator-weak-qq-groupvideo', verdict.isWeak && verdict.delayMs === 3000,
+      'isWeak=' + verdict.isWeak + ' delayMs=' + verdict.delayMs)
+
+
     let promote = this.ruleEvaluator.evaluatePromotePage('https://player.cycanime.com/?url=abc')
     this.assert('RuleEvaluator-promote-cycanime', promote.shouldPromote, 'shouldPromote=' + promote.shouldPromote)
 
     promote = this.ruleEvaluator.evaluatePromotePage(
       'https://www.7sefun.top/addons/dp/player/index.php?key=abc&url=def')
     this.assert('RuleEvaluator-promote-7sefun-player', promote.shouldPromote,
+      'shouldPromote=' + promote.shouldPromote + ' rule=' + promote.matchedRuleName)
+
+    promote = this.ruleEvaluator.evaluatePromotePage(
+      'https://hhjx.hhplayer.com/index.php?url=https%3A%2F%2Fexample.com%2Fvideo')
+    this.assert('RuleEvaluator-promote-dm84-hhjx', promote.shouldPromote,
       'shouldPromote=' + promote.shouldPromote + ' rule=' + promote.matchedRuleName)
 
     promote = this.ruleEvaluator.evaluatePromotePage('https://cdn.example.com/video.m3u8')
@@ -290,6 +301,62 @@ export class SnifferTestSuite {
     this.assert('Range-interceptor-static-reject', !jsIntercepted,
       'intercepted=' + jsIntercepted)
 
+    const audioIntercepted = interceptor.shouldIntercept(
+      'https://www.dalvdm.cc/template/dsn2/static/mp3/4.mp3', {
+        'Range': 'bytes=0-', 'sec-fetch-dest': 'audio'
+      })
+    this.assert('Range-interceptor-audio-reject', !audioIntercepted,
+      'intercepted=' + audioIntercepted)
+    this.assert('Range-interceptor-audio-type-unknown',
+      interceptor.detectType('https://www.dalvdm.cc/template/dsn2/static/mp3/4.mp3', {
+        'Range': 'bytes=0-', 'sec-fetch-dest': 'audio'
+      }) === 'unknown',
+      'type=' + interceptor.detectType('https://www.dalvdm.cc/template/dsn2/static/mp3/4.mp3', {
+        'Range': 'bytes=0-', 'sec-fetch-dest': 'audio'
+      }))
+
+    const audioMimeIntercepted = interceptor.shouldIntercept(
+      'https://cdn.example.com/media/background', { 'Range': 'bytes=0-', 'Content-Type': 'audio/mpeg' })
+    this.assert('Range-interceptor-audio-mime-reject', !audioMimeIntercepted,
+      'intercepted=' + audioMimeIntercepted)
+
+    const hlsMimeIntercepted = interceptor.shouldIntercept(
+      'https://cdn.example.com/api/stream', { 'content-type': 'application/vnd.apple.mpegurl' })
+    this.assert('Mime-interceptor-extensionless-hls', hlsMimeIntercepted,
+      'intercepted=' + hlsMimeIntercepted)
+    this.assert('Mime-interceptor-hls-type',
+      interceptor.detectType('https://cdn.example.com/api/stream',
+        { 'content-type': 'application/vnd.apple.mpegurl' }) === 'm3u8',
+      'type=' + interceptor.detectType('https://cdn.example.com/api/stream',
+        { 'content-type': 'application/vnd.apple.mpegurl' }))
+
+    this.assert('Mime-interceptor-mp2t-type',
+      interceptor.detectType('https://cdn.example.com/hls/segment', { 'Content-Type': 'video/MP2T' }) === 'ts',
+      'type=' + interceptor.detectType('https://cdn.example.com/hls/segment',
+        { 'Content-Type': 'video/MP2T' }))
+
+    this.assert('Mime-interceptor-extensionless-mp4',
+      interceptor.detectType('https://cdn.example.com/api/video', { 'Content-Type': 'video/mp4' }) === 'mp4',
+      'type=' + interceptor.detectType('https://cdn.example.com/api/video',
+        { 'Content-Type': 'video/mp4' }))
+
+    const genericBinaryIntercepted = interceptor.shouldIntercept(
+      'https://api.example.com/data/download', { 'Content-Type': 'application/octet-stream' })
+    this.assert('Mime-interceptor-generic-binary-reject', !genericBinaryIntercepted,
+      'intercepted=' + genericBinaryIntercepted)
+
+    const tsBinaryIntercepted = interceptor.shouldIntercept(
+      'https://cdn.example.com/hls/segment.ts', { 'Content-Type': 'application/octet-stream' })
+    this.assert('Mime-interceptor-octet-ts', tsBinaryIntercepted &&
+      interceptor.detectType('https://cdn.example.com/hls/segment.ts',
+        { 'Content-Type': 'application/octet-stream' }) === 'ts',
+      'intercepted=' + tsBinaryIntercepted)
+
+    const keyIntercepted = interceptor.shouldIntercept(
+      'https://cdn.example.com/hls/enc.key', { 'Content-Type': 'video/mp4' })
+    this.assert('Mime-interceptor-key-reject', !keyIntercepted,
+      'intercepted=' + keyIntercepted)
+
     let rangeScore = SnifferResult.calculateScore('range_video', 'fetch_intercept',
       'https://cdn.example.com/seg-001', 'unknown', this.ruleEvaluator)
     this.assert('Range-req-score-range-video', rangeScore >= 40 && rangeScore <= 60,
@@ -336,6 +403,13 @@ export class SnifferTestSuite {
     score = SnifferResult.calculateScore('range_video', 'fetch_intercept',
       'https://cdn.example.com/seg', 'unknown', this.ruleEvaluator)
     this.assert('Scoring-range-video-fetch', score >= 45, 'score=' + score)
+
+    const jsonMp4Score = SnifferResult.calculateScore('mp4', 'json_response',
+      'https://cdn.example.com/video.mp4', 'unknown', this.ruleEvaluator)
+    const requestMp4Score = SnifferResult.calculateScore('mp4', 'request_intercept',
+      'https://cdn.example.com/video.mp4', 'unknown', this.ruleEvaluator)
+    this.assert('Scoring-request-context-priority', requestMp4Score > jsonMp4Score,
+      'request=' + requestMp4Score + ' json=' + jsonMp4Score)
   }
 
   private testJSInjectorScripts(): void {
@@ -358,6 +432,21 @@ export class SnifferTestSuite {
       'has hasRange')
     this.assert('JSInjector-modern-has-response-text', modernScript.indexOf('Response.prototype.text') !== -1,
       'has Response.prototype.text')
+    this.assert('JSInjector-modern-has-json-media', modernScript.indexOf('inspectMediaText') !== -1 &&
+      modernScript.indexOf('json_response') !== -1,
+      'has bounded JSON media extraction')
+    this.assert('JSInjector-modern-json-provenance', modernScript.indexOf('msg.responseUrl = extra.responseUrl') !== -1 &&
+      modernScript.indexOf('msg.responseStatus = String(extra.responseStatus)') !== -1,
+      'posts JSON response URL and status')
+    this.assert('JSInjector-modern-json-size-limit', modernScript.indexOf('1048576') !== -1 &&
+      modernScript.indexOf('inspected < 256') !== -1,
+      'has JSON extraction limits')
+    this.assert('JSInjector-modern-ready-handshake', modernScript.indexOf("event: 'sniffer_ready'") !== -1 &&
+      modernScript.indexOf("postReady('modern')") !== -1,
+      'has modern ready handshake')
+    this.assert('JSInjector-modern-plus-regex-valid', modernScript.indexOf('replace(/\\+/g') !== -1 &&
+      modernScript.indexOf('replace(/+/g') === -1,
+      'escaped plus regex retained')
     this.assert('JSInjector-modern-has-fetch-text-detect', modernScript.indexOf('fetch_response_text') !== -1,
       'has fetch_response_text')
     this.assert('JSInjector-modern-has-header-object', modernScript.indexOf('headersToObject') !== -1,
@@ -374,10 +463,18 @@ export class SnifferTestSuite {
       'has __kazumi_sniff marker')
     this.assert('JSInjector-legacy-has-getSnifferExtra', legacyScript.indexOf('getSnifferExtra') !== -1,
       'has getSnifferExtra')
+    this.assert('JSInjector-legacy-ready-handshake', legacyScript.indexOf("postReady('legacy')") !== -1,
+      'has legacy ready handshake')
+    this.assert('JSInjector-legacy-plus-regex-valid', legacyScript.indexOf('replace(/\\+/g') !== -1 &&
+      legacyScript.indexOf('replace(/+/g') === -1,
+      'escaped plus regex retained')
 
     let fallbackScript = JSInjector.getVideoElementFallbackScript()
     this.assert('JSInjector-fallback-not-empty', fallbackScript.length > 100,
       'length=' + fallbackScript.length)
+    this.assert('JSInjector-fallback-plus-regex-valid', fallbackScript.indexOf('replace(/\\+/g') !== -1 &&
+      fallbackScript.indexOf('replace(/+/g') === -1,
+      'escaped plus regex retained')
 
     let hash = JSInjector.getScriptHash()
     this.assert('JSInjector-hash-valid', hash.length > 0, 'hash=' + hash)

@@ -12,7 +12,7 @@ const SOURCE_SCORE_DELTAS: Record<string, number> = {
   'video_src_setter': 10, 'initial_media_scan': 3, 'mutation_observer': 3,
   'xhr_intercept': 8, 'fetch_intercept': 8, 'xhr_content_type': 12,
   'fetch_content_type': 12, 'xhr_content_detect': 10,
-  'video_content_type': 12, 'range_request': 5
+  'video_content_type': 12, 'range_request': 5, 'json_response': 8
 }
 
 const QUALITY_SCORE_DELTAS: Record<string, number> = {

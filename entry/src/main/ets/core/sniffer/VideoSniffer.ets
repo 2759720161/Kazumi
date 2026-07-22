@@ -167,8 +167,7 @@ export class VideoSniffer {
           return
         }
         if (!err) {
-          this.jsInjected = true
-          logger.info('onPageBegin: script injected OK')
+          logger.info('onPageBegin: script dispatched, waiting for ready handshake')
         } else {
           logger.warn('onPageBegin: script inject failed: %{public}s', String(err))
         }
@@ -190,8 +189,7 @@ export class VideoSniffer {
           return
         }
         if (!err) {
-          this.jsInjected = true
-          logger.info('onPageEnd: script injected OK')
+          logger.info('onPageEnd: script dispatched, waiting for ready handshake')
         }
       })
     } catch (e) {
@@ -228,6 +226,7 @@ export class VideoSniffer {
     if (!this.isSniffing) {
       return
     }
+    this.promotePlayerPageIfNeeded(url)
     this.requestInterceptor.interceptRequest(url, headers)
   }
 
@@ -240,10 +239,8 @@ export class VideoSniffer {
     this.promotePlayerPageIfNeeded(url)
     let result = this.urlFilter.filter(url, source)
     const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url, headers)
-    if (result === null && rangeVerdict.isRangeVideo) {
-      result = new SnifferResult(url, 'range_video', 'unknown', source)
-      result.ruleSource = rangeVerdict.matchedRuleName.length > 0 ? rangeVerdict.matchedRuleName : 'range_request'
-      result.score = SnifferResult.calculateScore('range_video', source, url, 'unknown', this.ruleEvaluator)
+    if (result === null) {
+      result = this.createHeaderDetectedResult(url, source, headers)
     }
     if (result !== null) {
       const ctx = new CapturedRequestContext()
@@ -276,19 +273,35 @@ export class VideoSniffer {
     try {
       logger.debug('JSBridge raw: %{public}s', message.substring(0, 120))
       let data = JSON.parse(message) as Record<string, string>
+      const event = data['event'] || ''
+      if (event === 'sniffer_ready') {
+        this.jsInjected = true
+        logger.info('Sniffer script ready: mode=%{public}s', data['mode'] || 'unknown')
+        return
+      }
       let url = data['url'] || ''
       let type = data['type'] || ''
       let source = data['source'] || ''
       let referer = data['referer'] || ''
       let cookie = data['cookie'] || ''
       let contentType = data['contentType'] || ''
+      const responseUrl = data['responseUrl'] || ''
+      const responseStatus = data['responseStatus'] || ''
       let headers = JSInjector.extractHeadersFromJson(data['headers'] || '')
       let hasRange = data['hasRange'] === 'true'
+      if (contentType.length > 0 && this.getHeaderIgnoreCase(headers, 'content-type').length === 0) {
+        headers['Content-Type'] = contentType
+      }
       if (this.getHeaderIgnoreCase(headers, 'range').length > 0) {
         hasRange = true
       }
       if (!url) {
         return
+      }
+      if (source === 'json_response') {
+        logger.info('JSON media candidate: status=%{public}s response=%{public}s media=%{public}s',
+          responseStatus.length > 0 ? responseStatus : 'unknown',
+          responseUrl.length > 0 ? responseUrl.substring(0, 120) : 'unknown', url.substring(0, 120))
       }
       if (referer.length > 0) {
         this.currentReferer = referer
@@ -304,25 +317,24 @@ export class VideoSniffer {
         source.indexOf('hls_load_source') !== -1 ||
         source.indexOf('player_config') !== -1 ||
         type.indexOf('player_config') !== -1 ||
-        type.indexOf('hls_load_source') !== -1 ||
-        type.indexOf('video') !== -1
+        type.indexOf('hls_load_source') !== -1
       if (isVideoElementSource) {
         result = this.urlFilter.filterVideoElementUrl(url, source)
       } else {
         result = this.urlFilter.filter(url, source)
       }
-      if (hasRange && result === null) {
-        if (this.getHeaderIgnoreCase(headers, 'range').length === 0) {
-          headers['Range'] = 'bytes=0-'
-        }
-        if (contentType.length > 0 && this.getHeaderIgnoreCase(headers, 'content-type').length === 0) {
-          headers['Content-Type'] = contentType
-        }
-        const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url, headers)
-        if (rangeVerdict.isRangeVideo) {
-          result = new SnifferResult(url, 'range_video', 'unknown', source)
-          result.ruleSource = 'range_request'
-          result.score = SnifferResult.calculateScore('range_video', source, url, 'unknown', this.ruleEvaluator)
+      if (hasRange && this.getHeaderIgnoreCase(headers, 'range').length === 0) {
+        headers['Range'] = 'bytes=0-'
+      }
+      if (result === null) {
+        result = this.createHeaderDetectedResult(url, source, headers)
+      } else if (contentType.length > 0) {
+        const detectedType = this.requestInterceptor.detectType(url, headers)
+        if (detectedType !== 'unknown' && detectedType !== 'range_video' && detectedType !== result.type) {
+          result.type = detectedType
+          result.ruleSource = 'response_content_type'
+          result.score = SnifferResult.calculateScore(detectedType, source, result.url, result.quality,
+            this.ruleEvaluator)
         }
       }
       if (result !== null) {
@@ -364,6 +376,27 @@ export class VideoSniffer {
     }
   }
 
+  private createHeaderDetectedResult(url: string, source: string,
+    headers: Record<string, string>): SnifferResult | null {
+    if (!this.requestInterceptor.shouldIntercept(url, headers)) {
+      return null
+    }
+    const detectedType = this.requestInterceptor.detectType(url, headers)
+    if (detectedType === 'unknown') {
+      return null
+    }
+    const result = new SnifferResult(url, detectedType, 'unknown', source)
+    const contentType = this.getHeaderIgnoreCase(headers, 'content-type')
+    if (contentType.length > 0) {
+      result.ruleSource = 'response_content_type'
+    } else {
+      const rangeVerdict = this.ruleEvaluator.evaluateRangeRequest(url, headers)
+      result.ruleSource = rangeVerdict.matchedRuleName.length > 0 ? rangeVerdict.matchedRuleName : 'request_intercept'
+    }
+    result.score = SnifferResult.calculateScore(detectedType, source, url, 'unknown', this.ruleEvaluator)
+    return result
+  }
+
   private recordResult(result: SnifferResult | null): void {
     if (result === null || !this.isSniffing) {
       return
@@ -383,10 +416,17 @@ export class VideoSniffer {
       result.type !== 'ts' && result.type !== 'range_video') {
       return
     }
-    if (this.isWeakWrapperCandidate(result)) {
-      this.scheduleDelayedFinish()
+    if (result.type === 'range_video') {
+      logger.info('recordResult: provisional range candidate, waiting for confirmed video resource')
+      this.scheduleDelayedFinish(NetworkPolicy.RANGE_CANDIDATE_WAIT_MS)
       return
     }
+    const weakVerdict = this.ruleEvaluator.evaluateWeakCandidate(result.url)
+    if (weakVerdict.isWeak) {
+      this.scheduleDelayedFinish(weakVerdict.delayMs)
+      return
+    }
+    this.clearDelayedFinish()
     if (!this.hasPlayableResult) {
       this.hasPlayableResult = true
       this.startCollectWindow()
@@ -410,11 +450,6 @@ export class VideoSniffer {
       clearTimeout(this.collectWindowTimer)
       this.collectWindowTimer = -1
     }
-  }
-
-  private isWeakWrapperCandidate(result: SnifferResult): boolean {
-    const verdict = this.ruleEvaluator.evaluateWeakCandidate(result.url)
-    return verdict.isWeak
   }
 
   private isIgnored7sefunCandidate(url: string): boolean {
@@ -460,7 +495,7 @@ export class VideoSniffer {
     }
   }
 
-  private scheduleDelayedFinish(): void {
+  private scheduleDelayedFinish(delayMs: number): void {
     if (this.delayedFinishTimer >= 0) {
       return
     }
@@ -469,7 +504,7 @@ export class VideoSniffer {
       if (this.isSniffing) {
         this.finishSniffing('found')
       }
-    }, this.weakCandidateDelayMs)
+    }, delayMs > 0 ? delayMs : this.weakCandidateDelayMs)
   }
 
   private clearDelayedFinish(): void {

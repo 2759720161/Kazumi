@@ -43,6 +43,7 @@ export class RequestPolicyHandler {
     }
     config.timeout = 10000;
     config.retryPolicy = new RetryPolicy(0, 500);
+    config.connectionRetryPolicy = new RetryPolicy(1, 500);
 
     const response = await this.httpClient.request(config);
     if (!response.isSuccessful) {

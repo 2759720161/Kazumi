@@ -23,6 +23,10 @@ export class JSInjector {
       if (extra.contentType) msg.contentType = extra.contentType;
       if (extra.hasRange) msg.hasRange = 'true';
       if (extra.headers) msg.headers = JSON.stringify(extra.headers);
+      if (extra.responseUrl) msg.responseUrl = extra.responseUrl;
+      if (extra.responseStatus !== undefined && extra.responseStatus !== null) {
+        msg.responseStatus = String(extra.responseStatus);
+      }
     }
     window.__kazumi_sniffed_results.push({url: url, type: type, source: source, ts: Date.now()});
     console.log('[KazumiSniffer] postResult: ' + type + ' ' + source + ' ' + url.substring(0, 80));
@@ -30,6 +34,15 @@ export class JSInjector {
       window.JSBridgeDebug.postMessage(JSON.stringify(msg));
     } else if (window.jsBridge && window.jsBridge.postMessage) {
       window.jsBridge.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  function postReady(mode) {
+    var msg = JSON.stringify({event: 'sniffer_ready', mode: mode});
+    if (window.JSBridgeDebug && window.JSBridgeDebug.postMessage) {
+      window.JSBridgeDebug.postMessage(msg);
+    } else if (window.jsBridge && window.jsBridge.postMessage) {
+      window.jsBridge.postMessage(msg);
     }
   }
 
@@ -44,7 +57,8 @@ export class JSInjector {
     if (!url) return false;
     var lower = url.toLowerCase();
     if (lower.indexOf('.m3u8') !== -1 || lower.indexOf('.mp4') !== -1 ||
-        lower.indexOf('.flv') !== -1 || lower.indexOf('.mknvideo') !== -1 ||
+        lower.indexOf('.flv') !== -1 || lower.indexOf('.ts') !== -1 ||
+        lower.indexOf('.mknvideo') !== -1 ||
         lower.indexOf('m3u8') !== -1) {
       return true;
     }
@@ -81,7 +95,7 @@ export class JSInjector {
       for (var k = 0; k < keys.length; k++) {
         if (lowerPart.indexOf(keys[k]) === 0) {
           var raw = part.substring(keys[k].length);
-          try { raw = decodeURIComponent(raw.replace(/\+/g, '%20')); } catch(e) {}
+          try { raw = decodeURIComponent(raw.replace(/\\+/g, '%20')); } catch(e) {}
           try { raw = decodeURIComponent(raw); } catch(e) {}
           var values = raw.split(',');
           for (var v = 0; v < values.length; v++) {
@@ -185,6 +199,7 @@ export class JSInjector {
     if (mediaScanCount >= 30) clearInterval(mediaScanTimer);
   }, 500);
 
+  postReady('legacy');
   console.log('[KazumiSniffer] Legacy (iframe) script injected');
 })();
 `;
@@ -205,6 +220,10 @@ export class JSInjector {
       if (extra.contentType) msg.contentType = extra.contentType;
       if (extra.hasRange) msg.hasRange = 'true';
       if (extra.headers) msg.headers = JSON.stringify(extra.headers);
+      if (extra.responseUrl) msg.responseUrl = extra.responseUrl;
+      if (extra.responseStatus !== undefined && extra.responseStatus !== null) {
+        msg.responseStatus = String(extra.responseStatus);
+      }
     }
     window.__kazumi_sniffed_results.push({url: url, type: type, source: source, ts: Date.now()});
     console.log('[KazumiSniffer] postResult: ' + type + ' ' + source + ' ' + url.substring(0, 80));
@@ -212,6 +231,15 @@ export class JSInjector {
       window.VideoBridgeDebug.postMessage(JSON.stringify(msg));
     } else if (window.jsBridge && window.jsBridge.postMessage) {
       window.jsBridge.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  function postReady(mode) {
+    var msg = JSON.stringify({event: 'sniffer_ready', mode: mode});
+    if (window.VideoBridgeDebug && window.VideoBridgeDebug.postMessage) {
+      window.VideoBridgeDebug.postMessage(msg);
+    } else if (window.jsBridge && window.jsBridge.postMessage) {
+      window.jsBridge.postMessage(msg);
     }
   }
 
@@ -226,7 +254,8 @@ export class JSInjector {
     if (!url) return false;
     var lower = url.toLowerCase();
     if (lower.indexOf('.m3u8') !== -1 || lower.indexOf('.mp4') !== -1 ||
-        lower.indexOf('.flv') !== -1 || lower.indexOf('.mknvideo') !== -1 ||
+        lower.indexOf('.flv') !== -1 || lower.indexOf('.ts') !== -1 ||
+        lower.indexOf('.mknvideo') !== -1 ||
         lower.indexOf('m3u8') !== -1) {
       return true;
     }
@@ -263,7 +292,7 @@ export class JSInjector {
       for (var k = 0; k < keys.length; k++) {
         if (lowerPart.indexOf(keys[k]) === 0) {
           var raw = part.substring(keys[k].length);
-          try { raw = decodeURIComponent(raw.replace(/\+/g, '%20')); } catch(e) {}
+          try { raw = decodeURIComponent(raw.replace(/\\+/g, '%20')); } catch(e) {}
           try { raw = decodeURIComponent(raw); } catch(e) {}
           var values = raw.split(',');
           for (var v = 0; v < values.length; v++) {
@@ -359,6 +388,47 @@ export class JSInjector {
     return false;
   }
 
+  function inspectMediaText(url, text, contentType, source, requestHeaders, responseStatus) {
+    if (inspectM3u8Text(url, text, contentType, source)) return true;
+    if (!url || typeof text !== 'string' || text.length === 0 || text.length > 1048576) return false;
+    var trimmed = text.trim();
+    if (trimmed.length === 0 || (trimmed.charAt(0) !== '{' && trimmed.charAt(0) !== '[')) return false;
+    try {
+      var root = JSON.parse(trimmed);
+      var pending = [root];
+      var inspected = 0;
+      var found = false;
+      while (pending.length > 0 && inspected < 256) {
+        var value = pending.shift();
+        inspected++;
+        if (typeof value === 'string') {
+          var mediaUrl = value.trim().replace(/&amp;/g, '&');
+          if (mediaUrl.indexOf('//') === 0) {
+            mediaUrl = (url.indexOf('https://') === 0 ? 'https:' : 'http:') + mediaUrl;
+          } else if (mediaUrl.indexOf('/') === 0) {
+            try { mediaUrl = new URL(mediaUrl, url).href; } catch(e) {}
+          }
+          if ((mediaUrl.indexOf('http://') === 0 || mediaUrl.indexOf('https://') === 0) &&
+              isVideoUrl(mediaUrl)) {
+            var extra = getSnifferExtra();
+            if (requestHeaders) extra.headers = requestHeaders;
+            extra.responseUrl = url;
+            extra.responseStatus = responseStatus;
+            postResult(mediaUrl, 'json_media_url', 'json_response', extra);
+            found = true;
+          }
+        } else if (value && typeof value === 'object') {
+          var keys = Object.keys(value);
+          for (var i = 0; i < keys.length && i < 64; i++) {
+            pending.push(value[keys[i]]);
+          }
+        }
+      }
+      return found;
+    } catch(e) {}
+    return false;
+  }
+
   try {
     if (window.Response && window.Response.prototype && window.Response.prototype.text &&
         !window.Response.prototype.text.__kazumi_wrapped) {
@@ -369,7 +439,7 @@ export class JSInjector {
           try {
             var url = response && response.url ? response.url : '';
             var ct = response && response.headers ? (response.headers.get('content-type') || '') : '';
-            inspectM3u8Text(url, text, ct, 'response_text');
+            inspectMediaText(url, text, ct, 'response_text', null, response ? response.status : '');
           } catch(e) {}
           return text;
         });
@@ -823,12 +893,8 @@ export class JSInjector {
           return;
         }
         var resp = self.responseText || self.response;
-        if (typeof resp === 'string' && isM3u8Content(resp)) {
-          var extra2 = getSnifferExtra();
-          extra2.contentType = ct;
-          extra2.headers = xhrHeaders;
-          if (hasHeader(xhrHeaders, 'range')) extra2.hasRange = true;
-          postResult(url, 'm3u8_content', 'xhr_content_detect', extra2);
+        if (typeof resp === 'string') {
+          inspectMediaText(url, resp, ct, 'xhr_content_detect', xhrHeaders, self.status);
         }
       } catch(e) {}
     });
@@ -884,7 +950,7 @@ export class JSInjector {
             ct.indexOf('application/json') !== -1 || ct.indexOf('application/octet-stream') !== -1)) {
           try {
             response.clone().text().then(function(text) {
-              inspectM3u8Text(url, text, ct, 'fetch_response_text');
+              inspectMediaText(url, text, ct, 'fetch_response_text', requestHeaders, response.status);
             }).catch(function() {});
           } catch(e3) {}
         }
@@ -908,6 +974,7 @@ export class JSInjector {
     });
   }
 
+  postReady('modern');
   console.log('[KazumiSniffer] Modern (video/fetch/XHR/m3u8/iframe/postMessage) script injected');
 })();
 `;
@@ -937,7 +1004,7 @@ export class JSInjector {
       for (var k = 0; k < keys.length; k++) {
         if (lowerPart.indexOf(keys[k]) === 0) {
           var raw = part.substring(keys[k].length);
-          try { raw = decodeURIComponent(raw.replace(/\+/g, '%20')); } catch(e) {}
+          try { raw = decodeURIComponent(raw.replace(/\\+/g, '%20')); } catch(e) {}
           try { raw = decodeURIComponent(raw); } catch(e) {}
           var lowerRaw = raw.toLowerCase();
           for (var h = 0; h < hints.length; h++) {

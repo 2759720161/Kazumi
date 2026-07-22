@@ -12,6 +12,7 @@ import {
 } from '../../utils/MpvSettings'
 
 const logger = new Logger('PlayerSurface')
+let playerSurfaceInitSeq: number = 0
 
 @Component
 export struct PlayerSurface {
@@ -19,6 +20,7 @@ export struct PlayerSurface {
   @Prop @Watch('onPlaybackOptionsChange') playbackOptions: PlaybackOptions = new PlaybackOptions();
   @Prop fillParent: boolean = false;
   @Prop @Watch('onAspectModeChanged') aspectMode: VideoAspectMode = VideoAspectMode.contain;
+  @Prop keepAliveOnDisappear: boolean = false;
   @State surfaceId: string = '';
   @State @Watch('onLayoutInputsChanged') videoWidth: number = 0;
   @State @Watch('onLayoutInputsChanged') videoHeight: number = 0;
@@ -32,6 +34,10 @@ export struct PlayerSurface {
   private hasEngine: boolean = false;
   private isDestroyed: boolean = false;
   private pendingPrepareTimer: number = -1;
+  private activeInitSeq: number = 0;
+  private preparedUrl: string = '';
+  private preparingUrl: string = '';
+  private lastRequestedUrl: string = '';
   private xComponentController: XComponentController = new XComponentController();
   private engineType: string = 'mpv';
   onPlayerReady?: () => void;
@@ -41,6 +47,10 @@ export struct PlayerSurface {
 
   aboutToDisappear(): void {
     this.isDestroyed = true;
+    if (this.keepAliveOnDisappear) {
+      logger.info('PlayerSurface keep engine alive on disappear')
+      return
+    }
     this.releaseEngine();
   }
 
@@ -186,25 +196,39 @@ export struct PlayerSurface {
 
   private cancelPendingPrepare(): void {
     if (this.pendingPrepareTimer >= 0) {
+      logger.warn('CrashDiag PlayerSurface cancel pending prepare: seq=%{public}d', this.activeInitSeq)
       clearTimeout(this.pendingPrepareTimer);
       this.pendingPrepareTimer = -1;
     }
   }
 
   private releaseEngine(): void {
+    const startMs = Date.now()
     this.cancelPendingPrepare();
     if (this.hasEngine && this.playerEngine !== null) {
+      logger.warn('CrashDiag PlayerSurface releaseEngine begin: seq=%{public}d hasEngine=%{public}s urlHash=%{public}s',
+        this.activeInitSeq, String(this.hasEngine), this.shortHash(this.videoUrl))
       this.playerEngine.release();
       this.playerEngine = null;
       this.hasEngine = false;
+      this.preparedUrl = '';
+      this.preparingUrl = '';
+      logger.warn('CrashDiag PlayerSurface releaseEngine end: seq=%{public}d elapsed=%{public}dms',
+        this.activeInitSeq, Date.now() - startMs)
     }
   }
 
   private onVideoUrlChange(): void {
-    if (this.videoUrl.length > 0) {
+    const targetUrl = this.getTargetUrl()
+    if (targetUrl.length > 0) {
       if (!this.arePlaybackOptionsReady()) {
         logger.info('Video URL changed but playback options are not ready');
         return;
+      }
+      if (this.isSamePlaybackTarget(targetUrl)) {
+        logger.info('CrashDiag PlayerSurface videoUrl change ignored: same target urlHash=%{public}s',
+          this.shortHash(targetUrl))
+        return
       }
       logger.info('Video URL changed, re-preparing player');
       this.releaseEngine();
@@ -213,7 +237,13 @@ export struct PlayerSurface {
   }
 
   private onPlaybackOptionsChange(): void {
-    if (this.videoUrl.length === 0 || !this.arePlaybackOptionsReady()) {
+    const targetUrl = this.getTargetUrl()
+    if (targetUrl.length === 0 || !this.arePlaybackOptionsReady()) {
+      return
+    }
+    if (this.isSamePlaybackTarget(targetUrl)) {
+      logger.info('CrashDiag PlayerSurface playbackOptions change ignored: same target urlHash=%{public}s',
+        this.shortHash(targetUrl))
       return
     }
     if (this.hasEngine && this.playerEngine !== null) {
@@ -227,25 +257,51 @@ export struct PlayerSurface {
   }
 
   private async initPlayer(): Promise<void> {
-    if (this.videoUrl.length === 0) {
+    const seq = ++playerSurfaceInitSeq;
+    this.activeInitSeq = seq;
+    const initStartMs = Date.now();
+    const targetUrl = this.getTargetUrl()
+    if (targetUrl.length === 0) {
+      logger.info('CrashDiag PlayerSurface init skip: seq=%{public}d reason=empty-url', seq)
       return;
     }
     if (!this.arePlaybackOptionsReady()) {
+      logger.info('CrashDiag PlayerSurface init skip: seq=%{public}d reason=options-not-ready urlHash=%{public}s',
+        seq, this.shortHash(this.videoUrl))
       return;
     }
+    if (this.isSamePlaybackTarget(targetUrl)) {
+      logger.info('CrashDiag PlayerSurface init skip: seq=%{public}d reason=same-target urlHash=%{public}s',
+        seq, this.shortHash(targetUrl))
+      return
+    }
+    this.lastRequestedUrl = targetUrl
+    this.preparingUrl = targetUrl
 
     if (this.playbackOptions.isLocalFile) {
+      logger.info('CrashDiag PlayerSurface init begin: seq=%{public}d engine=avplayer-local surface=%{public}s urlHash=%{public}s',
+        seq, this.surfaceId, this.shortHash(this.videoUrl))
       logger.info('Creating AVPlayer engine for local file')
       const avEngine = new AVPlayerEngine()
       avEngine.setSurfaceId(this.surfaceId)
       this.playerEngine = avEngine
     } else if (this.engineType === 'mpv' && PlayerEngineFactory.isMpvNapiAvailableSync()) {
+      logger.info('CrashDiag PlayerSurface init begin: seq=%{public}d engine=mpv surface=%{public}s urlHash=%{public}s',
+        seq, this.surfaceId, this.shortHash(this.videoUrl))
       logger.info('Creating mpv player engine')
       const mpvEngine = new MpvPlayerEngine()
       mpvEngine.setSurfaceId(this.surfaceId)
       await this.applyMpvSettings(mpvEngine)
+      if (this.isDestroyed || this.activeInitSeq !== seq || this.lastRequestedUrl !== targetUrl) {
+        logger.warn('CrashDiag PlayerSurface init stale after settings: seq=%{public}d targetHash=%{public}s',
+          seq, this.shortHash(targetUrl))
+        mpvEngine.release()
+        return
+      }
       this.playerEngine = mpvEngine
     } else {
+      logger.info('CrashDiag PlayerSurface init begin: seq=%{public}d engine=avplayer requested=%{public}s surface=%{public}s urlHash=%{public}s',
+        seq, this.engineType, this.surfaceId, this.shortHash(this.videoUrl))
       logger.info('Creating AVPlayer engine, requested=%{public}s', this.engineType)
       const avEngine = new AVPlayerEngine()
       avEngine.setSurfaceId(this.surfaceId)
@@ -269,7 +325,7 @@ export struct PlayerSurface {
     this.playerEngine!.setAspectMode(this.aspectMode);
 
     const options = new PlaybackOptions();
-    options.url = this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUrl;
+    options.url = targetUrl;
     options.startPositionMs = this.playbackOptions.startPositionMs;
     options.referer = this.playbackOptions.referer;
     options.userAgent = this.playbackOptions.userAgent;
@@ -286,12 +342,27 @@ export struct PlayerSurface {
     const engine = this.playerEngine!
     const engineReadyCb = this.onEngineReady
     const playerReadyCb = this.onPlayerReady
+    logger.info('CrashDiag PlayerSurface init ready: seq=%{public}d elapsed=%{public}dms pendingPrepare=scheduled',
+      seq, Date.now() - initStartMs)
     this.pendingPrepareTimer = setTimeout(() => {
       this.pendingPrepareTimer = -1;
       if (this.isDestroyed) {
+        logger.warn('CrashDiag PlayerSurface prepare skipped: seq=%{public}d reason=destroyed', seq)
         return;
       }
+      if (this.activeInitSeq !== seq || this.lastRequestedUrl !== options.url || engine !== this.playerEngine) {
+        logger.warn('CrashDiag PlayerSurface prepare skipped: seq=%{public}d reason=stale currentSeq=%{public}d',
+          seq, this.activeInitSeq)
+        return
+      }
+      const prepareStartMs = Date.now()
+      logger.warn('CrashDiag PlayerSurface prepare begin: seq=%{public}d urlHash=%{public}s',
+        seq, this.shortHash(options.url))
       engine.prepare(options);
+      logger.warn('CrashDiag PlayerSurface prepare returned: seq=%{public}d elapsed=%{public}dms',
+        seq, Date.now() - prepareStartMs)
+      this.preparedUrl = options.url
+      this.preparingUrl = ''
       if (engineReadyCb) {
         engineReadyCb(engine);
       }
@@ -327,5 +398,24 @@ export struct PlayerSurface {
 
   private arePlaybackOptionsReady(): boolean {
     return this.playbackOptions.url.length > 0;
+  }
+
+  private getTargetUrl(): string {
+    return this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUrl
+  }
+
+  private isSamePlaybackTarget(targetUrl: string): boolean {
+    if (targetUrl.length === 0) {
+      return false
+    }
+    return targetUrl === this.preparedUrl || targetUrl === this.preparingUrl
+  }
+
+  private shortHash(value: string): string {
+    let hash = 0
+    for (let i = 0; i < value.length; i++) {
+      hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0
+    }
+    return String(value.length) + ':' + String(hash)
   }
 }

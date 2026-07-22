@@ -15,6 +15,7 @@ import { SnifferSessionPool } from './SnifferSessionPool'
 import { SnifferLease, WebViewCleanupLevel } from './SnifferSessionPool'
 import { Logger } from '../../utils/Logger'
 import { HlsManifestParser } from './HlsManifestParser'
+import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 
 const logger = new Logger('VideoSourceResolver')
 
@@ -33,12 +34,18 @@ export class VideoSourceResolver {
   private isResolving: boolean = false
   private policy: NetworkPolicy = new NetworkPolicy()
   private hlsManifestParser: HlsManifestParser = new HlsManifestParser()
+  private ruleEvaluator: SniffRuleEvaluator = new SniffRuleEvaluator()
   private resolveStartTime: number = 0
   private logListeners: ((event: ResolveLogEvent) => void)[] = []
   private sessionPool: SnifferSessionPool = new SnifferSessionPool()
   private currentLease: SnifferLease | null = null
   private backgroundLease: SnifferLease | null = null
   private isPreparingNext: boolean = false
+
+  constructor() {
+    this.sniffer.setRuleEvaluator(this.ruleEvaluator)
+    this.backgroundSniffer.setRuleEvaluator(this.ruleEvaluator)
+  }
 
   setWebController(controller: webview.WebviewController): void {
     this.setWorkerWebController(1, controller)
@@ -561,13 +568,20 @@ export class VideoSourceResolver {
   }
 
   private findCapturedContext(result: VideoSourceResult): CapturedRequestContext | null {
+    let bestContext: CapturedRequestContext | null = null
+    let bestScore = -1
     for (let i = 0; i < result.candidates.length; i++) {
       const candidate = result.candidates[i]
-      if (candidate.url === result.videoUrl && candidate.context !== null) {
-        return candidate.context
+      if (candidate.url !== result.videoUrl || candidate.context === null) {
+        continue
+      }
+      const score = this.getContextScore(candidate.context)
+      if (score > bestScore) {
+        bestScore = score
+        bestContext = candidate.context
       }
     }
-    return null
+    return bestContext
   }
 
   private async extract7sefunPlayerUrl(url: string): Promise<string> {
@@ -730,6 +744,7 @@ export class VideoSourceResolver {
       const workerId = lease.workerId
       const sniffer = this.getSnifferForLease(lease)
       let retryCount = 0
+      let retryScheduled = false
       let settled = false
       const resolveOnce = (result: VideoSourceResult): void => {
         if (settled) {
@@ -761,12 +776,20 @@ export class VideoSourceResolver {
           resolveCancelled()
           return
         }
+        if (retryScheduled) {
+          logger.info('Sniff attempt completed during retry window, awaiting next attempt')
+          return
+        }
         const elapsed = Date.now() - startTimeMs
         const bestResult = this.selectBestResult(results)
         if (bestResult !== null) {
+          const contextScore = this.getContextScore(bestResult.context)
+          const headerCount = bestResult.context === null ? 0 : Object.keys(bestResult.context.headers).length
+          logger.info('Selected sniff result: source=%{public}s score=%{public}d contextScore=%{public}d headers=%{public}d url=%{public}s',
+            bestResult.source, bestResult.score, contextScore, headerCount, bestResult.url.substring(0, 120))
           resolveOnce(VideoSourceResult.success(bestResult.url, bestResult.type, results, elapsed))
         } else if (results.length > 0) {
-          resolveOnce(VideoSourceResult.success(results[0].url, results[0].type, results, elapsed))
+          resolveOnce(VideoSourceResult.fail('未找到播放器支持的视频格式', retryCount, elapsed))
         } else {
           resolveOnce(VideoSourceResult.fail('未嗅探到视频流地址', retryCount, elapsed))
         }
@@ -803,14 +826,17 @@ export class VideoSourceResolver {
           const elapsed = Date.now() - startTimeMs
           if (retryCount < maxRetry) {
             retryCount++
+            retryScheduled = true
             let delayMs = this.policy.calculateRetryDelay(retryCount)
             logger.info('Sniff timeout, retry %{public}d/%{public}d after %{public}dms',
               retryCount, maxRetry, delayMs)
             setTimeout(() => {
+              retryScheduled = false
               if (!isStillActive()) {
                 resolveCancelled()
                 return
               }
+              logger.info('Starting sniff retry %{public}d/%{public}d', retryCount, maxRetry)
               sniffer.sniff(url)
             }, delayMs)
           } else {
@@ -824,27 +850,122 @@ export class VideoSourceResolver {
   }
 
   private selectBestResult(results: SnifferResult[]): SnifferResult | null {
-    let best: SnifferResult | null = null
+    let bestDirect: SnifferResult | null = null
+    let bestWeak: SnifferResult | null = null
     for (let i = 0; i < results.length; i++) {
       const r = results[i]
-      if (r.type === 'm3u8' || r.type === 'mp4' || r.type === 'flv' ||
-        r.type === 'ts' || r.type === 'range_video') {
-        if (best === null || r.score > best.score) {
-          best = r
+      if (!this.isSupportedPlayableResult(r)) {
+        continue
+      }
+      if (this.ruleEvaluator.isWeakWrapperUrl(r.url)) {
+        if (bestWeak === null || this.isBetterPlayableResult(r, bestWeak)) {
+          bestWeak = r
+        }
+      } else if (bestDirect === null || this.isBetterPlayableResult(r, bestDirect)) {
+        bestDirect = r
+      }
+    }
+    if (bestDirect !== null) {
+      return bestDirect
+    }
+    if (bestWeak !== null) {
+      return bestWeak
+    }
+    let fallback: SnifferResult | null = null
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      if ((r.type === 'blob' || r.type === 'unknown') && !this.isExplicitlyUnsupportedUrl(r.url)) {
+        if (fallback === null || r.score > fallback.score) {
+          fallback = r
         }
       }
     }
-    if (best === null) {
-      for (let i = 0; i < results.length; i++) {
-        const r = results[i]
-        if (r.type === 'blob' || r.type === 'unknown') {
-          if (best === null || r.score > best.score) {
-            best = r
-          }
-        }
+    return fallback
+  }
+
+  private isSupportedPlayableResult(result: SnifferResult): boolean {
+    if (result.type === 'range_video') {
+      return true
+    }
+    let protocol = ''
+    if (result.type === 'm3u8') {
+      protocol = '.m3u8'
+    } else if (result.type === 'mp4') {
+      protocol = '.mp4'
+    } else if (result.type === 'flv') {
+      protocol = '.flv'
+    } else if (result.type === 'ts') {
+      protocol = '.ts'
+    } else {
+      return false
+    }
+    return this.ruleEvaluator.evaluateProtocolCapability(protocol).supported
+  }
+
+  private isBetterPlayableResult(candidate: SnifferResult, current: SnifferResult): boolean {
+    if (candidate.url === current.url) {
+      const candidateContextScore = this.getContextScore(candidate.context)
+      const currentContextScore = this.getContextScore(current.context)
+      if (candidateContextScore !== currentContextScore) {
+        return candidateContextScore > currentContextScore
       }
     }
-    return best
+    const candidatePriority = this.getProtocolPriority(candidate.type)
+    const currentPriority = this.getProtocolPriority(current.type)
+    if (candidatePriority !== currentPriority) {
+      return candidatePriority > currentPriority
+    }
+    if (candidate.score !== current.score) {
+      return candidate.score > current.score
+    }
+    return candidate.timestamp < current.timestamp
+  }
+
+  private getContextScore(context: CapturedRequestContext | null): number {
+    if (context === null) {
+      return 0
+    }
+    let score = Object.keys(context.headers).length * 2
+    if (context.cookies.length > 0) {
+      score += 8
+    }
+    if (context.referer.length > 0) {
+      score += 4
+    }
+    if (context.userAgent.length > 0) {
+      score += 2
+    }
+    if (context.hasRangeHeader) {
+      score += 2
+    }
+    return score
+  }
+
+  private getProtocolPriority(type: string): number {
+    if (type === 'm3u8') {
+      return 500
+    }
+    if (type === 'mp4') {
+      return 400
+    }
+    if (type === 'flv') {
+      return 300
+    }
+    if (type === 'range_video') {
+      return 200
+    }
+    if (type === 'ts') {
+      return 100
+    }
+    return 0
+  }
+
+  private isExplicitlyUnsupportedUrl(url: string): boolean {
+    const lowerUrl = url.toLowerCase().split('?')[0].split('#')[0]
+    if (this.ruleEvaluator.shouldBlockSniffing(url)) {
+      return true
+    }
+    return lowerUrl.endsWith('.mpd')
   }
 
   private applyRuleSourceToResult(result: VideoSourceResult, rule: RuleSource): VideoSourceResult {
@@ -1123,7 +1244,27 @@ export class VideoSourceResolver {
       options.userAgent = DEFAULT_PLAYER_USER_AGENT
     }
 
+    // groupvideo.photo.qq.com rejects the page Referer with HTTP 404 even though
+    // the same signed media URL is playable without that header. Keep this
+    // workaround scoped to that host so other rule sources retain their headers.
+    this.clearRefererForGroupVideo(options, result.videoUrl)
+
     return options
+  }
+
+  private clearRefererForGroupVideo(options: PlaybackOptions, videoUrl: string): void {
+    const lowerUrl = videoUrl.toLowerCase()
+    const isGroupVideo = lowerUrl.startsWith('https://groupvideo.photo.qq.com/') ||
+      lowerUrl.startsWith('http://groupvideo.photo.qq.com/')
+    if (!isGroupVideo) {
+      return
+    }
+    options.referer = ''
+    const refererKey = this.findPlaybackHttpHeaderKey(options.headers, 'Referer')
+    if (refererKey.length > 0) {
+      options.headers = this.removePlaybackHttpHeader(options.headers, refererKey)
+    }
+    logger.info('Scoped playback workaround: cleared Referer for groupvideo media URL')
   }
 
   private shouldOverride7sefunReferer(videoUrl: string): boolean {

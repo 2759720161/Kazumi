@@ -26,9 +26,13 @@ const NON_MEDIA_DOMAINS: string[] = [
 
 const VIDEO_EXTENSIONS: string[] = ['.m3u8', '.mp4', '.flv', '.ts', '.m4v', '.webm', '.mknvideo']
 
+const AUDIO_EXTENSIONS: string[] = [
+  '.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.flac', '.weba', '.mid', '.midi'
+]
+
 const NON_MEDIA_EXTENSIONS: string[] = [
   '.js', '.css', '.html', '.htm', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg',
-  '.ico', '.woff', '.woff2', '.ttf', '.otf', '.json'
+  '.ico', '.woff', '.woff2', '.ttf', '.otf', '.json', '.key'
 ]
 
 const MEDIA_URL_HINTS: string[] = [
@@ -56,6 +60,9 @@ export class CandidateUrlFilter {
 
   isVideoUrl(url: string): boolean {
     let lowerUrl = url.toLowerCase()
+    if (this.isAudioUrl(lowerUrl)) {
+      return false
+    }
     const cleanUrl = lowerUrl.split('?')[0].split('#')[0]
     for (let i = 0; i < NON_MEDIA_EXTENSIONS.length; i++) {
       if (cleanUrl.endsWith(NON_MEDIA_EXTENSIONS[i])) {
@@ -78,6 +85,9 @@ export class CandidateUrlFilter {
     if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
       return false
     }
+    if (this.isAudioUrl(lowerUrl)) {
+      return false
+    }
     if (this.isAdUrl(url)) {
       return false
     }
@@ -92,6 +102,16 @@ export class CandidateUrlFilter {
 
   isBlobUrl(url: string): boolean {
     return url.indexOf('blob:') === 0
+  }
+
+  isAudioUrl(url: string): boolean {
+    const cleanUrl = url.toLowerCase().split('?')[0].split('#')[0]
+    for (let i = 0; i < AUDIO_EXTENSIONS.length; i++) {
+      if (cleanUrl.endsWith(AUDIO_EXTENSIONS[i])) {
+        return true
+      }
+    }
+    return false
   }
 
   isAdUrl(url: string): boolean {
@@ -131,7 +151,7 @@ export class CandidateUrlFilter {
       result.score = SnifferResult.calculateScore(type, source, url, quality, this.ruleEvaluator)
       return result
     }
-    const candidateUrl = this.extractNestedMediaUrl(url)
+    const candidateUrl = this.extractNestedMediaUrl(this.normalizeCandidateUrl(url))
     if (candidateUrl !== url) {
       logger.info('filter UNWRAP nested media: %{public}s -> %{public}s',
         url.substring(0, 80), candidateUrl.substring(0, 80))
@@ -165,7 +185,7 @@ export class CandidateUrlFilter {
   }
 
   filterVideoElementUrl(url: string, source: string): SnifferResult | null {
-    const candidateUrl = this.extractNestedMediaUrl(url)
+    const candidateUrl = this.extractNestedMediaUrl(this.normalizeCandidateUrl(url))
     if (candidateUrl !== url) {
       logger.info('videoElement UNWRAP nested media: %{public}s -> %{public}s',
         url.substring(0, 80), candidateUrl.substring(0, 80))
@@ -225,14 +245,34 @@ export class CandidateUrlFilter {
           const nestedValues = decoded.split(',')
           for (let k = 0; k < nestedValues.length; k++) {
             const nestedValue = nestedValues[k].trim()
-            if (this.isHttpVideoUrl(nestedValue) && this.isVideoUrl(nestedValue)) {
-              return nestedValue
+            const normalizedNestedValue = this.normalizeCandidateUrl(nestedValue)
+            if (this.isHttpVideoUrl(normalizedNestedValue) && this.isVideoUrl(normalizedNestedValue)) {
+              return normalizedNestedValue
             }
           }
         }
       }
     }
     return url
+  }
+
+  private normalizeCandidateUrl(url: string): string {
+    let normalized = url.trim().replace(/\\\//g, '/')
+    const match = normalized.match(/^(https?:\/\/)([^\/?#]+)([\/?#].*)?$/)
+    if (match === null) {
+      return normalized
+    }
+    const protocol = match[1]
+    const host = match[2]
+    const suffix = match[3] === undefined ? '' : match[3]
+    const concatenatedHost = host.match(/\.(com|net|org|cn|top|xyz|tv)((?:v|lf|vkce|vkc|fev|febo)\d*[-a-z0-9]*\..+)$/i)
+    if (concatenatedHost !== null) {
+      const repaired = protocol + concatenatedHost[2] + suffix
+      logger.warn('repair concatenated media host: %{public}s -> %{public}s',
+        normalized.substring(0, 100), repaired.substring(0, 100))
+      return repaired
+    }
+    return normalized
   }
 
   private decodeUrlParam(value: string): string {

@@ -11,9 +11,10 @@ import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { EpisodeData } from '../../models/EpisodeData'
 import { HistoryStore } from '../../store/HistoryStore'
 import { HistoryRecord } from '../../models/HistoryRecord'
+import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { ThemeColorStore } from '../../services/ThemeColorStore'
 import { Logger } from '../../utils/Logger'
-import { LengthMetrics, router } from '@kit.ArkUI'
+import { LengthMetrics, promptAction, router } from '@kit.ArkUI'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -96,6 +97,7 @@ export struct DetailPage {
   private ruleSourceId: number = -1
   private collectController: CollectController = new CollectController()
   private historyStore: HistoryStore = new HistoryStore()
+  private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private contentScroller: Scroller = new Scroller()
   private sourceSheetSnapshot: SourceSheetSnapshot | null = null
 
@@ -131,7 +133,7 @@ export struct DetailPage {
 
     if (this.autoOpenSourceSheet) {
       setTimeout(() => {
-        this.showSourceSheet = true
+        this.openSourceSheetIfRulesAvailable()
       }, 300)
     }
 
@@ -147,6 +149,20 @@ export struct DetailPage {
       logger.info('DetailPage restored from player, keep source sheet visible')
       this.preserveSourceSheetOnDisappear = false
       this.showSourceSheet = true
+    }
+  }
+
+  private async openSourceSheetIfRulesAvailable(): Promise<void> {
+    try {
+      const enabledRules = await this.ruleSourceStore.getEnabled()
+      if (enabledRules.length === 0) {
+        promptAction.showToast({ message: '请前往规则仓库导入规则' })
+        return
+      }
+      this.showSourceSheet = true
+    } catch (err) {
+      logger.error('Check rule source before opening source sheet failed: %{public}s', JSON.stringify(err))
+      promptAction.showToast({ message: '请前往规则仓库导入规则' })
     }
   }
 
@@ -193,7 +209,7 @@ export struct DetailPage {
         bottomSafeHeight: this.bottomSafeHeight,
         onPlay: () => {
           logger.info('Open source sheet from floating play button')
-          this.showSourceSheet = true
+          this.openSourceSheetIfRulesAvailable()
         }
       })
 

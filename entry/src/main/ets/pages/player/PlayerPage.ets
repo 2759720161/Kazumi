@@ -30,8 +30,10 @@ import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker
 import { CastEventCallbacks, CastMediaInfo, CastSessionManager } from '../../services/CastSessionManager'
 import { HistorySyncService } from '../../services/HistorySyncService'
 import { PiPCallbacks, PiPManager } from '../../services/PiPManager'
+import { TypeNodePiPRoute, TypeNodePiPSession } from '../../services/TypeNodePiPSession'
+import { PlaybackSessionActions, PlaybackSessionStore } from '../../services/PlaybackSessionStore'
 import { Logger } from '../../utils/Logger'
-import { router, window, PiPWindow } from '@kit.ArkUI'
+import { router, window, PiPWindow, promptAction } from '@kit.ArkUI'
 import { audio } from '@kit.AudioKit'
 import { common } from '@kit.AbilityKit'
 import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
@@ -43,6 +45,10 @@ import {
   PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
 } from '../../utils/PlayerAutoFullscreen'
+import {
+  PLAYER_AUTO_PIP_DEFAULT,
+  PREFS_KEY_PLAYER_AUTO_PIP
+} from '../../utils/PlayerAutoPiP'
 import { ContinuationPlayerParams, ContinuationState } from '../../utils/ContinuationState'
 
 const logger = new Logger('PlayerPage')
@@ -73,6 +79,7 @@ export struct PlayerPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('keyboardAvoidHeight') keyboardAvoidHeight: number = 0
+  @StorageLink('appInForeground') @Watch('onAppForegroundChanged') appInForeground: boolean = true
   @StorageLink('danmakuSettingsVersion') @Watch('onDanmakuSettingsVersionChanged') danmakuSettingsVersion: number = 0
   @State videoUrl: string = ''
   @State animeName: string = ''
@@ -99,6 +106,7 @@ export struct PlayerPage {
   @State sniffStatus: string = 'idle'
   @State sniffMessage: string = ''
   @State sniffRetryCount: number = 0
+  @State isEpisodeSwitching: boolean = false
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
   @State webviewReady: boolean = false
   @State backgroundWebviewReady: boolean = false
@@ -109,6 +117,7 @@ export struct PlayerPage {
   @State private videoWidth: number = 0
   @State private videoHeight: number = 0
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
   private playerEngine: IPlayerEngine | null = null
   private xComponentController: XComponentController | null = null
   @State hasEngine: boolean = false
@@ -144,6 +153,7 @@ export struct PlayerPage {
   private sourceResolver: VideoSourceResolver = new VideoSourceResolver()
   private castSessionManager: CastSessionManager = CastSessionManager.getInstance()
   private pipManager: PiPManager = PiPManager.getInstance()
+  private playbackSessionStore: PlaybackSessionStore = PlaybackSessionStore.getInstance()
   private logListener: ((event: ResolveLogEvent) => void) | null = null
   private webController: webview.WebviewController = new webview.WebviewController()
   private backgroundWebController: webview.WebviewController = new webview.WebviewController()
@@ -187,15 +197,33 @@ export struct PlayerPage {
   private mediaVolumeMinLevel: number = -1
   private mediaVolumeMaxLevel: number = -1
   private fullscreenRestoreOrientation: window.Orientation = window.Orientation.UNSPECIFIED
+  private readonly AUTO_FULLSCREEN_SETTLE_MS: number = 900
   private autoFullscreenActive: boolean = false
+  private autoFullscreenEnterMs: number = 0
+  private autoFullscreenExitCheckPending: boolean = false
   private lastPlayerAreaWidth: number = 0
   private lastPlayerAreaHeight: number = 0
   private isPageAlive: boolean = false
+  private keepPlaybackForPiP: boolean = false
+  private isRestoringFromPiP: boolean = false
+  private isLeavingWithPiP: boolean = false
+  private pendingAutoEnterPiP: boolean = false
+  private playerStateDiagSeq: number = 0
+  private lastPlayerStateDiagName: string = ''
+  private lastPlayerStateDiagPlaying: boolean = false
+  private lastPlayerStateDiagBucket: number = -1
+  private lastPlayerStateDiagMs: number = 0
+  private lastPlaybackSessionSyncMs: number = 0
+  private lastPlaybackSessionStateName: string = ''
+  private lastPlaybackSessionPlaying: boolean = false
+  private lastPlaybackSessionPositionMs: number = -1
+  private lastPlaybackSessionDurationMs: number = -1
   @State isAnimatingFullscreen: boolean = false
   @State nonVideoOpacity: number = 1
 
   aboutToAppear(): void {
     this.isPageAlive = true
+    AppStorage.setOrCreate('playerPageActive', true)
     this.danmakuManager = new DanmakuManager()
     this.danmakuManager.init().then(() => {
       if (this.isPageAlive && this.danmakuManager !== null) {
@@ -225,6 +253,9 @@ export struct PlayerPage {
       if (params['coverFallback'] !== undefined) this.coverFallback = params['coverFallback'] as string
       if (params['animeDesc'] !== undefined) this.animeDesc = params['animeDesc'] as string
       if (params['sourceName'] !== undefined) this.sourceName = params['sourceName'] as string
+      if (params['resumeTypeNodePiP'] !== undefined) {
+        this.pendingAutoEnterPiP = params['resumeTypeNodePiP'] as boolean
+      }
     }
 
     if (this.roads.length > 0 && this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
@@ -264,6 +295,7 @@ export struct PlayerPage {
       this.ruleSourceId, String(this.pendingSniff))
 
     this.initializeCastSession()
+    this.registerPlaybackSessionActions()
     this.initializePiP()
     this.loadSystemMediaVolume()
     this.startAutoHideTimer()
@@ -274,10 +306,24 @@ export struct PlayerPage {
     }).catch((_err: Error) => {
       this.applyPlayerAutoFullscreenRuntimeState()
     })
+    this.loadPlayerAutoPiPPreference()
     this.episodeGridColumns = this.getEpisodeGridColumns()
   }
 
   aboutToDisappear(): void {
+    AppStorage.setOrCreate('playerPageActive', false)
+    if (this.shouldKeepPlaybackForPiP()) {
+      this.setKeepScreenOn(false)
+      this.saveHistory()
+      this.pauseAutoHideTimer()
+      this.clearHudTimer()
+      this.clearBrightnessApplyTimer()
+      this.clearVolumeApplyTimer()
+      this.clearDanmakuSettingsReloadTimer()
+      logger.info('PlayerPage aboutToDisappear skipped release for PiP')
+      return
+    }
+    this.playbackSessionStore.reset('player')
     this.isPageAlive = false
     this.setKeepScreenOn(false)
     this.saveHistory()
@@ -305,7 +351,38 @@ export struct PlayerPage {
     this.pipManager.destroyPiP()
   }
 
-  onBackPress(): boolean {
+  private onAppForegroundChanged(): void {
+    if (this.appInForeground) {
+      return
+    }
+    this.pauseForApplicationBackground()
+  }
+
+  private pauseForApplicationBackground(): void {
+    if (!this.isPageAlive || this.shouldKeepPlaybackForPiP()) {
+      return
+    }
+    this.saveHistory()
+    if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+      logger.info('PlayerPage pause playback for app background')
+      this.playerEngine.pause()
+      this.isPlaying = false
+      this.pauseAutoHideTimer()
+    }
+  }
+
+  private shouldKeepPlaybackForPiP(): boolean {
+    return this.keepPlaybackForPiP || this.isPiPActive || this.pipManager.isActive() || this.pipManager.isCreating()
+  }
+
+  private showPiPBackBlockedToast(): void {
+    try {
+      promptAction.showToast({ message: '画中画启动失败' })
+    } catch (_err) {
+    }
+  }
+
+  private handleBackFromPlayer(): boolean {
     if (this.isAnimatingFullscreen) {
       return true
     }
@@ -314,6 +391,133 @@ export struct PlayerPage {
       return true
     }
     return false
+  }
+
+  private async leavePlayerWithPiP(): Promise<void> {
+    if (this.handleBackFromPlayer()) {
+      return
+    }
+    if (!this.canLeaveWithTypeNodePiP()) {
+      router.back()
+      return
+    }
+    if (this.isLeavingWithPiP) {
+      return
+    }
+    this.isLeavingWithPiP = true
+    if (!TypeNodePiPSession.getInstance().isRunning() && this.hasEngine) {
+      const started = await this.startTypeNodePiPForLeaving()
+      if (!started) {
+        this.showPiPBackBlockedToast()
+        this.isLeavingWithPiP = false
+        return
+      }
+    }
+    if (!this.handleBackFromPlayer()) {
+      router.back()
+    }
+  }
+
+  onBackPress(): boolean {
+    if (this.handleBackFromPlayer()) {
+      return true
+    }
+    if (this.shouldAutoLeaveWithTypeNodePiP()) {
+      this.leavePlayerWithPiP()
+    } else {
+      this.leavePlayerNormally()
+    }
+    return true
+  }
+
+  private leavePlayerNormally(): void {
+    if (this.handleBackFromPlayer()) {
+      return
+    }
+    router.back()
+  }
+
+  private canLeaveWithTypeNodePiP(): boolean {
+    const url = this.videoUrl.length > 0 ? this.videoUrl : this.playbackOptions.url
+    if (url.length === 0) {
+      return false
+    }
+    if (this.sniffStatus !== 'success' && this.sniffStatus !== 'idle') {
+      return false
+    }
+    return this.hasEngine
+  }
+
+  private shouldAutoLeaveWithTypeNodePiP(): boolean {
+    return this.playerAutoPiP && this.canLeaveWithTypeNodePiP()
+  }
+
+  private async startTypeNodePiPForLeaving(): Promise<boolean> {
+    const route = new TypeNodePiPRoute()
+    route.url = 'pages/player/PlayerPage'
+    route.params = this.buildContinuationRouteParams()
+    route.params['historyPositionMs'] = this.positionMs
+
+    const options = this.cloneCurrentPlaybackOptions()
+    options.startPositionMs = this.positionMs
+    // Same-session PiP restore should reuse the resolved stream instead of sniffing the episode page again.
+    route.params['videoUrl'] = options.url
+    const context = getContext(this) as common.UIAbilityContext
+    const contentWidth = this.videoWidth > 0 ? this.videoWidth : 1920
+    const contentHeight = this.videoHeight > 0 ? this.videoHeight : 1080
+    return TypeNodePiPSession.getInstance().start(
+      context,
+      this.getUIContext(),
+      options,
+      route,
+      contentWidth,
+      contentHeight,
+      contentWidth > contentHeight ? 2 : 1,
+      this.isPlaying
+    )
+  }
+
+  private buildContinuationRouteParams(): Record<string, Object> {
+    const source = this.buildContinuationParams()
+    const params: Record<string, Object> = {}
+    params['videoUrl'] = source.videoUrl
+    params['episodeUrl'] = source.episodeUrl
+    params['ruleSourceId'] = source.ruleSourceId
+    params['animeName'] = source.animeName
+    params['episodeName'] = source.episodeName
+    params['animeId'] = source.animeId
+    params['animeCover'] = source.animeCover
+    params['animeUrl'] = source.animeUrl
+    params['sourceId'] = source.sourceId
+    params['episodesJson'] = source.episodesJson
+    params['currentEpisodeIndex'] = source.currentEpisodeIndex
+    params['roadsJson'] = source.roadsJson
+    params['selectedRoadIndex'] = source.selectedRoadIndex
+    params['bangumiId'] = source.bangumiId
+    params['bangumiCover'] = source.bangumiCover
+    params['coverFallback'] = source.coverFallback
+    params['animeDesc'] = source.animeDesc
+    params['sourceName'] = source.sourceName
+    params['historyPositionMs'] = source.historyPositionMs
+    return params
+  }
+
+  private cloneCurrentPlaybackOptions(): PlaybackOptions {
+    const cloned = new PlaybackOptions()
+    cloned.url = this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUrl
+    cloned.startPositionMs = this.playbackOptions.startPositionMs
+    cloned.referer = this.playbackOptions.referer
+    cloned.userAgent = this.playbackOptions.userAgent
+    cloned.proxy = this.playbackOptions.proxy
+    cloned.streamMetadata = this.playbackOptions.streamMetadata
+    cloned.isLocalFile = this.playbackOptions.isLocalFile
+    cloned.localFileSize = this.playbackOptions.localFileSize
+    const keys = Object.keys(this.playbackOptions.headers)
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      cloned.headers[key] = this.playbackOptions.headers[key]
+    }
+    return cloned
   }
 
   build() {
@@ -602,9 +806,10 @@ export struct PlayerPage {
 
   @Builder
   private VideoLayerContent() {
-      if (this.sniffStatus === 'sniffing') {
+      if (this.videoUrl.length === 0 && this.sniffStatus === 'sniffing') {
         this.SniffingOverlay()
-      } else if (this.sniffStatus === 'error' || this.sniffStatus === 'timeout' || this.sniffStatus === 'captcha') {
+      } else if (this.videoUrl.length === 0 &&
+        (this.sniffStatus === 'error' || this.sniffStatus === 'timeout' || this.sniffStatus === 'captcha')) {
         SniffErrorOverlay({
           status: this.sniffStatus,
           message: this.sniffMessage,
@@ -613,7 +818,7 @@ export struct PlayerPage {
             this.startSniffing()
           },
           onBack: () => {
-            router.back()
+            this.leavePlayerNormally()
           }
         })
       } else {
@@ -622,6 +827,7 @@ export struct PlayerPage {
           playbackOptions: this.playbackOptions,
           fillParent: this.isFullScreen,
           aspectMode: this.currentAspectMode,
+          keepAliveOnDisappear: this.shouldKeepPlaybackForPiP(),
           onStateChange: (state: PlayerState) => {
             this.handlePlayerState(state)
           },
@@ -674,6 +880,22 @@ export struct PlayerPage {
 
         if (this.shouldShowPlayerLoadingOverlay()) {
           this.PlayerLoadingOverlay()
+        }
+
+        if (this.sniffStatus === 'sniffing') {
+          this.SniffingOverlay()
+        } else if (this.sniffStatus === 'error' || this.sniffStatus === 'timeout' || this.sniffStatus === 'captcha') {
+          SniffErrorOverlay({
+            status: this.sniffStatus,
+            message: this.sniffMessage,
+            retryCount: this.sniffRetryCount,
+            onRetry: () => {
+              this.startSniffing()
+            },
+            onBack: () => {
+              this.leavePlayerNormally()
+            }
+          })
         }
       }
 
@@ -840,8 +1062,10 @@ export struct PlayerPage {
       .onClick(() => {
         if (this.isFullScreen) {
           this.toggleFullScreen()
+        } else if (this.shouldAutoLeaveWithTypeNodePiP()) {
+          this.leavePlayerWithPiP()
         } else {
-          router.back()
+          this.leavePlayerNormally()
         }
       })
 
@@ -1027,13 +1251,19 @@ export struct PlayerPage {
         .padding({ left: 22, right: 14, top: 10, bottom: 8 })
         .alignItems(VerticalAlign.Center)
 
-        Column({ space: 10 }) {
-          ForEach(this.speedOptions, (item: number, index?: number) => {
-            this.SpeedOptionRow(item, index)
-          }, (item: number) => `player_speed_${item}`)
+        Scroll() {
+          Column({ space: 10 }) {
+            ForEach(this.speedOptions, (item: number, index?: number) => {
+              this.SpeedOptionRow(item, index)
+            }, (item: number) => `player_speed_${item}`)
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 8, bottom: this.bottomSafeHeight + 24 })
         }
         .width('100%')
-        .padding({ left: 16, right: 16, top: 8, bottom: this.bottomSafeHeight + 24 })
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .align(Alignment.Top)
       }
       .width(this.getSpeedSidePanelWidth())
       .height('100%')
@@ -1436,7 +1666,7 @@ export struct PlayerPage {
   private PiPToolButton() {
     if (PiPManager.isPiPSupported() && this.hasEngine) {
       this.ImageToolButton($r('app.media.ic_pip'), '画中画', () => {
-        this.startPiP()
+        this.leavePlayerWithPiP()
       })
     }
   }
@@ -1900,12 +2130,12 @@ export struct PlayerPage {
       Text(this.episodeReverseOrder ? '倒序' : '正序')
         .fontSize(13)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_hint'))
+        .fontColor($r('app.color.text_on_primary'))
     }
     .height(32)
     .padding({ left: 12, right: 12 })
     .borderRadius(16)
-    .backgroundColor($r('app.color.episode_item_selected_bg'))
+    .backgroundColor($r('app.color.accent_blue'))
     .margin({ left: 8 })
     .onClick(() => {
       this.episodeReverseOrder = !this.episodeReverseOrder
@@ -1973,12 +2203,12 @@ export struct PlayerPage {
           .width(42)
           .height(42)
           .color($r('app.color.accent_blue_light'))
-        Text('正在嗅探播放地址')
+        Text(this.isEpisodeSwitching ? '正在切换播放集' : '正在嗅探播放地址')
           .fontSize(17)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_on_primary'))
           .margin({ top: 16 })
-        Text('正在从当前线路提取可播放视频流')
+        Text(this.isEpisodeSwitching ? '当前画面会保持显示，找到新地址后自动切换' : '正在从当前线路提取可播放视频流')
           .fontSize(12)
           .fontColor('#BFFFFFFF')
           .margin({ top: 6 })
@@ -1998,7 +2228,7 @@ export struct PlayerPage {
     }
     .width('100%')
     .height('100%')
-    .zIndex(1)
+    .zIndex(5)
   }
 
   @Builder
@@ -2290,6 +2520,8 @@ export struct PlayerPage {
       if (preparedResult !== null && preparedResult.isPlayable()) {
         logger.info('Use prepared video source for episodeUrl=%{public}s',
           this.episodeUrl.length > 40 ? this.episodeUrl.substring(0, 40) + '...' : this.episodeUrl)
+        logger.warn('CrashDiag sniff using prepared result: episodeHash=%{public}s videoHash=%{public}s type=%{public}s',
+          this.shortHash(this.episodeUrl), this.shortHash(preparedResult.videoUrl), preparedResult.videoType)
         await this.handleSniffResult(preparedResult)
         return
       }
@@ -2298,6 +2530,7 @@ export struct PlayerPage {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logger.error('Sniff failed: %{public}s', msg)
+      this.isEpisodeSwitching = false
       this.sniffStatus = 'error'
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
@@ -2312,43 +2545,61 @@ export struct PlayerPage {
     }
 
     if (result.isPlayable()) {
+      logger.warn('CrashDiag handleSniffResult playable begin: episodeHash=%{public}s videoHash=%{public}s type=%{public}s duration=%{public}dms',
+        this.shortHash(this.episodeUrl), this.shortHash(result.videoUrl), result.videoType, result.sniffDurationMs)
       const request = new VideoSourceRequest()
       request.episodeUrl = this.episodeUrl
       request.ruleSourceId = this.ruleSourceId
+      const optionsStartMs = Date.now()
       const options = await this.sourceResolver.buildPlaybackOptionsWithRule(result, request)
+      logger.warn('CrashDiag handleSniffResult options built: elapsed=%{public}dms refererLen=%{public}d headerCount=%{public}d',
+        Date.now() - optionsStartMs, options.referer.length, Object.keys(options.headers).length)
 
       // [REQ-TSX-001] PlayerSurface reacts to videoUrl changes, so options must be ready first.
+      logger.warn('CrashDiag handleSniffResult keep sniffer webview begin')
       this.keepSnifferWebViewForPool()
+      logger.warn('CrashDiag handleSniffResult assign playbackOptions begin')
       if (this.historySeekMs > 0) {
         options.startPositionMs = this.historySeekMs
         this.historySeekMs = -1
       }
       this.playbackOptions = options
+      logger.warn('CrashDiag handleSniffResult assign videoUrl begin: videoHash=%{public}s',
+        this.shortHash(result.videoUrl))
       this.videoUrl = result.videoUrl
+      this.isEpisodeSwitching = false
       this.isPlayerLoading = true
       this.isPlayerBuffering = false
       this.sniffStatus = 'success'
+      logger.warn('CrashDiag handleSniffResult syncCastMediaInfo begin')
       this.syncCastMediaInfo()
       logger.info('Sniff success: %{public}s [%{public}s] in %{public}dms',
         result.videoUrl.substring(0, 80), result.videoType, result.sniffDurationMs)
+      logger.warn('CrashDiag handleSniffResult saveHistory begin')
       await this.saveHistory()
+      logger.warn('CrashDiag handleSniffResult prepareNext begin')
       this.prepareNextEpisode()
+      logger.warn('CrashDiag handleSniffResult playable end')
     } else if (result.errorCode === ResolveErrorCode.Captcha) {
+      this.isEpisodeSwitching = false
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
       this.sniffStatus = 'captcha'
       this.sniffMessage = result.errorMessage
     } else if (result.errorCode === ResolveErrorCode.Timeout) {
+      this.isEpisodeSwitching = false
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
       this.sniffStatus = 'timeout'
       this.sniffMessage = result.errorMessage
     } else if (result.errorCode === ResolveErrorCode.Network) {
+      this.isEpisodeSwitching = false
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
       this.sniffStatus = 'error'
       this.sniffMessage = result.errorMessage.length > 0 ? result.errorMessage : '网络错误'
     } else {
+      this.isEpisodeSwitching = false
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
       this.sniffStatus = 'error'
@@ -2461,6 +2712,29 @@ export struct PlayerPage {
     if (!this.isPageAlive) {
       return
     }
+    // Keep the old frame visible while the next episode is being resolved.
+    // Ignore its callbacks so the old engine cannot overwrite the new episode's
+    // position, duration, or error state during the handoff.
+    if (this.isEpisodeSwitching) {
+      return
+    }
+    const seq = ++this.playerStateDiagSeq
+    const stateStartMs = Date.now()
+    const bucket = Math.floor(state.positionMs / 1000)
+    const stateChanged = state.stateName !== this.lastPlayerStateDiagName ||
+      state.playing !== this.lastPlayerStateDiagPlaying ||
+      Math.abs(bucket - this.lastPlayerStateDiagBucket) >= 2 ||
+      state.error.length > 0
+    const diagNow = Date.now()
+    const shouldLog = stateChanged || seq % 30 === 0 || diagNow - this.lastPlayerStateDiagMs >= 1000
+    if (shouldLog) {
+      this.lastPlayerStateDiagName = state.stateName
+      this.lastPlayerStateDiagPlaying = state.playing
+      this.lastPlayerStateDiagBucket = bucket
+      this.lastPlayerStateDiagMs = diagNow
+      logger.warn('CrashDiag PlayerPage state begin: seq=%{public}d name=%{public}s playing=%{public}s pos=%{public}d dur=%{public}d errLen=%{public}d',
+        seq, state.stateName, String(state.playing), state.positionMs, state.durationMs, state.error.length)
+    }
     this.isPlaying = state.playing
     this.updatePlayerLoadingState(state)
     this.isPlayerBuffering = this.resolvePlayerBufferingState(state)
@@ -2474,7 +2748,15 @@ export struct PlayerPage {
       this.speed = state.speed
       this.speedLabel = this.formatSpeedLabel(state.speed)
     }
-    this.castSessionManager.updatePlaybackState(state.positionMs, state.playing)
+    if (this.shouldSyncPlaybackSessionState(state)) {
+      const sessionStartMs = Date.now()
+      this.playbackSessionStore.updatePlayerState(state, 'player')
+      const playbackStoreElapsed = Date.now() - sessionStartMs
+      if (shouldLog || playbackStoreElapsed >= 50) {
+        logger.warn('CrashDiag PlayerPage state session sync: seq=%{public}d playbackStoreElapsed=%{public}dms',
+          seq, playbackStoreElapsed)
+      }
+    }
     if (state.durationMs > 0) {
       this.castSessionManager.updateDuration(state.durationMs)
     }
@@ -2496,6 +2778,14 @@ export struct PlayerPage {
 
     if (state.stateName === 'playing') {
       this.playbackRetryCount = 0
+      if (this.pendingAutoEnterPiP && !this.isLeavingWithPiP) {
+        this.pendingAutoEnterPiP = false
+        setTimeout(() => {
+          if (this.isPageAlive && this.hasEngine && !this.isLeavingWithPiP) {
+            this.leavePlayerWithPiP()
+          }
+        }, 180)
+      }
     }
 
     if (state.stateName === 'error' && state.error.length > 0) {
@@ -2534,6 +2824,11 @@ export struct PlayerPage {
     if (now - this.lastHistoryUpdateMs > 5000) {
       this.saveHistory()
       this.lastHistoryUpdateMs = now
+    }
+    const elapsed = Date.now() - stateStartMs
+    if (shouldLog || elapsed >= 50) {
+      logger.warn('CrashDiag PlayerPage state end: seq=%{public}d elapsed=%{public}dms',
+        seq, elapsed)
     }
   }
 
@@ -2645,6 +2940,32 @@ export struct PlayerPage {
     if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedPanel && this.selectedPanelTab !== 1) {
       this.startAutoHideTimer()
     }
+  }
+
+  private shouldSyncPlaybackSessionState(state: PlayerState): boolean {
+    const now = Date.now()
+    const stateChanged = state.stateName !== this.lastPlaybackSessionStateName ||
+      state.playing !== this.lastPlaybackSessionPlaying ||
+      state.completed ||
+      state.error.length > 0
+    const positionChanged = this.lastPlaybackSessionPositionMs < 0 ||
+      Math.abs(state.positionMs - this.lastPlaybackSessionPositionMs) >= 1000
+    const durationChanged = state.durationMs > 0 &&
+      Math.abs(state.durationMs - this.lastPlaybackSessionDurationMs) >= 1000
+    const timedSync = now - this.lastPlaybackSessionSyncMs >= 1000
+
+    if (!stateChanged && !durationChanged && (!positionChanged || !timedSync)) {
+      return false
+    }
+
+    this.lastPlaybackSessionSyncMs = now
+    this.lastPlaybackSessionStateName = state.stateName
+    this.lastPlaybackSessionPlaying = state.playing
+    this.lastPlaybackSessionPositionMs = state.positionMs
+    if (state.durationMs > 0) {
+      this.lastPlaybackSessionDurationMs = state.durationMs
+    }
+    return true
   }
 
   private startAutoHideTimer(): void {
@@ -3064,6 +3385,8 @@ export struct PlayerPage {
     this.isAnimatingFullscreen = true
     this.suppressControlAnimation = true
     this.autoFullscreenActive = false
+    this.autoFullscreenEnterMs = 0
+    this.autoFullscreenExitCheckPending = false
     this.isControlVisible = true
     this.showMoreMenu = false
     this.showAspectModePanel = false
@@ -3150,6 +3473,19 @@ export struct PlayerPage {
     }
   }
 
+  private async loadPlayerAutoPiPPreference(): Promise<void> {
+    try {
+      this.playerAutoPiP = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_PLAYER_AUTO_PIP,
+        PLAYER_AUTO_PIP_DEFAULT
+      )
+      AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, this.playerAutoPiP)
+    } catch (_err) {
+      this.playerAutoPiP = PLAYER_AUTO_PIP_DEFAULT
+      AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, PLAYER_AUTO_PIP_DEFAULT)
+    }
+  }
+
   private applyPlayerAutoFullscreenRuntimeState(): void {
     this.setAutoRotationEnabled(this.playerAutoFullscreen)
     if (this.playerAutoFullscreen && this.lastPlayerAreaWidth > 0 && this.lastPlayerAreaHeight > 0) {
@@ -3178,7 +3514,40 @@ export struct PlayerPage {
     if (width > height && !this.isFullScreen) {
       this.enterAutoFullscreen()
     } else if (height >= width && this.isFullScreen && this.autoFullscreenActive) {
+      if (this.isAutoFullscreenSettling()) {
+        return
+      }
+      this.confirmAutoFullscreenExit(width, height)
+    }
+  }
+
+  private isAutoFullscreenSettling(): boolean {
+    return this.autoFullscreenActive && this.autoFullscreenEnterMs > 0 &&
+      Date.now() - this.autoFullscreenEnterMs < this.AUTO_FULLSCREEN_SETTLE_MS
+  }
+
+  private async confirmAutoFullscreenExit(areaWidth: number, areaHeight: number): Promise<void> {
+    if (this.autoFullscreenExitCheckPending) {
+      return
+    }
+    this.autoFullscreenExitCheckPending = true
+    try {
+      const context = getContext(this)
+      const mainWindow = await window.getLastWindow(context)
+      const rect = mainWindow.getWindowProperties().windowRect
+      if (rect.width > rect.height) {
+        logger.info('Ignore auto fullscreen exit while window is landscape: area=%{public}dx%{public}d window=%{public}dx%{public}d',
+          Math.round(areaWidth), Math.round(areaHeight), rect.width, rect.height)
+        return
+      }
+      logger.info('Confirm auto fullscreen exit: area=%{public}dx%{public}d window=%{public}dx%{public}d',
+        Math.round(areaWidth), Math.round(areaHeight), rect.width, rect.height)
       this.exitAutoFullscreen()
+    } catch (_err) {
+      logger.warn('Confirm auto fullscreen exit fallback: %{public}s', _err instanceof Error ? _err.message : String(_err))
+      this.exitAutoFullscreen()
+    } finally {
+      this.autoFullscreenExitCheckPending = false
     }
   }
 
@@ -3188,6 +3557,8 @@ export struct PlayerPage {
     }
     this.isAnimatingFullscreen = true
     this.autoFullscreenActive = true
+    this.autoFullscreenEnterMs = Date.now()
+    this.autoFullscreenExitCheckPending = false
     this.suppressControlAnimation = true
     this.isControlVisible = true
     this.showMoreMenu = false
@@ -3218,6 +3589,8 @@ export struct PlayerPage {
     }
     this.isAnimatingFullscreen = true
     this.autoFullscreenActive = false
+    this.autoFullscreenEnterMs = 0
+    this.autoFullscreenExitCheckPending = false
     this.suppressControlAnimation = true
     this.setFullScreenMode(false)
     this.setAutoRotationEnabled(true)
@@ -3358,14 +3731,18 @@ export struct PlayerPage {
     const visibleEpisodes = this.getVisibleEpisodes()
     if (index >= 0 && index < visibleEpisodes.length) {
       this.saveHistory()
+      const keepCurrentVideo = this.hasEngine && this.videoUrl.length > 0
+      this.isEpisodeSwitching = keepCurrentVideo
       this.stopBeforeSniff()
       this.selectedRoadIndex = this.visibleRoadIndex
       this.episodes = this.toEpisodePanelItems(this.roads[this.visibleRoadIndex])
       this.currentEpisodeIndex = index
       this.episodeName = visibleEpisodes[index].name
       this.episodeUrl = visibleEpisodes[index].url
-      this.videoUrl = ''
-      this.syncCastMediaInfo()
+      if (!keepCurrentVideo) {
+        this.videoUrl = ''
+        this.syncCastMediaInfo()
+      }
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
       this.positionMs = 0
@@ -3389,11 +3766,9 @@ export struct PlayerPage {
   }
 
   private stopBeforeSniff(): void {
-    if (this.hasEngine && this.playerEngine !== null) {
-      this.playerEngine.stop()
-      this.hasEngine = false
-      this.isPlaying = false
-    }
+    // Keep the current player surface alive during episode resolution. Once
+    // playback options for the new episode arrive, PlayerSurface replaces the
+    // engine through its normal target-change path.
     this.sourceResolver.cancel()
     this.pendingSniff = false
     this.syncCastMediaInfo()
@@ -3605,6 +3980,39 @@ export struct PlayerPage {
     })
   }
 
+  private registerPlaybackSessionActions(): void {
+    const actions = new PlaybackSessionActions()
+    actions.onPlay = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+    }
+    actions.onPause = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+      }
+    }
+    actions.onSeek = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    actions.onFastForward = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    actions.onRewind = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    actions.onNext = () => {
+      this.playNextEpisode()
+    }
+    actions.onPrevious = () => {
+      this.playPreviousEpisode()
+    }
+    this.playbackSessionStore.setActions(actions, 'player')
+    this.syncPlaybackSessionMedia()
+  }
+
   private buildCastCallbacks(): CastEventCallbacks {
     const callbacks = new CastEventCallbacks()
     callbacks.onPlay = () => {
@@ -3664,6 +4072,7 @@ export struct PlayerPage {
   private syncCastMediaInfo(): void {
     if (this.videoUrl.length === 0 || this.playbackOptions.isLocalFile) {
       this.castSessionManager.setCastSupported(false)
+      this.syncPlaybackSessionMedia()
       return
     }
 
@@ -3678,9 +4087,27 @@ export struct PlayerPage {
     info.hasPrevious = this.hasPreviousEpisode()
     this.castSessionManager.updateMedia(info)
     this.castSessionManager.setCastSupported(true)
+    this.syncPlaybackSessionMedia()
     if (this.pipManager.isActive()) {
       this.pipManager.setNextPreviousEnabled(this.hasNextEpisode(), this.hasPreviousEpisode())
     }
+  }
+
+  private syncPlaybackSessionMedia(): void {
+    const url = this.videoUrl.length > 0 ? this.videoUrl : this.playbackOptions.url
+    if (url.length === 0) {
+      return
+    }
+    this.playbackSessionStore.updateMedia(url,
+      this.animeName.length > 0 ? this.animeName : this.buildPlayerTitle(),
+      this.episodeName,
+      this.getCastCover(),
+      this.durationMs,
+      this.positionMs,
+      this.hasNextEpisode(),
+      this.hasPreviousEpisode(),
+      this.playbackOptions.isLocalFile,
+      'player')
   }
 
   private getCastCover(): string {
@@ -3700,13 +4127,13 @@ export struct PlayerPage {
     this.pipManager.setCallbacks(this.buildPiPCallbacks())
   }
 
-  private async startPiP(): Promise<void> {
+  private async startPiP(): Promise<boolean> {
     if (this.pipManager.isActive() || this.pipManager.isCreating()) {
-      return
+      return true
     }
     if (this.xComponentController === null) {
       logger.warn('PiP: XComponentController not available')
-      return
+      return false
     }
     if (this.isFullScreen) {
       this.toggleFullScreen()
@@ -3724,10 +4151,13 @@ export struct PlayerPage {
       context, this.xComponentController, contentWidth, contentHeight, controlGroups,
       isWideContent ? 2 : 1)
     if (success) {
+      this.keepPlaybackForPiP = true
+      this.isRestoringFromPiP = false
       this.isPiPActive = true
       this.pipManager.updatePlaybackState(this.isPlaying)
       this.pipManager.setNextPreviousEnabled(this.hasNextEpisode(), this.hasPreviousEpisode())
     }
+    return success
   }
 
   private buildPiPCallbacks(): PiPCallbacks {
@@ -3763,6 +4193,9 @@ export struct PlayerPage {
       }
     }
     callbacks.onRestore = () => {
+      this.isPageAlive = true
+      this.keepPlaybackForPiP = false
+      this.isRestoringFromPiP = true
       if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
         this.playerEngine.play()
         this.isPlaying = true
@@ -3770,6 +4203,16 @@ export struct PlayerPage {
       this.isPiPActive = false
     }
     callbacks.onPiPStopped = () => {
+      if (this.isRestoringFromPiP) {
+        this.isRestoringFromPiP = false
+        this.keepPlaybackForPiP = false
+        this.isPiPActive = false
+        return
+      }
+      if (this.keepPlaybackForPiP) {
+        this.stopPlaybackBeforeLeaving()
+      }
+      this.keepPlaybackForPiP = false
       this.isPiPActive = false
     }
     return callbacks
@@ -3817,5 +4260,13 @@ export struct PlayerPage {
     item.desc = this.animeDesc
     item.sourceName = this.sourceName
     return item
+  }
+
+  private shortHash(value: string): string {
+    let hash = 0
+    for (let i = 0; i < value.length; i++) {
+      hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0
+    }
+    return String(value.length) + ':' + String(hash)
   }
 }

@@ -2,6 +2,7 @@ import { avSession } from '@kit.AVSessionKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
 import { Logger } from '../utils/Logger'
+import { PlaybackSessionSnapshot, PlaybackSessionStore } from './PlaybackSessionStore'
 
 const logger = new Logger('CastSessionManager')
 const MEDIA_SKIP_INTERVAL_SECONDS: number = 15
@@ -44,6 +45,14 @@ export class CastSessionManager {
   private isCasting: boolean = false
   private lastStartedAssetId: string = ''
   private lastStartedSubtitle: string = ''
+  private playbackStore: PlaybackSessionStore = PlaybackSessionStore.getInstance()
+  private playbackStoreListenerId: number = -1
+  private isSyncingFromPlaybackStore: boolean = false
+  private isDestroyingSession: boolean = false
+  private playbackStateUpdateSeq: number = 0
+  private lastPlaybackStateDiagMs: number = 0
+  private lastPlaybackStateDiagPlaying: boolean = false
+  private lastPlaybackStateDiagBucket: number = -1
 
   static getInstance(): CastSessionManager {
     if (CastSessionManager.instance === null) {
@@ -68,6 +77,7 @@ export class CastSessionManager {
         requireAbilityList: ['url-cast']
       })
       this.registerSessionListeners()
+      this.subscribePlaybackStore()
       this.isInitialized = true
       logger.info('Video cast session initialized')
     } catch (err) {
@@ -76,13 +86,68 @@ export class CastSessionManager {
   }
 
   async updateMedia(info: CastMediaInfo): Promise<void> {
+    const startMs = Date.now()
     const mediaChanged = info.url !== this.currentMedia.url || info.subtitle !== this.currentMedia.subtitle
+    logger.warn('CrashDiag cast updateMedia begin: changed=%{public}s urlHash=%{public}s pos=%{public}d',
+      String(mediaChanged), this.shortHash(info.url), info.positionMs)
     this.currentMedia = info
     await this.updateSessionMetadata()
     await this.updatePlaybackState(info.positionMs, false)
     if (this.isCasting && this.castController !== null && info.url.length > 0 && mediaChanged) {
       await this.startRemotePlayback(info.positionMs)
     }
+    logger.warn('CrashDiag cast updateMedia end: changed=%{public}s elapsed=%{public}dms',
+      String(mediaChanged), Date.now() - startMs)
+  }
+
+  private subscribePlaybackStore(): void {
+    if (this.playbackStoreListenerId >= 0) {
+      return
+    }
+    this.playbackStoreListenerId = this.playbackStore.subscribe((snapshot: PlaybackSessionSnapshot) => {
+      this.syncFromPlaybackStore(snapshot)
+    })
+  }
+
+  private syncFromPlaybackStore(snapshot: PlaybackSessionSnapshot): void {
+    if (snapshot.url.length === 0 && snapshot.owner.length === 0 && !this.isCasting) {
+      this.destroyVideoSession()
+      return
+    }
+    if (this.session === null || snapshot.url.length === 0) {
+      return
+    }
+    if (snapshot.isLocalFile) {
+      this.setCastSupported(false)
+      return
+    }
+
+    const mediaChanged = snapshot.url !== this.currentMedia.url ||
+      snapshot.subtitle !== this.currentMedia.subtitle ||
+      snapshot.title !== this.currentMedia.title ||
+      snapshot.cover !== this.currentMedia.cover ||
+      Math.abs(snapshot.durationMs - this.currentMedia.durationMs) >= 1000 ||
+      snapshot.hasNext !== this.currentMedia.hasNext ||
+      snapshot.hasPrevious !== this.currentMedia.hasPrevious
+
+    this.currentMedia.url = snapshot.url
+    this.currentMedia.title = snapshot.title
+    this.currentMedia.subtitle = snapshot.subtitle
+    this.currentMedia.cover = snapshot.cover
+    this.currentMedia.durationMs = snapshot.durationMs
+    this.currentMedia.positionMs = snapshot.positionMs
+    this.currentMedia.hasNext = snapshot.hasNext
+    this.currentMedia.hasPrevious = snapshot.hasPrevious
+
+    this.isSyncingFromPlaybackStore = true
+    logger.warn('CrashDiag cast syncFromPlaybackStore: owner=%{public}s mediaChanged=%{public}s playing=%{public}s pos=%{public}d urlHash=%{public}s',
+      snapshot.owner, String(mediaChanged), String(snapshot.playing), snapshot.positionMs, this.shortHash(snapshot.url))
+    const metadataTask = mediaChanged ? this.updateSessionMetadata() : Promise.resolve()
+    metadataTask.then(() => {
+      return this.updatePlaybackState(snapshot.positionMs, snapshot.playing)
+    }).finally(() => {
+      this.isSyncingFromPlaybackStore = false
+    })
   }
 
   async updateDuration(durationMs: number): Promise<void> {
@@ -121,7 +186,25 @@ export class CastSessionManager {
     if (this.session === null) {
       return
     }
+    const seq = ++this.playbackStateUpdateSeq
+    const startMs = Date.now()
+    const bucket = Math.floor(positionMs / 1000)
+    const stateChanged = playing !== this.lastPlaybackStateDiagPlaying ||
+      Math.abs(bucket - this.lastPlaybackStateDiagBucket) >= 2
+    const now = Date.now()
+    const shouldLog = stateChanged || seq % 20 === 0 || now - this.lastPlaybackStateDiagMs >= 1000
+    if (shouldLog) {
+      this.lastPlaybackStateDiagMs = now
+      this.lastPlaybackStateDiagPlaying = playing
+      this.lastPlaybackStateDiagBucket = bucket
+      logger.warn('CrashDiag cast updatePlaybackState begin: seq=%{public}d playing=%{public}s pos=%{public}d syncing=%{public}s',
+        seq, String(playing), positionMs, String(this.isSyncingFromPlaybackStore))
+    }
     this.currentMedia.positionMs = positionMs
+    if (!this.isSyncingFromPlaybackStore) {
+      const owner = this.playbackStore.getSnapshot().owner
+      this.playbackStore.updatePlayback(positionMs, playing, owner.length > 0 ? owner : 'cast')
+    }
     try {
       await this.session.setAVPlaybackState({
         state: playing ? avSession.PlaybackState.PLAYBACK_STATE_PLAY : avSession.PlaybackState.PLAYBACK_STATE_PAUSE,
@@ -130,7 +213,14 @@ export class CastSessionManager {
           updateTime: new Date().getTime()
         }
       })
+      const elapsed = Date.now() - startMs
+      if (shouldLog || elapsed >= 80) {
+        logger.warn('CrashDiag cast updatePlaybackState end: seq=%{public}d elapsed=%{public}dms',
+          seq, elapsed)
+      }
     } catch (err) {
+      logger.warn('CrashDiag cast updatePlaybackState failed: seq=%{public}d elapsed=%{public}dms error=%{public}s',
+        seq, Date.now() - startMs, err instanceof Error ? err.message : String(err))
       logger.debug('updatePlaybackState failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
   }
@@ -159,6 +249,8 @@ export class CastSessionManager {
     this.session.on('play', () => {
       if (this.isCasting) {
         this.sendPlay()
+      } else if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestPlay()
       } else if (this.callbacks.onPlay !== undefined) {
         this.callbacks.onPlay()
       }
@@ -166,6 +258,8 @@ export class CastSessionManager {
     this.session.on('pause', () => {
       if (this.isCasting) {
         this.sendPause()
+      } else if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestPause()
       } else if (this.callbacks.onPause !== undefined) {
         this.callbacks.onPause()
       }
@@ -173,6 +267,8 @@ export class CastSessionManager {
     this.session.on('stop', () => {
       if (this.isCasting) {
         this.sendPause()
+      } else if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestPause()
       } else if (this.callbacks.onPause !== undefined) {
         this.callbacks.onPause()
       }
@@ -180,6 +276,8 @@ export class CastSessionManager {
     this.session.on('seek', (positionMs: number) => {
       if (this.isCasting) {
         this.sendSeek(positionMs)
+      } else if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestSeek(positionMs)
       } else if (this.callbacks.onSeek !== undefined) {
         this.callbacks.onSeek(positionMs)
       }
@@ -188,6 +286,8 @@ export class CastSessionManager {
       const targetPositionMs = this.clampPosition(this.currentMedia.positionMs + MEDIA_SKIP_INTERVAL_MS)
       if (this.isCasting) {
         this.sendFastForward()
+      } else if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestFastForward(targetPositionMs)
       } else if (this.callbacks.onFastForward !== undefined) {
         this.callbacks.onFastForward(targetPositionMs)
       }
@@ -197,6 +297,8 @@ export class CastSessionManager {
       const targetPositionMs = this.clampPosition(this.currentMedia.positionMs - MEDIA_SKIP_INTERVAL_MS)
       if (this.isCasting) {
         this.sendRewind()
+      } else if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestRewind(targetPositionMs)
       } else if (this.callbacks.onRewind !== undefined) {
         this.callbacks.onRewind(targetPositionMs)
       }
@@ -206,12 +308,20 @@ export class CastSessionManager {
       if (!this.currentMedia.hasNext) {
         return
       }
+      if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestNext()
+        return
+      }
       if (this.callbacks.onPlayNext !== undefined) {
         this.callbacks.onPlayNext()
       }
     })
     this.session.on('playPrevious', () => {
       if (!this.currentMedia.hasPrevious) {
+        return
+      }
+      if (this.hasPlaybackStoreOwner()) {
+        this.playbackStore.requestPrevious()
         return
       }
       if (this.callbacks.onPlayPrevious !== undefined) {
@@ -243,6 +353,30 @@ export class CastSessionManager {
         logger.info('Remote cast device disconnected')
       }
     })
+  }
+
+  private unregisterSessionListeners(): void {
+    if (this.session === null) {
+      return
+    }
+    try {
+      this.session.off('play')
+      this.session.off('pause')
+      this.session.off('stop')
+      this.session.off('seek')
+      this.session.off('fastForward')
+      this.session.off('rewind')
+      this.session.off('playNext')
+      this.session.off('playPrevious')
+      this.session.off('outputDeviceChange')
+    } catch (err) {
+      logger.debug('unregisterSessionListeners failed: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private hasPlaybackStoreOwner(): boolean {
+    const owner = this.playbackStore.getSnapshot().owner
+    return owner.length > 0 && owner !== 'cast'
   }
 
   private registerCastControllerListeners(): void {
@@ -286,6 +420,10 @@ export class CastSessionManager {
     if (this.session === null || this.currentMedia.url.length === 0) {
       return
     }
+    const startMs = Date.now()
+    logger.warn('CrashDiag cast updateMetadata begin: urlHash=%{public}s titleLen=%{public}d coverLen=%{public}d duration=%{public}d',
+      this.shortHash(this.currentMedia.url), this.currentMedia.title.length, this.currentMedia.cover.length,
+      this.currentMedia.durationMs)
 
     const metadata: avSession.AVMetadata = {
         assetId: this.currentMedia.url,
@@ -305,7 +443,10 @@ export class CastSessionManager {
 
     try {
       await this.session.setAVMetadata(metadata)
+      logger.warn('CrashDiag cast updateMetadata end: elapsed=%{public}dms', Date.now() - startMs)
     } catch (err) {
+      logger.warn('CrashDiag cast updateMetadata failed: elapsed=%{public}dms error=%{public}s',
+        Date.now() - startMs, err instanceof Error ? err.message : String(err))
       logger.debug('setAVMetadata failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
   }
@@ -396,5 +537,49 @@ export class CastSessionManager {
     } catch (err) {
       logger.debug('stopCasting failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
+  }
+
+  async destroyVideoSession(): Promise<void> {
+    if (this.session === null || this.isDestroyingSession) {
+      return
+    }
+    this.isDestroyingSession = true
+    const sessionToDestroy = this.session
+    try {
+      if (this.isCasting) {
+        try {
+          await sessionToDestroy.stopCasting()
+        } catch (_err) {
+        }
+      }
+      this.unregisterSessionListeners()
+      try {
+        await sessionToDestroy.deactivate()
+      } catch (_err) {
+      }
+      await sessionToDestroy.destroy()
+      logger.info('Video cast session destroyed')
+    } catch (err) {
+      logger.debug('destroyVideoSession failed: %{public}s', err instanceof Error ? err.message : String(err))
+    } finally {
+      this.session = null
+      this.castController = null
+      this.currentMedia = new CastMediaInfo()
+      this.callbacks = new CastEventCallbacks()
+      this.isInitialized = false
+      this.isCasting = false
+      this.lastStartedAssetId = ''
+      this.lastStartedSubtitle = ''
+      this.isSyncingFromPlaybackStore = false
+      this.isDestroyingSession = false
+    }
+  }
+
+  private shortHash(value: string): string {
+    let hash = 0
+    for (let i = 0; i < value.length; i++) {
+      hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0
+    }
+    return String(value.length) + ':' + String(hash)
   }
 }

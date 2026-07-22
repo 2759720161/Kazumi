@@ -38,6 +38,10 @@ import {
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
 } from '../../utils/PlayerAutoFullscreen'
 import {
+  PLAYER_AUTO_PIP_DEFAULT,
+  PREFS_KEY_PLAYER_AUTO_PIP
+} from '../../utils/PlayerAutoPiP'
+import {
   MPV_DETAIL_ENHANCER_ENABLED_DEFAULT,
   MPV_DETAIL_ENHANCER_QUALITY_DEFAULT,
   PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
@@ -124,6 +128,7 @@ export struct SettingsPage {
   @StorageLink(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED) mpvDetailEnhancerEnabled: boolean = MPV_DETAIL_ENHANCER_ENABLED_DEFAULT
   @StorageLink(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY) mpvDetailEnhancerQuality: number = MPV_DETAIL_ENHANCER_QUALITY_DEFAULT
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
   @State snifferTimeout: number = 15
   @State rules: RuleSource[] = []
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
@@ -398,6 +403,18 @@ export struct SettingsPage {
           this.playerAutoFullscreen,
           (isOn: boolean) => {
             this.setPlayerAutoFullscreen(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.template'),
+          '自动开启画中画',
+          '离开播放页时自动转入画中画',
+          this.playerAutoPiP,
+          (isOn: boolean) => {
+            this.setPlayerAutoPiP(isOn)
           }
         )
 
@@ -1126,6 +1143,11 @@ export struct SettingsPage {
         PREFS_KEY_PLAYER_AUTO_FULLSCREEN,
         PLAYER_AUTO_FULLSCREEN_DEFAULT
       )
+      this.playerAutoPiP = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_AUTO_PIP,
+        PLAYER_AUTO_PIP_DEFAULT
+      )
+      AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, this.playerAutoPiP)
       this.bottomTabAutoHide = await prefs.getBoolean(
         PREFS_KEY_BOTTOM_TAB_AUTO_HIDE,
         BOTTOM_TAB_AUTO_HIDE_DEFAULT
@@ -1290,6 +1312,17 @@ export struct SettingsPage {
       await prefs.setBoolean(PREFS_KEY_PLAYER_AUTO_FULLSCREEN, enabled)
     } catch (err) {
       logger.error('Set player auto fullscreen failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setPlayerAutoPiP(enabled: boolean): Promise<void> {
+    this.playerAutoPiP = enabled
+    AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, enabled)
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setBoolean(PREFS_KEY_PLAYER_AUTO_PIP, enabled)
+    } catch (err) {
+      logger.error('Set player auto PiP failed: %{public}s', JSON.stringify(err))
     }
   }
 

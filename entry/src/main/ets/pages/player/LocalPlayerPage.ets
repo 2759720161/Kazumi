@@ -16,7 +16,9 @@ import { DanmakuItem } from '../../models/DanmakuItem'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
 import { PiPCallbacks, PiPManager } from '../../services/PiPManager'
-import { router, window, PiPWindow } from '@kit.ArkUI'
+import { TypeNodePiPRoute, TypeNodePiPSession } from '../../services/TypeNodePiPSession'
+import { PlaybackSessionActions, PlaybackSessionStore } from '../../services/PlaybackSessionStore'
+import { router, window, PiPWindow, promptAction } from '@kit.ArkUI'
 import { common } from '@kit.AbilityKit'
 import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
 import {
@@ -35,6 +37,7 @@ export struct LocalPlayerPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink('appInForeground') @Watch('onAppForegroundChanged') appInForeground: boolean = true
   @StorageLink('danmakuSettingsVersion') @Watch('onDanmakuSettingsVersionChanged') danmakuSettingsVersion: number = 0
   @State videoUri: string = ''
   @State videoFileName: string = ''
@@ -88,11 +91,23 @@ export struct LocalPlayerPage {
   private videoFileSize: number = 0
   private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
   private fullscreenRestoreOrientation: window.Orientation = window.Orientation.UNSPECIFIED
+  private readonly AUTO_FULLSCREEN_SETTLE_MS: number = 900
   private autoFullscreenActive: boolean = false
+  private autoFullscreenEnterMs: number = 0
+  private autoFullscreenExitCheckPending: boolean = false
   private lastPlayerAreaWidth: number = 0
   private lastPlayerAreaHeight: number = 0
   private isPageAlive: boolean = false
   private pipManager: PiPManager = PiPManager.getInstance()
+  private playbackSessionStore: PlaybackSessionStore = PlaybackSessionStore.getInstance()
+  private keepPlaybackForPiP: boolean = false
+  private isRestoringFromPiP: boolean = false
+  private isLeavingWithPiP: boolean = false
+  private lastPlaybackSessionSyncMs: number = 0
+  private lastPlaybackSessionStateName: string = ''
+  private lastPlaybackSessionPlaying: boolean = false
+  private lastPlaybackSessionPositionMs: number = -1
+  private lastPlaybackSessionDurationMs: number = -1
   @State isAnimatingFullscreen: boolean = false
   @State nonVideoOpacity: number = 1
   @State suppressControlAnimation: boolean = false
@@ -100,7 +115,9 @@ export struct LocalPlayerPage {
 
   aboutToAppear(): void {
     this.isPageAlive = true
+    AppStorage.setOrCreate('playerPageActive', true)
     this.pipManager.setCallbacks(this.buildPiPCallbacks())
+    this.registerPlaybackSessionActions()
     this.danmakuManager = new DanmakuManager()
     this.danmakuManager.init().then(() => {
       if (this.isPageAlive && this.danmakuManager !== null) {
@@ -149,6 +166,7 @@ export struct LocalPlayerPage {
         this.showHudText('继续播放 ' + this.formatTime(options.startPositionMs))
       }
       this.playbackOptions = options
+      this.syncPlaybackSessionMedia()
     }
 
     this.startAutoHideTimer()
@@ -161,6 +179,17 @@ export struct LocalPlayerPage {
   }
 
   aboutToDisappear(): void {
+    AppStorage.setOrCreate('playerPageActive', false)
+    if (this.shouldKeepPlaybackForPiP()) {
+      this.pauseAutoHideTimer()
+      this.clearHudTimer()
+      if (this.videoUri.length > 0) {
+        this.saveLocalHistory()
+      }
+      logger.info('LocalPlayerPage aboutToDisappear skipped release for PiP')
+      return
+    }
+    this.playbackSessionStore.reset('local-player')
     this.isPageAlive = false
     this.pauseAutoHideTimer()
     this.clearHudTimer()
@@ -179,7 +208,40 @@ export struct LocalPlayerPage {
     this.pipManager.destroyPiP()
   }
 
-  onBackPress(): boolean {
+  private shouldKeepPlaybackForPiP(): boolean {
+    return this.keepPlaybackForPiP || this.isPiPActive || this.pipManager.isActive() || this.pipManager.isCreating()
+  }
+
+  private onAppForegroundChanged(): void {
+    if (this.appInForeground) {
+      return
+    }
+    this.pauseForApplicationBackground()
+  }
+
+  private pauseForApplicationBackground(): void {
+    if (!this.isPageAlive || this.shouldKeepPlaybackForPiP()) {
+      return
+    }
+    if (this.videoUri.length > 0) {
+      this.saveLocalHistory()
+    }
+    if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+      logger.info('LocalPlayerPage pause playback for app background')
+      this.playerEngine.pause()
+      this.isPlaying = false
+      this.pauseAutoHideTimer()
+    }
+  }
+
+  private showPiPBackBlockedToast(): void {
+    try {
+      promptAction.showToast({ message: '画中画启动失败' })
+    } catch (_err) {
+    }
+  }
+
+  private handleBackFromPlayer(): boolean {
     if (this.isAnimatingFullscreen) {
       return true
     }
@@ -188,6 +250,89 @@ export struct LocalPlayerPage {
       return true
     }
     return false
+  }
+
+  private async leavePlayerWithPiP(): Promise<void> {
+    if (this.handleBackFromPlayer()) {
+      return
+    }
+    if (this.isLeavingWithPiP) {
+      return
+    }
+    this.isLeavingWithPiP = true
+    if (!TypeNodePiPSession.getInstance().isRunning() && this.hasEngine) {
+      const started = await this.startTypeNodePiPForLeaving()
+      if (!started) {
+        this.showPiPBackBlockedToast()
+        this.isLeavingWithPiP = false
+        return
+      }
+    }
+    if (!this.handleBackFromPlayer()) {
+      router.back()
+    }
+  }
+
+  onBackPress(): boolean {
+    if (this.handleBackFromPlayer()) {
+      return true
+    }
+    this.leavePlayerWithPiP()
+    return true
+  }
+
+  private async startTypeNodePiPForLeaving(): Promise<boolean> {
+    const route = new TypeNodePiPRoute()
+    route.url = 'pages/player/LocalPlayerPage'
+    route.params = this.buildLocalPlayerRouteParams()
+
+    const options = this.cloneCurrentPlaybackOptions()
+    options.startPositionMs = this.positionMs
+    const context = getContext(this) as common.UIAbilityContext
+    const contentWidth = this.videoWidth > 0 ? this.videoWidth : 1920
+    const contentHeight = this.videoHeight > 0 ? this.videoHeight : 1080
+    return TypeNodePiPSession.getInstance().start(
+      context,
+      this.getUIContext(),
+      options,
+      route,
+      contentWidth,
+      contentHeight,
+      contentWidth > contentHeight ? 2 : 1,
+      this.isPlaying
+    )
+  }
+
+  private buildLocalPlayerRouteParams(): Record<string, Object> {
+    const params: Record<string, Object> = {}
+    params['videoUri'] = this.videoUri
+    params['videoFileName'] = this.videoFileName
+    params['videoFileSize'] = this.videoFileSize
+    params['historyPositionMs'] = this.positionMs
+    params['danmakuUri'] = this.danmakuUri
+    params['danmakuFileName'] = this.danmakuFileName
+    params['danmakuOffsetMs'] = this.danmakuOffsetMs
+    params['danmakuFormat'] = this.danmakuLoadedFormat
+    params['danmakuCount'] = this.danmakuLoadedCount
+    return params
+  }
+
+  private cloneCurrentPlaybackOptions(): PlaybackOptions {
+    const cloned = new PlaybackOptions()
+    cloned.url = this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUri
+    cloned.startPositionMs = this.playbackOptions.startPositionMs
+    cloned.referer = this.playbackOptions.referer
+    cloned.userAgent = this.playbackOptions.userAgent
+    cloned.proxy = this.playbackOptions.proxy
+    cloned.streamMetadata = this.playbackOptions.streamMetadata
+    cloned.isLocalFile = true
+    cloned.localFileSize = this.playbackOptions.localFileSize
+    const keys = Object.keys(this.playbackOptions.headers)
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      cloned.headers[key] = this.playbackOptions.headers[key]
+    }
+    return cloned
   }
 
   build() {
@@ -285,6 +430,7 @@ export struct LocalPlayerPage {
         playbackOptions: this.playbackOptions,
         fillParent: this.isFullScreen,
         aspectMode: this.currentAspectMode,
+        keepAliveOnDisappear: this.shouldKeepPlaybackForPiP(),
         onStateChange: (state: PlayerState) => {
           this.handlePlayerState(state)
         },
@@ -453,7 +599,7 @@ export struct LocalPlayerPage {
         if (this.isFullScreen) {
           this.toggleFullScreen()
         } else {
-          router.back()
+          this.leavePlayerWithPiP()
         }
       })
 
@@ -720,7 +866,7 @@ export struct LocalPlayerPage {
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .onClick(() => {
-        this.startPiP()
+        this.leavePlayerWithPiP()
         this.showControlsWithAutoHide()
       })
     }
@@ -1386,6 +1532,9 @@ export struct LocalPlayerPage {
     this.volume = state.volume
     this.speed = state.speed
     this.speedLabel = this.speed.toFixed(this.speed % 1 === 0 ? 0 : 2) + 'x'
+    if (this.shouldSyncPlaybackSessionState(state)) {
+      this.playbackSessionStore.updatePlayerState(state, 'local-player')
+    }
     if (state.videoWidth > 0 && state.videoHeight > 0 &&
       (state.videoWidth !== this.videoWidth || state.videoHeight !== this.videoHeight)) {
       this.videoWidth = state.videoWidth
@@ -1427,6 +1576,32 @@ export struct LocalPlayerPage {
         this.playerEngine.play()
       }
     }
+  }
+
+  private shouldSyncPlaybackSessionState(state: PlayerState): boolean {
+    const now = Date.now()
+    const stateChanged = state.stateName !== this.lastPlaybackSessionStateName ||
+      state.playing !== this.lastPlaybackSessionPlaying ||
+      state.completed ||
+      state.error.length > 0
+    const positionChanged = this.lastPlaybackSessionPositionMs < 0 ||
+      Math.abs(state.positionMs - this.lastPlaybackSessionPositionMs) >= 1000
+    const durationChanged = state.durationMs > 0 &&
+      Math.abs(state.durationMs - this.lastPlaybackSessionDurationMs) >= 1000
+    const timedSync = now - this.lastPlaybackSessionSyncMs >= 1000
+
+    if (!stateChanged && !durationChanged && (!positionChanged || !timedSync)) {
+      return false
+    }
+
+    this.lastPlaybackSessionSyncMs = now
+    this.lastPlaybackSessionStateName = state.stateName
+    this.lastPlaybackSessionPlaying = state.playing
+    this.lastPlaybackSessionPositionMs = state.positionMs
+    if (state.durationMs > 0) {
+      this.lastPlaybackSessionDurationMs = state.durationMs
+    }
+    return true
   }
 
   private stopPlaybackBeforeLeaving(): void {
@@ -1543,13 +1718,13 @@ export struct LocalPlayerPage {
     }
   }
 
-  private async startPiP(): Promise<void> {
+  private async startPiP(): Promise<boolean> {
     if (this.pipManager.isActive() || this.pipManager.isCreating()) {
-      return
+      return true
     }
     if (this.xComponentController === null) {
       logger.warn('PiP: XComponentController not available')
-      return
+      return false
     }
     if (this.isFullScreen) {
       this.toggleFullScreen()
@@ -1567,9 +1742,49 @@ export struct LocalPlayerPage {
       context, this.xComponentController, contentWidth, contentHeight, controlGroups,
       isWideContent ? 2 : 1)
     if (success) {
+      this.keepPlaybackForPiP = true
+      this.isRestoringFromPiP = false
       this.isPiPActive = true
       this.pipManager.updatePlaybackState(this.isPlaying)
+      this.pipManager.setNextPreviousEnabled(false, false)
     }
+    return success
+  }
+
+  private registerPlaybackSessionActions(): void {
+    const actions = new PlaybackSessionActions()
+    actions.onPlay = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+    }
+    actions.onPause = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+      }
+    }
+    actions.onSeek = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    actions.onFastForward = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    actions.onRewind = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    this.playbackSessionStore.setActions(actions, 'local-player')
+    this.syncPlaybackSessionMedia()
+  }
+
+  private syncPlaybackSessionMedia(): void {
+    const url = this.videoUri.length > 0 ? this.videoUri : this.playbackOptions.url
+    if (url.length === 0) {
+      return
+    }
+    this.playbackSessionStore.updateMedia(url, this.videoFileName.length > 0 ? this.videoFileName : '本地视频',
+      '', '', this.durationMs, this.positionMs, false, false, true, 'local-player')
   }
 
   private buildPiPCallbacks(): PiPCallbacks {
@@ -1599,6 +1814,9 @@ export struct LocalPlayerPage {
       }
     }
     callbacks.onRestore = () => {
+      this.isPageAlive = true
+      this.keepPlaybackForPiP = false
+      this.isRestoringFromPiP = true
       if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
         this.playerEngine.play()
         this.isPlaying = true
@@ -1606,6 +1824,16 @@ export struct LocalPlayerPage {
       this.isPiPActive = false
     }
     callbacks.onPiPStopped = () => {
+      if (this.isRestoringFromPiP) {
+        this.isRestoringFromPiP = false
+        this.keepPlaybackForPiP = false
+        this.isPiPActive = false
+        return
+      }
+      if (this.keepPlaybackForPiP) {
+        this.stopPlaybackBeforeLeaving()
+      }
+      this.keepPlaybackForPiP = false
       this.isPiPActive = false
     }
     return callbacks
@@ -1617,6 +1845,8 @@ export struct LocalPlayerPage {
     }
     this.isAnimatingFullscreen = true
     this.autoFullscreenActive = false
+    this.autoFullscreenEnterMs = 0
+    this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
 
     if (!this.isFullScreen) {
@@ -1720,7 +1950,41 @@ export struct LocalPlayerPage {
     if (width > height && !this.isFullScreen) {
       this.enterAutoFullscreen()
     } else if (height >= width && this.isFullScreen && this.autoFullscreenActive) {
+      if (this.isAutoFullscreenSettling()) {
+        return
+      }
+      this.confirmAutoFullscreenExit(width, height)
+    }
+  }
+
+  private isAutoFullscreenSettling(): boolean {
+    return this.autoFullscreenActive && this.autoFullscreenEnterMs > 0 &&
+      Date.now() - this.autoFullscreenEnterMs < this.AUTO_FULLSCREEN_SETTLE_MS
+  }
+
+  private async confirmAutoFullscreenExit(areaWidth: number, areaHeight: number): Promise<void> {
+    if (this.autoFullscreenExitCheckPending) {
+      return
+    }
+    this.autoFullscreenExitCheckPending = true
+    try {
+      const context = getContext(this)
+      const mainWindow = await window.getLastWindow(context)
+      const rect = mainWindow.getWindowProperties().windowRect
+      if (rect.width > rect.height) {
+        logger.info('Ignore local auto fullscreen exit while window is landscape: area=%{public}dx%{public}d window=%{public}dx%{public}d',
+          Math.round(areaWidth), Math.round(areaHeight), rect.width, rect.height)
+        return
+      }
+      logger.info('Confirm local auto fullscreen exit: area=%{public}dx%{public}d window=%{public}dx%{public}d',
+        Math.round(areaWidth), Math.round(areaHeight), rect.width, rect.height)
       this.exitAutoFullscreen()
+    } catch (_err) {
+      logger.warn('Confirm local auto fullscreen exit fallback: %{public}s',
+        _err instanceof Error ? _err.message : String(_err))
+      this.exitAutoFullscreen()
+    } finally {
+      this.autoFullscreenExitCheckPending = false
     }
   }
 
@@ -1730,6 +1994,8 @@ export struct LocalPlayerPage {
     }
     this.isAnimatingFullscreen = true
     this.autoFullscreenActive = true
+    this.autoFullscreenEnterMs = Date.now()
+    this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
 
     this.getUIContext().animateTo({
@@ -1751,6 +2017,8 @@ export struct LocalPlayerPage {
     }
     this.isAnimatingFullscreen = true
     this.autoFullscreenActive = false
+    this.autoFullscreenEnterMs = 0
+    this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
     this.setFullScreenMode(false)
     this.setAutoRotationEnabled(true)

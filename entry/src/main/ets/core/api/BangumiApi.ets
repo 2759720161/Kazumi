@@ -8,6 +8,7 @@ import { Logger, extractErrorMsg } from '../../utils/Logger';
 const logger: Logger = new Logger('BangumiApi');
 
 const BANGUMI_API_DOMAINS: string[] = BangumiConfig.BANGUMI_API_BASES;
+const BANGUMI_SEARCH_DOMAINS: string[] = BangumiConfig.BANGUMI_SEARCH_BASES;
 const BANGUMI_NEXT_DOMAINS: string[] = BangumiConfig.BANGUMI_NEXT_BASES;
 const BANGUMI_SEARCH_PATH = '/v0/search/subjects?limit=5&offset=0';
 const BANGUMI_WEB_SEARCH_URLS: string[] = BangumiConfig.BANGUMI_WEB_SEARCH_URLS;
@@ -25,6 +26,7 @@ const WEB_SEARCH_CONNECT_TIMEOUT_MS: number = 3000;
 let isSearching: boolean = false;
 let apiDomainIndex: number = -1;
 let apiProbeCompleted: boolean = false;
+let searchDomainIndex: number = -1;
 let webSearchAvailable: boolean = true;
 let webSearchFailedAt: number = 0;
 
@@ -74,19 +76,18 @@ export class BangumiApi {
       logger.info('Bangumi metadata query: keyword=%{public}s tag=%{public}s sort=%{public}s',
         queryLabel, tags.join(','), normalizedSort);
 
-      const primaryDomain = BANGUMI_API_DOMAINS.length > 0 ? BANGUMI_API_DOMAINS[0] : '';
+      const primaryDomain = BANGUMI_SEARCH_DOMAINS.length > 0 ? BANGUMI_SEARCH_DOMAINS[0] : '';
       if (primaryDomain.length > 0) {
         logger.info('Bangumi metadata search via %{public}s for: %{public}s', primaryDomain, queryLabel);
         const primaryResults = await BangumiApi.tryAnimeSearchPages(primaryDomain, body, keyword, queryLabel, progressOptions);
         if (primaryResults.length > 0) {
-          apiDomainIndex = 0;
-          apiProbeCompleted = true;
+          searchDomainIndex = 0;
           return primaryResults;
         }
       }
 
-      if (apiDomainIndex >= 0 && apiDomainIndex < BANGUMI_API_DOMAINS.length) {
-        const cachedDomain = BANGUMI_API_DOMAINS[apiDomainIndex];
+      if (searchDomainIndex >= 0 && searchDomainIndex < BANGUMI_SEARCH_DOMAINS.length) {
+        const cachedDomain = BANGUMI_SEARCH_DOMAINS[searchDomainIndex];
         if (cachedDomain !== primaryDomain) {
           logger.info('Bangumi metadata cached domain via %{public}s for: %{public}s', cachedDomain, queryLabel);
         }
@@ -96,21 +97,19 @@ export class BangumiApi {
         }
       }
 
-      for (let i = 0; i < BANGUMI_API_DOMAINS.length; i++) {
-        if (i === 0 || i === apiDomainIndex) {
+      for (let i = 0; i < BANGUMI_SEARCH_DOMAINS.length; i++) {
+        if (i === 0 || i === searchDomainIndex) {
           continue;
         }
-        const domain = BANGUMI_API_DOMAINS[i];
+        const domain = BANGUMI_SEARCH_DOMAINS[i];
         logger.info('Bangumi metadata search via %{public}s for: %{public}s', domain, queryLabel);
         const results = await BangumiApi.tryAnimeSearchPages(domain, body, keyword, queryLabel, progressOptions);
         if (results.length > 0) {
-          apiDomainIndex = i;
-          apiProbeCompleted = true;
+          searchDomainIndex = i;
           return results;
         }
       }
 
-      apiProbeCompleted = true;
       logger.warn('Bangumi metadata search returned no results from all domains for %{public}s', keyword);
       return [];
     } finally {
@@ -460,10 +459,6 @@ export class BangumiApi {
       logger.info('Bangumi metadata got %{public}d results for: %{public}s', dataList.length, keyword);
       for (let i = 0; i < dataList.length; i++) {
         const subject = dataList[i] as Record<string, Object>;
-        const nameCn = ((subject['name_cn'] as string) ?? (subject['nameCN'] as string) ?? '').trim();
-        if (nameCn.length === 0) {
-          continue;
-        }
         const item = BangumiApi.parseAnimeItemFromApi(subject);
         if (item.name.length > 0) {
           result.items.push(item);
@@ -586,6 +581,7 @@ export class BangumiApi {
   static resetProbe(): void {
     apiDomainIndex = -1;
     apiProbeCompleted = false;
+    searchDomainIndex = -1;
     webSearchAvailable = true;
     webSearchFailedAt = 0;
   }

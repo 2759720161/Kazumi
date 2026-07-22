@@ -11,6 +11,7 @@ extern "C" {
 int64_t mpv_wrapper_create();
 int mpv_wrapper_initialize(int64_t ctxId);
 int mpv_wrapper_command(int64_t ctxId, const char **args);
+int mpv_wrapper_command_async(int64_t ctxId, const char **args);
 int mpv_wrapper_command_string(int64_t ctxId, const char *args);
 int mpv_wrapper_set_property_string(int64_t ctxId, const char *name, const char *value);
 char *mpv_wrapper_get_property_string(int64_t ctxId, const char *name);
@@ -29,4 +30,3 @@ const char *mpv_wrapper_error_string(int error);
 #endif
 
 #endif // MPV_CLIENT_WRAPPER_H
-

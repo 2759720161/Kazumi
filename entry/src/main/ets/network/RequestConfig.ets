@@ -6,6 +6,10 @@ export class RequestConfig {
   timeout: number = 10000;
   followRedirects: boolean = true;
   retryPolicy: RetryPolicy | null = null;
+  // Connection retries are kept separate from HTTP status retries. This lets
+  // search requests recover from transient TCP failures without retrying
+  // captcha, authorization, or parsing-related responses.
+  connectionRetryPolicy: RetryPolicy | null = null;
   proxy: ProxyConfig | null = null;
 
   static createGet(url: string, headers?: Record<string, string>): RequestConfig {

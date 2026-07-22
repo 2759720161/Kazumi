@@ -8,6 +8,7 @@ export class NetworkPolicy {
   static readonly COLLECT_WINDOW_MS: number = 1000
   static readonly FALLBACK_WAIT_MS: number = 1000
   static readonly WEAK_CANDIDATE_DELAY_MS: number = 1200
+  static readonly RANGE_CANDIDATE_WAIT_MS: number = 8000
   static readonly MEDIA_POLL_INTERVAL_MS: number = 500
   static readonly MEDIA_POLL_MAX_COUNT: number = 30
   static readonly HOOK_INSTALL_INTERVAL_MS: number = 250

@@ -34,17 +34,24 @@ export class HttpClient {
     }
 
     const retryPolicy = config.retryPolicy !== null ? config.retryPolicy : new RetryPolicy();
+    const connectionRetryPolicy = config.connectionRetryPolicy !== null
+      ? config.connectionRetryPolicy : new RetryPolicy(0, 500);
     let lastErrorMsg: string = 'Unknown error';
     let lastStatusCode: number = 0;
+    let nextRetryIsConnection = false;
 
-    for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
+    const maxAttempts = Math.max(retryPolicy.maxRetries, connectionRetryPolicy.maxRetries);
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       if (attempt > 0) {
-        const delay = retryPolicy.getDelayMs(attempt - 1);
+        const delay = nextRetryIsConnection
+          ? connectionRetryPolicy.getDelayMs(attempt - 1)
+          : retryPolicy.getDelayMs(attempt - 1);
         await this.sleep(delay);
-        logger.info('Retry attempt %{public}d/%{public}d after %{public}d ms',
-          attempt, retryPolicy.maxRetries, delay);
+        logger.info('Retry attempt %{public}d/%{public}d (%{public}s) after %{public}d ms',
+          attempt, maxAttempts, nextRetryIsConnection ? 'connection' : 'http', delay);
       }
 
+      let shouldRetry = false;
       try {
         const result = await this.executeRequest(config);
         if (result.isSuccessful || result.isRedirect) {
@@ -58,17 +65,34 @@ export class HttpClient {
         }
         lastStatusCode = result.statusCode;
         lastErrorMsg = `HTTP ${result.statusCode}`;
+        if (attempt < retryPolicy.maxRetries) {
+          nextRetryIsConnection = false;
+          shouldRetry = true;
+        }
       } catch (err) {
         lastErrorMsg = extractErrorMsg(err as Object);
-        if (HttpClient.isDnsFailureMsg(lastErrorMsg)) {
+        if (HttpClient.isConnectionFailureMsg(lastErrorMsg)
+          && attempt < connectionRetryPolicy.maxRetries) {
+          logger.warn('Transient connection failure, retrying host=%{public}s: %{public}s',
+            HttpClient.extractHost(config.url), lastErrorMsg);
+          nextRetryIsConnection = true;
+          shouldRetry = true;
+        } else if (HttpClient.isDnsFailureMsg(lastErrorMsg)) {
           const hostName = HttpClient.extractHost(config.url)
           logger.warn('DNS解析失败，不重试: host=%{public}s', hostName)
           const wrapper = new ResponseWrapper()
           wrapper.statusCode = 0
           wrapper.body = lastErrorMsg
           return wrapper
+        } else if (attempt < retryPolicy.maxRetries) {
+          nextRetryIsConnection = false;
+          shouldRetry = true;
+        } else {
+          logger.warn('Request attempt %{public}d failed: %{public}s', attempt, lastErrorMsg);
         }
-        logger.warn('Request attempt %{public}d failed: %{public}s', attempt, lastErrorMsg);
+      }
+      if (!shouldRetry) {
+        break;
       }
     }
 
@@ -188,6 +212,19 @@ export class HttpClient {
     }
     const lower = msg.toLowerCase()
     return lower.indexOf('failed to resolve') >= 0 || lower.indexOf('resolve the host') >= 0
+  }
+
+  private static isConnectionFailureMsg(msg: string): boolean {
+    if (msg.length === 0) {
+      return false
+    }
+    const lower = msg.toLowerCase()
+    return lower.indexOf('failed to connect') >= 0
+      || lower.indexOf('connection') >= 0
+      || lower.indexOf('socket') >= 0
+      || lower.indexOf('connection reset') >= 0
+      || lower.indexOf('connection refused') >= 0
+      || lower.indexOf('internal error') >= 0
   }
 
   private static extractHost(url: string): string {

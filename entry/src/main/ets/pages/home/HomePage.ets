@@ -16,7 +16,8 @@ import {
   HdsNavigationIconOptions,
   HdsNavigationMenuContentOptions,
   HdsNavigationTitle,
-  TitleBarContentOptions
+  TitleBarContentOptions,
+  HdsTabs
 } from '@kit.UIDesignKit'
 import {
   getEffectiveTopSafeHeight,
@@ -24,6 +25,7 @@ import {
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle,
   buildTitleBarOptions,
+  buildAdaptiveMaterialEffect,
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
@@ -534,7 +536,20 @@ export struct HomePage {
 
   @Builder
   private StickyTagChip(tag: string) {
-    this.FallbackStickyTagChip(tag)
+    if (this.isHdsTabsEnabled && deviceInfo.distributionOSApiVersion >= 60100) {
+      StickyHdsTagChip({
+        tag: tag,
+        selectedTag: this.selectedTag,
+        isLoading: this.tagLoading,
+        chipWidth: this.getStickyTagChipWidth(tag),
+        hdsMaterialLevel: this.hdsMaterialLevel,
+        onSelected: (nextTag: string) => {
+          this.handleTagSelect(nextTag)
+        }
+      })
+    } else {
+      this.FallbackStickyTagChip(tag)
+    }
   }
 
   @Builder
@@ -674,5 +689,98 @@ export struct HomePage {
       this.tagBarPinned = false
       this.tagPinScrollThreshold = -1
     }
+  }
+}
+
+@Component
+struct StickyHdsTagChip {
+  @Prop tag: string = ''
+  @Prop selectedTag: string = ''
+  @Prop isLoading: boolean = false
+  @Prop chipWidth: number = 64
+  @Prop hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  onSelected?: (tag: string) => void
+
+  build() {
+    Column() {
+      HdsTabs() {
+        TabContent()
+          .clip(false)
+          .tabBar(this.contentBuilder())
+          .width('100%')
+          .height('100%')
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.None)
+      }
+      .clip(false)
+      .hitTestBehavior(HitTestMode.None)
+      .align(Alignment.Center)
+      .width(this.chipWidth)
+      .height(HOME_STICKY_TAG_HEIGHT)
+      .enabled(false)
+      .barWidth(this.chipWidth)
+      .barHeight(HOME_STICKY_TAG_HEIGHT)
+      .barOverlap(true)
+      .barPosition(BarPosition.End)
+      .vertical(false)
+      .backgroundColor(Color.Transparent)
+      .shadow(undefined)
+      .barFloatingStyle({
+        barWidth: {
+          smallWidth: this.chipWidth,
+          mediumWidth: this.chipWidth,
+          largeWidth: this.chipWidth
+        },
+        gradientMask: {
+          maskColor: Color.Transparent
+        },
+        barBottomMargin: 0,
+        barSideMargin: 0,
+        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
+        lightColor: Color.Transparent
+      })
+    }
+    .backgroundColor(Color.Transparent)
+    .clip(true)
+    .borderRadius(HOME_STICKY_TAG_HEIGHT / 2)
+    .width(this.chipWidth)
+    .height(HOME_STICKY_TAG_HEIGHT)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
+    .animation({ duration: 140, curve: Curve.EaseOut })
+    .onClick(() => {
+      this.onSelected?.(this.isSelected() ? '' : this.tag)
+    })
+  }
+
+  @Builder
+  private contentBuilder(): void {
+    Row({ space: 5 }) {
+      if (this.isLoading && this.isSelected()) {
+        LoadingProgress()
+          .width(12)
+          .height(12)
+          .color(Color.White)
+      }
+
+      Text(this.tag)
+        .fontSize(13)
+        .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+        .fontWeight(this.isSelected() ? FontWeight.Medium : FontWeight.Normal)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Clip })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(Color.Transparent)
+    .hitTestBehavior(HitTestMode.Transparent)
+    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
+  }
+
+  private isSelected(): boolean {
+    return this.tag === this.selectedTag
   }
 }

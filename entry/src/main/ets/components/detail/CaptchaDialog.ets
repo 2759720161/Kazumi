@@ -64,10 +64,15 @@ export struct CaptchaDialog {
   private watcherInjected: boolean = false
   private submittedCaptcha: boolean = false
   private cookiesBeforeSubmit: string = ''
+  private dialogDisposed: boolean = false
+  private imageRetryTimer: number = -1
+  private imageRetryCount: number = 0
+  private readonly maxImageRetryCount: number = 20
   onVerified?: () => void
   onCancelled?: () => void
 
   aboutToAppear(): void {
+    this.dialogDisposed = false
     this.hasVerified = false
     this.captchaWasFound = false
     this.pageLoaded = false
@@ -76,6 +81,8 @@ export struct CaptchaDialog {
     this.captchaImageUrl = ''
     this.captchaCode = ''
     this.cookiesBeforeSubmit = ''
+    this.imageRetryCount = 0
+    this.clearImageRetryTimer()
     this.state = CaptchaState.LOADING_IMAGE
     this.verifyHint = this.captchaType === 1 ? '正在加载验证码图片...' : '请在页面中完成验证'
     logger.info('Captcha open: rule=%{public}s, type=%{public}d, url=%{public}s',
@@ -83,8 +90,10 @@ export struct CaptchaDialog {
   }
 
   aboutToDisappear(): void {
+    this.dialogDisposed = true
     this.clearTimer()
     this.clearPollTimer()
+    this.clearImageRetryTimer()
     try {
       this.webController.stop()
     } catch (e) {
@@ -315,7 +324,7 @@ export struct CaptchaDialog {
         this.injectCaptchaWatcher()
       }
       if (this.captchaImageUrl.length === 0 && !this.hasVerified) {
-        this.extractCaptchaImage()
+        this.scheduleCaptchaImageCapture(0)
       }
       this.scheduleCaptchaCheck(500)
       return
@@ -361,11 +370,14 @@ export struct CaptchaDialog {
   }
 
   private injectCaptchaWatcher(): void {
-    if (this.hasVerified || this.captchaType !== 1 || this.captchaImage.length === 0) {
+    if (this.dialogDisposed || this.hasVerified || this.captchaType !== 1 || this.captchaImage.length === 0) {
       return
     }
     const script = this.buildCaptchaWatcherScript(this.captchaImage, this.captchaInput)
     this.webController.runJavaScript(script, (err, result) => {
+      if (this.dialogDisposed || this.hasVerified) {
+        return
+      }
       if (err) {
         logger.warn('Captcha watcher inject failed: %{public}s', String(err))
         this.watcherInjected = false
@@ -379,7 +391,9 @@ export struct CaptchaDialog {
         logger.info('Captcha watcher: DOM not ready, will retry')
         this.watcherInjected = false
         setTimeout(() => {
-          this.injectCaptchaWatcher()
+          if (!this.dialogDisposed && !this.hasVerified) {
+            this.injectCaptchaWatcher()
+          }
         }, 200)
       } else if (status === 'already') {
         this.watcherInjected = true
@@ -450,11 +464,11 @@ export struct CaptchaDialog {
   }
 
   private extractCaptchaImage(): void {
-    if (this.captchaImage.length === 0 || this.hasVerified) {
+    if (this.dialogDisposed || this.captchaImage.length === 0 || this.hasVerified) {
       return
     }
     this.webController.runJavaScript(this.buildCaptureCaptchaImageScript(this.captchaImage, this.captchaInput), (err, result) => {
-      if (this.hasVerified) {
+      if (this.dialogDisposed || this.hasVerified) {
         return
       }
       if (err) {
@@ -471,7 +485,8 @@ export struct CaptchaDialog {
         return
       }
       if (imageUrl.indexOf('missing') !== -1) {
-        this.verifyHint = '未检测到验证码图片，可能已通过验证'
+        this.verifyHint = '正在等待验证码图片...'
+        this.scheduleCaptchaImageCapture(500)
         return
       }
       logger.warn('Captcha image capture returned: %{public}s', imageUrl.substring(0, 60))
@@ -479,7 +494,7 @@ export struct CaptchaDialog {
   }
 
   private async submitImageCaptcha(): Promise<void> {
-    if (this.state !== CaptchaState.IMAGE_READY || this.hasVerified) {
+    if (this.dialogDisposed || this.state !== CaptchaState.IMAGE_READY || this.hasVerified) {
       return
     }
     const code = this.captchaCode.trim()
@@ -496,7 +511,7 @@ export struct CaptchaDialog {
     this.verifyHint = '正在提交验证码'
     this.saveCurrentCookies()
     this.webController.runJavaScript(this.buildSubmitCaptchaScript(code, this.captchaInput, this.captchaButton), (err, result) => {
-      if (this.hasVerified) {
+      if (this.dialogDisposed || this.hasVerified) {
         return
       }
       if (err) {
@@ -545,13 +560,16 @@ export struct CaptchaDialog {
   }
 
   private handleCancel(): void {
+    if (this.dialogDisposed || this.hasVerified) {
+      return
+    }
     this.clearTimer()
     this.clearPollTimer()
-    this.syncCookies(() => {
-      if (this.onCancelled) {
-        this.onCancelled()
-      }
-    })
+    this.clearImageRetryTimer()
+    logger.info('Captcha cancelled without verification; cookies not committed')
+    if (this.onCancelled) {
+      this.onCancelled()
+    }
   }
 
   private hasNewCookies(): boolean {
@@ -572,13 +590,17 @@ export struct CaptchaDialog {
   }
 
   private syncCookies(done: () => void): void {
-    if (this.captchaUrl.length === 0) {
+    if (this.dialogDisposed || this.captchaUrl.length === 0) {
       done()
       return
     }
     try {
       CookieManager.getInstance().syncFromWebView(this.captchaUrl)
       this.webController.runJavaScript('document.cookie', (err, result) => {
+        if (this.dialogDisposed) {
+          done()
+          return
+        }
         if (!err && typeof result === 'string' && result.length > 0) {
           const cookieStr = normalizeScriptStringResult(result)
           CookieManager.getInstance().extractCookiesFromCookieHeader(this.captchaUrl, cookieStr, this.ruleSourceId)
@@ -606,6 +628,29 @@ export struct CaptchaDialog {
     }
   }
 
+  private clearImageRetryTimer(): void {
+    if (this.imageRetryTimer !== -1) {
+      clearTimeout(this.imageRetryTimer)
+      this.imageRetryTimer = -1
+    }
+  }
+
+  private scheduleCaptchaImageCapture(delayMs: number): void {
+    if (this.dialogDisposed || this.hasVerified || this.captchaImageUrl.length > 0 ||
+      this.captchaImage.length === 0 || this.imageRetryCount >= this.maxImageRetryCount) {
+      return
+    }
+    this.clearImageRetryTimer()
+    this.imageRetryTimer = setTimeout(() => {
+      this.imageRetryTimer = -1
+      if (this.dialogDisposed || this.hasVerified || this.captchaImageUrl.length > 0) {
+        return
+      }
+      this.imageRetryCount++
+      this.extractCaptchaImage()
+    }, delayMs)
+  }
+
   private startAutoVerifyTimeout(): void {
     this.clearTimer()
     this.timeoutTimer = setTimeout(() => {
@@ -618,7 +663,7 @@ export struct CaptchaDialog {
 
   private scheduleCaptchaCheck(delayMs: number = 500): void {
     this.clearPollTimer()
-    if (this.hasVerified || !this.pageLoaded) {
+    if (this.dialogDisposed || this.hasVerified || !this.pageLoaded) {
       return
     }
     this.pollTimer = setTimeout(() => {
@@ -628,7 +673,7 @@ export struct CaptchaDialog {
   }
 
   private checkCaptchaStatus(): void {
-    if (this.hasVerified) {
+    if (this.dialogDisposed || this.hasVerified) {
       return
     }
     const xpath = this.captchaImage.length > 0 ? this.captchaImage : this.captchaButton
@@ -638,7 +683,7 @@ export struct CaptchaDialog {
     }
 
     this.webController.runJavaScript(this.buildXPathPresenceScript(xpath), (err, result) => {
-      if (this.hasVerified) {
+      if (this.dialogDisposed || this.hasVerified) {
         return
       }
       if (err) {

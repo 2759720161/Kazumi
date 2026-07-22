@@ -15,6 +15,7 @@ declare module 'libmpv_napi.so' {
     nativeCreate: () => number
     nativeInitialize: (ctxId: number) => number
     nativeCommand: (ctxId: number, args: string[]) => number
+    nativeCommandAsync: (ctxId: number, args: string[]) => number
     nativeSetProperty: (ctxId: number, name: string, value: string) => number
     nativeGetProperty: (ctxId: number, name: string) => string | null
     nativeObserveProperty: (ctxId: number, replyUserdata: number, name: string, format: number) => number
@@ -30,6 +31,7 @@ declare module 'libmpv_napi.so' {
   export const nativeCreate: () => number
   export const nativeInitialize: (ctxId: number) => number
   export const nativeCommand: (ctxId: number, args: string[]) => number
+  export const nativeCommandAsync: (ctxId: number, args: string[]) => number
   export const nativeSetProperty: (ctxId: number, name: string, value: string) => number
   export const nativeGetProperty: (ctxId: number, name: string) => string | null
   export const nativeObserveProperty: (ctxId: number, replyUserdata: number, name: string, format: number) => number

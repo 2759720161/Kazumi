@@ -4,7 +4,8 @@ import { NetworkPolicy } from './NetworkPolicy'
 const STATIC_EXTENSIONS: string[] = [
   '.js', '.css', '.html', '.htm', '.jpg', '.jpeg', '.png', '.gif', '.webp',
   '.svg', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.json', '.xml',
-  '.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.rar'
+  '.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.rar', '.key',
+  '.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.flac', '.weba', '.mid', '.midi'
 ]
 
 const VIDEO_MIME_TYPES: string[] = [
@@ -43,6 +44,12 @@ export class SniffRuleEvaluator {
         priority: 10, enabled: true, sourceTag: 'builtin'
       },
       {
+        name: 'qq_groupvideo_noise', category: 'weak_candidate', ruleType: 'domain_match',
+        patterns: ['groupvideo.photo.qq.com'],
+        action: 'delay', actionParams: { 'delayMs': '3000' },
+        priority: 20, enabled: true, sourceTag: 'builtin'
+      },
+      {
         name: 'cycanime_promote', category: 'promote_page', ruleType: 'domain_match',
         patterns: ['player.cycanime.com/?url='],
         action: 'promote', actionParams: {},
@@ -51,6 +58,12 @@ export class SniffRuleEvaluator {
       {
         name: '7sefun_player_promote', category: 'promote_page', ruleType: 'domain_match',
         patterns: ['7sefun.top/addons/dp/player/', '7sefun.top/addons/dp/player/index.php'],
+        action: 'promote', actionParams: {},
+        priority: 20, enabled: true, sourceTag: 'builtin'
+      },
+      {
+        name: 'dm84_hhjx_player_promote', category: 'promote_page', ruleType: 'domain_match',
+        patterns: ['hhjx.hhplayer.com/index.php'],
         action: 'promote', actionParams: {},
         priority: 20, enabled: true, sourceTag: 'builtin'
       },
@@ -267,6 +280,9 @@ export class SniffRuleEvaluator {
     }
     if (contentType.length > 0) {
       const lowerCt = contentType.toLowerCase()
+      if (lowerCt.indexOf('audio/') === 0) {
+        return verdict
+      }
       for (let i = 0; i < VIDEO_MIME_TYPES.length; i++) {
         if (lowerCt.indexOf(VIDEO_MIME_TYPES[i].toLowerCase()) !== -1) {
           verdict.isRangeVideo = true

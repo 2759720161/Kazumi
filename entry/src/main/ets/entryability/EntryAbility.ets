@@ -29,6 +29,10 @@ import {
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
 } from '../utils/PlayerAutoFullscreen';
 import {
+  PLAYER_AUTO_PIP_DEFAULT,
+  PREFS_KEY_PLAYER_AUTO_PIP
+} from '../utils/PlayerAutoPiP';
+import {
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../utils/HdsPageStyle';
@@ -59,6 +63,8 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('bottomSafeHeight', 0);
     AppStorage.setOrCreate('keyboardAvoidHeight', 0);
     AppStorage.setOrCreate('playerFullScreen', false);
+    AppStorage.setOrCreate('playerPageActive', false);
+    AppStorage.setOrCreate('appInForeground', true);
     AppStorage.setOrCreate('screenWidthVp', 0);
     AppStorage.setOrCreate('screenHeightVp', 0);
     AppStorage.setOrCreate('bottomTabAutoHide', BOTTOM_TAB_AUTO_HIDE_DEFAULT);
@@ -199,7 +205,12 @@ export default class EntryAbility extends UIAbility {
       currentDeviceType, Math.round(displayWidthVp), Math.round(displayHeightVp), isTabletDevice ? 'true' : 'false');
     AppStorage.setOrCreate('screenWidthVp', screenWidthVp);
     AppStorage.setOrCreate('screenHeightVp', screenHeightVp);
-    if (AppStorage.get<boolean>('playerFullScreen') === true) {
+    const playerFullScreen = AppStorage.get<boolean>('playerFullScreen') === true;
+    const playerPageActive = AppStorage.get<boolean>('playerPageActive') === true;
+    const playerAutoFullscreen = AppStorage.get<boolean>('playerAutoFullscreen') === true;
+    if (playerFullScreen || (playerPageActive && playerAutoFullscreen)) {
+      logger.info('Skip global orientation reset: fullscreen=%{public}s playerActive=%{public}s autoFullscreen=%{public}s',
+        String(playerFullScreen), String(playerPageActive), String(playerAutoFullscreen));
       return;
     }
     if (!isTabletDevice) {
@@ -215,10 +226,12 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     logger.info('Ability onForeground');
+    AppStorage.setOrCreate('appInForeground', true);
   }
 
   onBackground(): void {
     logger.info('Ability onBackground');
+    AppStorage.setOrCreate('appInForeground', false);
   }
 
   private async initStores(): Promise<void> {
@@ -248,6 +261,11 @@ export default class EntryAbility extends UIAbility {
         PLAYER_AUTO_FULLSCREEN_DEFAULT
       );
       AppStorage.setOrCreate('playerAutoFullscreen', playerAutoFullscreen);
+      const playerAutoPiP = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_PLAYER_AUTO_PIP,
+        PLAYER_AUTO_PIP_DEFAULT
+      );
+      AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, playerAutoPiP);
       const hdsMaterialLevel = await PreferencesStore.getInstance().getString(
         PREFS_KEY_HDS_MATERIAL_LEVEL,
         HDS_MATERIAL_LEVEL_DEFAULT

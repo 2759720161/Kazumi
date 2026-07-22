@@ -15,6 +15,13 @@ export class BangumiConfig {
     'https://api.bgm.tv',
     'https://next.bgm.tv'
   ];
+  static readonly BANGUMI_SEARCH_BASES: string[] = [
+    'https://api.bangumi.lol',
+    'https://api.kazumi.fyi',
+    'https://bgmapi.anibt.net',
+    'https://api.bgm.tv',
+    'https://next.bgm.tv'
+  ];
   static readonly BANGUMI_NEXT_BASES: string[] = [
     'https://bgmapi.anibt.net',
     'https://next.bgm.tv'

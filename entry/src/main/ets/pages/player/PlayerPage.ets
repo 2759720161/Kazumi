@@ -1,4 +1,4 @@
-import { PlayerSurface } from '../../components/player/PlayerSurface'
+import { PlayerSurface, releaseRetainedPlayerSession } from '../../components/player/PlayerSurface'
 import { EpisodePanelItem } from '../../components/player/EpisodePanel'
 import { SniffErrorOverlay } from '../../components/player/SniffErrorOverlay'
 import { GestureLayer } from '../../components/player/GestureLayer'
@@ -52,6 +52,9 @@ import {
 import { ContinuationPlayerParams, ContinuationState } from '../../utils/ContinuationState'
 
 const logger = new Logger('PlayerPage')
+const PLAYER_LIVE_URL_KEY: string = 'playerLivePlaybackUrl'
+const PLAYER_LIVE_POSITION_KEY: string = 'playerLivePlaybackPositionMs'
+const PLAYER_REBUILD_RESUME_GUARD_MS: number = 3000
 
 class JsBridgeProxy {
   private resolver: VideoSourceResolver
@@ -108,6 +111,7 @@ export struct PlayerPage {
   @State sniffRetryCount: number = 0
   @State isEpisodeSwitching: boolean = false
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
+  @State liveStartPositionMs: number = 0
   @State webviewReady: boolean = false
   @State backgroundWebviewReady: boolean = false
   @State snifferWebVisible: boolean = true
@@ -323,6 +327,7 @@ export struct PlayerPage {
       logger.info('PlayerPage aboutToDisappear skipped release for PiP')
       return
     }
+    releaseRetainedPlayerSession()
     this.playbackSessionStore.reset('player')
     this.isPageAlive = false
     this.setKeepScreenOn(false)
@@ -522,15 +527,17 @@ export struct PlayerPage {
 
   build() {
     Stack() {
+      // Web uses a native rendering layer. Keep both sniff workers below the
+      // player UI so their internal nodes cannot cover the retry controls.
+      if (this.snifferWebVisible) {
+        this.ForegroundSnifferWeb()
+        this.BackgroundSnifferWeb()
+      }
+
       if (this.shouldUseTabletPlayerLayout()) {
         this.TabletPlayerLayout()
       } else {
         this.StackedPlayerLayout()
-      }
-
-      if (this.snifferWebVisible) {
-        this.ForegroundSnifferWeb()
-        this.BackgroundSnifferWeb()
       }
     }
     .width('100%')
@@ -576,6 +583,7 @@ export struct PlayerPage {
     }
     .width('100%')
     .height('100%')
+    .zIndex(1)
     .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
   }
 
@@ -614,6 +622,7 @@ export struct PlayerPage {
     }
     .width('100%')
     .height('100%')
+    .zIndex(1)
     .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
   }
 
@@ -623,6 +632,10 @@ export struct PlayerPage {
       .width(1)
       .height(1)
       .visibility(Visibility.None)
+      .hitTestBehavior(HitTestMode.None)
+      .focusable(false)
+      .focusOnTouch(false)
+      .zIndex(0)
       .javaScriptAccess(true)
       .domStorageAccess(true)
       .mixedMode(MixedMode.All)
@@ -687,6 +700,10 @@ export struct PlayerPage {
       .width(1)
       .height(1)
       .visibility(Visibility.None)
+      .hitTestBehavior(HitTestMode.None)
+      .focusable(false)
+      .focusOnTouch(false)
+      .zIndex(0)
       .javaScriptAccess(true)
       .domStorageAccess(true)
       .mixedMode(MixedMode.All)
@@ -795,6 +812,22 @@ export struct PlayerPage {
   private VideoSection() {
     Stack({ alignContent: Alignment.Center }) {
       this.VideoLayerContent()
+
+      if (this.isSniffFailureStatus()) {
+        SniffErrorOverlay({
+          status: this.sniffStatus,
+          message: this.sniffMessage,
+          retryCount: this.sniffRetryCount,
+          onRetry: () => {
+            logger.info('SniffErrorOverlay retry tapped')
+            this.startSniffing()
+          },
+          onBack: () => {
+            logger.info('SniffErrorOverlay back tapped')
+            this.leavePlayerNormally()
+          }
+        })
+      }
     }
     .width('100%')
     .aspectRatio(this.isFullScreen || this.shouldUseTabletPlayerLayout() ? undefined : 16 / 9)
@@ -806,25 +839,15 @@ export struct PlayerPage {
 
   @Builder
   private VideoLayerContent() {
-      if (this.videoUrl.length === 0 && this.sniffStatus === 'sniffing') {
-        this.SniffingOverlay()
-      } else if (this.videoUrl.length === 0 &&
-        (this.sniffStatus === 'error' || this.sniffStatus === 'timeout' || this.sniffStatus === 'captcha')) {
-        SniffErrorOverlay({
-          status: this.sniffStatus,
-          message: this.sniffMessage,
-          retryCount: this.sniffRetryCount,
-          onRetry: () => {
-            this.startSniffing()
-          },
-          onBack: () => {
-            this.leavePlayerNormally()
-          }
-        })
+      if (this.videoUrl.length === 0) {
+        if (this.sniffStatus === 'sniffing') {
+          this.SniffingOverlay()
+        }
       } else {
         PlayerSurface({
           videoUrl: this.videoUrl,
           playbackOptions: this.playbackOptions,
+          liveStartPositionMs: this.liveStartPositionMs,
           fillParent: this.isFullScreen,
           aspectMode: this.currentAspectMode,
           keepAliveOnDisappear: this.shouldKeepPlaybackForPiP(),
@@ -884,18 +907,6 @@ export struct PlayerPage {
 
         if (this.sniffStatus === 'sniffing') {
           this.SniffingOverlay()
-        } else if (this.sniffStatus === 'error' || this.sniffStatus === 'timeout' || this.sniffStatus === 'captcha') {
-          SniffErrorOverlay({
-            status: this.sniffStatus,
-            message: this.sniffMessage,
-            retryCount: this.sniffRetryCount,
-            onRetry: () => {
-              this.startSniffing()
-            },
-            onBack: () => {
-              this.leavePlayerNormally()
-            }
-          })
         }
       }
 
@@ -976,6 +987,12 @@ export struct PlayerPage {
         })
           .zIndex(10)
       }
+  }
+
+  private isSniffFailureStatus(): boolean {
+    return this.sniffStatus === 'error' ||
+      this.sniffStatus === 'timeout' ||
+      this.sniffStatus === 'captcha'
   }
 
   @Builder
@@ -1696,10 +1713,7 @@ export struct PlayerPage {
         .fontColor($r('app.color.text_on_primary'))
         .padding({ left: 24, right: 24, top: 14, bottom: 14 })
         .borderRadius(18)
-        .backgroundColor('#8A000000')
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-        .border({ width: 0.5, color: '#33FFFFFF' })
-        .shadow({ radius: 18, color: '#66000000', offsetY: 8 })
+        .backgroundColor(Color.Transparent)
     }
     .width('100%')
     .height('100%')
@@ -2221,10 +2235,7 @@ export struct PlayerPage {
       }
       .padding({ left: 26, right: 26, top: 24, bottom: 24 })
       .borderRadius(22)
-      .backgroundColor('#66000000')
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: 0.5, color: '#33FFFFFF' })
-      .shadow({ radius: 28, color: '#99000000', offsetY: 10 })
+      .backgroundColor(Color.Transparent)
     }
     .width('100%')
     .height('100%')
@@ -2251,10 +2262,7 @@ export struct PlayerPage {
       }
       .padding({ left: 26, right: 26, top: 24, bottom: 24 })
       .borderRadius(22)
-      .backgroundColor('#66000000')
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: 0.5, color: '#33FFFFFF' })
-      .shadow({ radius: 28, color: '#99000000', offsetY: 10 })
+      .backgroundColor(Color.Transparent)
     }
     .width('100%')
     .height('100%')
@@ -2735,6 +2743,13 @@ export struct PlayerPage {
       logger.warn('CrashDiag PlayerPage state begin: seq=%{public}d name=%{public}s playing=%{public}s pos=%{public}d dur=%{public}d errLen=%{public}d',
         seq, state.stateName, String(state.playing), state.positionMs, state.durationMs, state.error.length)
     }
+    if (this.shouldIgnoreTransientRebuildZeroState(state)) {
+      if (shouldLog) {
+        logger.warn('CrashDiag PlayerPage ignore transient rebuild zero: seq=%{public}d state=%{public}s liveStart=%{public}d',
+          seq, state.stateName, this.liveStartPositionMs)
+      }
+      return
+    }
     this.isPlaying = state.playing
     this.updatePlayerLoadingState(state)
     this.isPlayerBuffering = this.resolvePlayerBufferingState(state)
@@ -2743,6 +2758,10 @@ export struct PlayerPage {
     }
     this.durationMs = state.durationMs
     this.bufferMs = state.bufferMs
+    if (state.playing && state.positionMs > 0) {
+      this.liveStartPositionMs = state.positionMs
+      this.cacheLivePlaybackPosition(state.positionMs)
+    }
     this.markContinuationState()
     if (Math.abs(this.speed - state.speed) > 0.001) {
       this.speed = state.speed
@@ -2777,7 +2796,9 @@ export struct PlayerPage {
     }
 
     if (state.stateName === 'playing') {
-      this.playbackRetryCount = 0
+      if (state.positionMs > 0 || state.durationMs > 0) {
+        this.playbackRetryCount = 0
+      }
       if (this.pendingAutoEnterPiP && !this.isLeavingWithPiP) {
         this.pendingAutoEnterPiP = false
         setTimeout(() => {
@@ -2789,6 +2810,8 @@ export struct PlayerPage {
     }
 
     if (state.stateName === 'error' && state.error.length > 0) {
+      this.playerEngine = null
+      this.hasEngine = false
       if (state.error.indexOf('prepare timeout') !== -1 &&
         this.playbackRetryCount < this.maxPlaybackRetryCount) {
         this.playbackRetryCount++
@@ -2803,10 +2826,18 @@ export struct PlayerPage {
         this.startSniffing()
         return
       }
+      // Remove the failed native surface before rendering the retry overlay.
+      // Keeping XComponentType.SURFACE mounted makes the ArkUI buttons visible
+      // but prevents them from receiving touch events on some devices.
+      this.videoUrl = ''
+      this.playbackOptions = new PlaybackOptions()
       this.sniffStatus = 'error'
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
       this.sniffMessage = state.error
+      this.removeSnifferWebView()
+      logger.warn('CrashDiag PlayerPage playback error overlay mounted: seq=%{public}d errLen=%{public}d',
+        seq, state.error.length)
     }
 
     if (state.completed && this.hasNextEpisode()) {
@@ -2830,6 +2861,30 @@ export struct PlayerPage {
       logger.warn('CrashDiag PlayerPage state end: seq=%{public}d elapsed=%{public}dms',
         seq, elapsed)
     }
+  }
+
+  private shouldIgnoreTransientRebuildZeroState(state: PlayerState): boolean {
+    if (this.liveStartPositionMs < PLAYER_REBUILD_RESUME_GUARD_MS || state.positionMs >= 1000 || state.completed || state.error.length > 0) {
+      return false
+    }
+    return state.stateName === 'creating' ||
+      state.stateName === 'initialized' ||
+      state.stateName === 'prepared' ||
+      state.stateName === 'playing'
+  }
+
+  private cacheLivePlaybackPosition(positionMs: number): void {
+    const targetUrl = this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUrl
+    if (targetUrl.length === 0 || positionMs <= 0) {
+      return
+    }
+    AppStorage.setOrCreate(PLAYER_LIVE_URL_KEY, targetUrl)
+    AppStorage.setOrCreate(PLAYER_LIVE_POSITION_KEY, positionMs)
+  }
+
+  private clearLivePlaybackPosition(): void {
+    this.liveStartPositionMs = 0
+    AppStorage.setOrCreate(PLAYER_LIVE_POSITION_KEY, 0)
   }
 
   private updatePlayerLoadingState(state: PlayerState): void {
@@ -3327,6 +3382,12 @@ export struct PlayerPage {
     }
 
     this.positionMs = positionMs
+    this.liveStartPositionMs = positionMs
+    if (positionMs > 0) {
+      this.cacheLivePlaybackPosition(positionMs)
+    } else {
+      this.clearLivePlaybackPosition()
+    }
     const now = Date.now()
     const elapsed = now - this.lastSeekRequestAtMs
     if (elapsed >= this.seekThrottleMs) {
@@ -3748,6 +3809,7 @@ export struct PlayerPage {
       this.positionMs = 0
       this.durationMs = 0
       this.bufferMs = 0
+      this.clearLivePlaybackPosition()
       this.historySeekMs = -1
       this.playbackOptions = new PlaybackOptions()
       this.playbackRetryCount = 0

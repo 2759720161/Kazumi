@@ -12,12 +12,81 @@ import {
 } from '../../utils/MpvSettings'
 
 const logger = new Logger('PlayerSurface')
+const PLAYER_LIVE_URL_KEY: string = 'playerLivePlaybackUrl'
+const PLAYER_LIVE_POSITION_KEY: string = 'playerLivePlaybackPositionMs'
+const RETAINED_PLAYER_SESSION_TIMEOUT_MS: number = 6000
 let playerSurfaceInitSeq: number = 0
+
+interface RetainedPlayerSession {
+  targetUrl: string
+  engineType: string
+  engine: IPlayerEngine
+  expiryTimer: number
+}
+
+let retainedPlayerSession: RetainedPlayerSession | null = null
+
+export function releaseRetainedPlayerSession(): void {
+  if (retainedPlayerSession === null) {
+    return
+  }
+  if (retainedPlayerSession.expiryTimer >= 0) {
+    clearTimeout(retainedPlayerSession.expiryTimer)
+  }
+  try {
+    retainedPlayerSession.engine.release()
+  } catch (_err) {
+  }
+  retainedPlayerSession = null
+}
+
+function retainPlayerSession(targetUrl: string, engineType: string, engine: IPlayerEngine): void {
+  releaseRetainedPlayerSession()
+  const session: RetainedPlayerSession = {
+    targetUrl: targetUrl,
+    engineType: engineType,
+    engine: engine,
+    expiryTimer: -1
+  }
+  retainedPlayerSession = session
+  session.expiryTimer = setTimeout(() => {
+    if (retainedPlayerSession === session) {
+      logger.warn('CrashDiag PlayerSurface retained engine expired: urlHash=%{public}s',
+        shortPlayerSurfaceHash(targetUrl))
+      releaseRetainedPlayerSession()
+    }
+  }, RETAINED_PLAYER_SESSION_TIMEOUT_MS)
+}
+
+function takeRetainedPlayerSession(targetUrl: string): RetainedPlayerSession | null {
+  if (retainedPlayerSession === null) {
+    return null
+  }
+  if (retainedPlayerSession.targetUrl !== targetUrl) {
+    releaseRetainedPlayerSession()
+    return null
+  }
+  const session = retainedPlayerSession
+  if (session.expiryTimer >= 0) {
+    clearTimeout(session.expiryTimer)
+  }
+  retainedPlayerSession = null
+  return session
+}
+
+function shortPlayerSurfaceHash(value: string): string {
+  let hash = 0
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0
+  }
+  return String(value.length) + ':' + String(hash)
+}
 
 @Component
 export struct PlayerSurface {
   @Prop @Watch('onVideoUrlChange') videoUrl: string = '';
   @Prop @Watch('onPlaybackOptionsChange') playbackOptions: PlaybackOptions = new PlaybackOptions();
+  @Prop liveStartPositionMs: number = 0;
   @Prop fillParent: boolean = false;
   @Prop @Watch('onAspectModeChanged') aspectMode: VideoAspectMode = VideoAspectMode.contain;
   @Prop keepAliveOnDisappear: boolean = false;
@@ -38,6 +107,7 @@ export struct PlayerSurface {
   private preparedUrl: string = '';
   private preparingUrl: string = '';
   private lastRequestedUrl: string = '';
+  private playbackFailed: boolean = false;
   private xComponentController: XComponentController = new XComponentController();
   private engineType: string = 'mpv';
   onPlayerReady?: () => void;
@@ -46,8 +116,27 @@ export struct PlayerSurface {
   onSurfaceReady?: (controller: XComponentController) => void;
 
   aboutToDisappear(): void {
+    const pageActive = AppStorage.get<boolean>('playerPageActive') ?? false
+    const targetUrl = this.getTargetUrl()
+    if (!this.playbackFailed && (this.keepAliveOnDisappear || pageActive) &&
+      this.hasEngine && this.playerEngine !== null &&
+      targetUrl.length > 0) {
+      logger.warn('CrashDiag PlayerSurface retain engine on rebuild: seq=%{public}d engine=%{public}s urlHash=%{public}s',
+        this.activeInitSeq, this.engineType, this.shortHash(targetUrl))
+      retainPlayerSession(targetUrl, this.engineType, this.playerEngine)
+      this.playerEngine = null
+      this.hasEngine = false
+      this.preparedUrl = ''
+      this.preparingUrl = ''
+      this.isDestroyed = true
+      return
+    }
+    if (this.playbackFailed) {
+      logger.warn('CrashDiag PlayerSurface release failed engine on disappear: seq=%{public}d urlHash=%{public}s',
+        this.activeInitSeq, this.shortHash(targetUrl))
+    }
     this.isDestroyed = true;
-    if (this.keepAliveOnDisappear) {
+    if (this.keepAliveOnDisappear && !this.playbackFailed) {
       logger.info('PlayerSurface keep engine alive on disappear')
       return
     }
@@ -62,6 +151,7 @@ export struct PlayerSurface {
         controller: this.xComponentController
       })
         .onLoad(async () => {
+          this.isDestroyed = false
           this.surfaceId = this.xComponentController.getXComponentSurfaceId();
           logger.info('Surface created: %{public}s', this.surfaceId);
           if (this.onSurfaceReady) {
@@ -69,6 +159,29 @@ export struct PlayerSurface {
           }
           if (this.hasEngine && this.playerEngine !== null) {
             this.playerEngine.setSurfaceId(this.surfaceId)
+            return
+          }
+          const retainedSession = takeRetainedPlayerSession(this.getTargetUrl())
+          if (retainedSession !== null) {
+            this.engineType = retainedSession.engineType
+            this.playerEngine = retainedSession.engine
+            this.hasEngine = true
+            this.preparedUrl = retainedSession.targetUrl
+            this.lastRequestedUrl = retainedSession.targetUrl
+            this.bindEngineCallbacks(this.playerEngine)
+            this.playerEngine.setSurfaceId(this.surfaceId)
+            this.playerEngine.setAspectMode(this.aspectMode)
+            logger.warn('CrashDiag PlayerSurface reused engine after rebuild: seq=%{public}d engine=%{public}s urlHash=%{public}s',
+              this.activeInitSeq, this.engineType, this.shortHash(retainedSession.targetUrl))
+            if (this.onEngineReady) {
+              this.onEngineReady(this.playerEngine)
+            }
+            if (this.onStateChange) {
+              this.onStateChange(this.playerEngine.getState())
+            }
+            if (this.onPlayerReady) {
+              this.onPlayerReady()
+            }
             return
           }
           await this.loadEngineType();
@@ -259,6 +372,7 @@ export struct PlayerSurface {
   private async initPlayer(): Promise<void> {
     const seq = ++playerSurfaceInitSeq;
     this.activeInitSeq = seq;
+    this.playbackFailed = false;
     const initStartMs = Date.now();
     const targetUrl = this.getTargetUrl()
     if (targetUrl.length === 0) {
@@ -308,25 +422,13 @@ export struct PlayerSurface {
       this.playerEngine = avEngine
     }
 
-    this.playerEngine!.onStateChange((state: PlayerState) => {
-      if (this.isDestroyed) {
-        return
-      }
-      if (state.videoWidth > 0 && state.videoHeight > 0 &&
-        (state.videoWidth !== this.videoWidth || state.videoHeight !== this.videoHeight)) {
-        this.videoWidth = state.videoWidth
-        this.videoHeight = state.videoHeight
-      }
-      if (this.onStateChange) {
-        this.onStateChange(state);
-      }
-    });
+    this.bindEngineCallbacks(this.playerEngine!);
 
     this.playerEngine!.setAspectMode(this.aspectMode);
 
     const options = new PlaybackOptions();
     options.url = targetUrl;
-    options.startPositionMs = this.playbackOptions.startPositionMs;
+    options.startPositionMs = this.resolveStartPositionMs(targetUrl);
     options.referer = this.playbackOptions.referer;
     options.userAgent = this.playbackOptions.userAgent;
     options.proxy = this.playbackOptions.proxy;
@@ -358,6 +460,10 @@ export struct PlayerSurface {
       const prepareStartMs = Date.now()
       logger.warn('CrashDiag PlayerSurface prepare begin: seq=%{public}d urlHash=%{public}s',
         seq, this.shortHash(options.url))
+      if (options.startPositionMs > 0) {
+        logger.warn('CrashDiag PlayerSurface prepare resume: seq=%{public}d startPosition=%{public}d',
+          seq, options.startPositionMs)
+      }
       engine.prepare(options);
       logger.warn('CrashDiag PlayerSurface prepare returned: seq=%{public}d elapsed=%{public}dms',
         seq, Date.now() - prepareStartMs)
@@ -402,6 +508,39 @@ export struct PlayerSurface {
 
   private getTargetUrl(): string {
     return this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUrl
+  }
+
+  private resolveStartPositionMs(targetUrl: string): number {
+    if (this.liveStartPositionMs > 0) {
+      return this.liveStartPositionMs
+    }
+    const cachedUrl = AppStorage.get<string>(PLAYER_LIVE_URL_KEY) ?? ''
+    if (cachedUrl === targetUrl) {
+      const cachedPosition = AppStorage.get<number>(PLAYER_LIVE_POSITION_KEY) ?? 0
+      if (cachedPosition > 0) {
+        return cachedPosition
+      }
+    }
+    return this.playbackOptions.startPositionMs
+  }
+
+  private bindEngineCallbacks(engine: IPlayerEngine): void {
+    engine.onStateChange((state: PlayerState) => {
+      if (this.isDestroyed) {
+        return
+      }
+      if (state.stateName === 'error' && state.error.length > 0) {
+        this.playbackFailed = true
+      }
+      if (state.videoWidth > 0 && state.videoHeight > 0 &&
+        (state.videoWidth !== this.videoWidth || state.videoHeight !== this.videoHeight)) {
+        this.videoWidth = state.videoWidth
+        this.videoHeight = state.videoHeight
+      }
+      if (this.onStateChange) {
+        this.onStateChange(state)
+      }
+    })
   }
 
   private isSamePlaybackTarget(targetUrl: string): boolean {

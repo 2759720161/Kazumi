@@ -4,6 +4,10 @@ import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode } from './
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('AVPlayerEngine')
+const INITIAL_SEEK_REGRESSION_TOLERANCE_MS: number = 1200
+const INITIAL_SEEK_GUARD_WINDOW_MS: number = 5000
+const INITIAL_SEEK_CORRECTION_INTERVAL_MS: number = 600
+const INITIAL_SEEK_MAX_CORRECTIONS: number = 2
 
 export class AVPlayerEngine implements IPlayerEngine {
   private avPlayer: media.AVPlayer | null = null
@@ -16,9 +20,14 @@ export class AVPlayerEngine implements IPlayerEngine {
   private pendingAspectMode: VideoAspectMode | null = null
   private pendingInitialPlayAfterSeek: boolean = false
   private pendingInitialSeekMs: number = -1
+  private initialSeekGuardTargetMs: number = -1
+  private initialSeekGuardUntilMs: number = 0
+  private initialSeekCorrectionCount: number = 0
+  private lastInitialSeekCorrectionAtMs: number = 0
   private initialSeekFallbackTimer: number = -1
   private progressPollingTimer: number = -1
   private localSourceFile: fileIo.File | null = null
+  private prepareGeneration: number = 0
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
@@ -33,21 +42,31 @@ export class AVPlayerEngine implements IPlayerEngine {
   }
 
   prepare(options: PlaybackOptions): void {
+    const generation = ++this.prepareGeneration
     this.clearPrepareTimeout()
     this.clearInitialSeekState()
+    this.clearInitialSeekGuard()
     this.closeLocalSourceFile()
+    this.releaseActivePlayer()
     this.resetState()
     this.currentOptions = options
     this.state.stateName = 'creating'
     this.notifyStateChange()
 
-    this.logIgnoredRequestHeaders(options)
     this.logStreamMetadata(options)
-    this.prepareWithUrl(options)
+    this.prepareWithUrl(options, generation)
   }
 
-  private prepareWithUrl(options: PlaybackOptions): void {
-    media.createAVPlayer().then((player: media.AVPlayer) => {
+  private prepareWithUrl(options: PlaybackOptions, generation: number): void {
+    media.createAVPlayer().then(async (player: media.AVPlayer) => {
+      if (generation !== this.prepareGeneration || this.currentOptions !== options) {
+        logger.info('AVPlayer create result ignored because playback target is stale')
+        try {
+          player.release()
+        } catch (_err) {
+        }
+        return
+      }
       this.avPlayer = player
       this.registerListeners()
       if (options.url.length > 0) {
@@ -63,7 +82,16 @@ export class AVPlayerEngine implements IPlayerEngine {
             this.localSourceFile = file
             logger.info('Set AVPlayer fdSrc for local file: fd=%{public}d, length=%{public}d', file.fd, length)
           } else {
-            player.url = options.url
+            const requestHeaders = this.buildMediaSourceHeaders(options)
+            if (Object.keys(requestHeaders).length > 0) {
+              const source = media.createMediaSourceWithUrl(options.url, requestHeaders)
+              await player.setMediaSource(source)
+              logger.info('AVPlayer media source configured with headers: count=%{public}d',
+                Object.keys(requestHeaders).length)
+            } else {
+              player.url = options.url
+              logger.info('AVPlayer direct URL source configured')
+            }
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -72,25 +100,50 @@ export class AVPlayerEngine implements IPlayerEngine {
         }
       }
     }).catch((err: Error) => {
+      if (generation !== this.prepareGeneration) {
+        return
+      }
       this.failPlayback('Create AVPlayer failed: ' + err.message)
     })
   }
 
-  private logIgnoredRequestHeaders(options: PlaybackOptions): void {
-    const headerKeys = Object.keys(options.headers)
-    const hasHeaders = options.referer.length > 0 || options.userAgent.length > 0 || headerKeys.length > 0
-    if (!hasHeaders) {
-      return
+  private buildMediaSourceHeaders(options: PlaybackOptions): Record<string, string> {
+    const headers: Record<string, string> = {}
+    const sourceKeys = Object.keys(options.headers)
+    for (let i = 0; i < sourceKeys.length; i++) {
+      const key = sourceKeys[i]
+      const normalizedKey = this.normalizeMediaHeaderName(key)
+      const value = options.headers[key]
+      if (normalizedKey.length > 0 && value !== undefined && value.trim().length > 0) {
+        headers[normalizedKey] = value.trim()
+      }
     }
-    logger.warn('AVPlayer does not support request headers in current implementation; trying direct URL playback')
-    if (options.referer.length > 0) {
-      logger.info('  Referer (not applied): %{public}s', options.referer.substring(0, 60))
+    if (options.referer.length > 0 && headers['Referer'] === undefined) {
+      headers['Referer'] = options.referer
     }
-    if (options.userAgent.length > 0) {
-      logger.info('  UserAgent (not applied): %{public}s', options.userAgent.substring(0, 40))
+    if (options.userAgent.length > 0 && headers['User-Agent'] === undefined) {
+      headers['User-Agent'] = options.userAgent
     }
-    if (headerKeys.length > 0) {
-      logger.info('  Custom headers (not applied): %{public}d', headerKeys.length)
+    return headers
+  }
+
+  private normalizeMediaHeaderName(key: string): string {
+    switch (key.trim().toLowerCase()) {
+      case 'cookie':
+        return 'Cookie'
+      case 'referer':
+      case 'referrer':
+        return 'Referer'
+      case 'user-agent':
+        return 'User-Agent'
+      case 'origin':
+        return 'Origin'
+      case 'accept':
+        return 'Accept'
+      case 'accept-language':
+        return 'Accept-Language'
+      default:
+        return ''
     }
   }
 
@@ -175,12 +228,14 @@ export class AVPlayerEngine implements IPlayerEngine {
         case 'released':
           this.clearPrepareTimeout()
           this.clearInitialSeekState()
+          this.clearInitialSeekGuard()
           this.state.playing = false
           this.stopProgressPolling()
           break
         case 'error':
           this.clearPrepareTimeout()
           this.clearInitialSeekState()
+          this.clearInitialSeekGuard()
           this.state.playing = false
           this.stopProgressPolling()
           this.state.error = 'Player error'
@@ -192,6 +247,9 @@ export class AVPlayerEngine implements IPlayerEngine {
     })
 
     this.avPlayer.on('timeUpdate', (time: number) => {
+      if (this.shouldRejectInitialSeekRegression(time, 'timeUpdate')) {
+        return
+      }
       this.state.positionMs = time
       this.notifyStateChange()
     })
@@ -218,6 +276,7 @@ export class AVPlayerEngine implements IPlayerEngine {
     this.avPlayer.on('error', (err: Error) => {
       this.clearPrepareTimeout()
       this.clearInitialSeekState()
+      this.clearInitialSeekGuard()
       const msg = err instanceof Error ? err.message : String(err)
       logger.error('AVPlayer error callback: %{public}s', msg)
       this.state.error = msg.length > 0 ? 'AVPlayer error: ' + msg : 'AVPlayer error (check URL format and network)'
@@ -234,7 +293,8 @@ export class AVPlayerEngine implements IPlayerEngine {
       logger.info('AVPlayer initial seek before play: %{public}dms', positionMs)
       this.pendingInitialPlayAfterSeek = true
       this.pendingInitialSeekMs = positionMs
-      this.avPlayer.seek(positionMs)
+      this.startInitialSeekGuard(positionMs)
+      this.avPlayer.seek(positionMs, media.SeekMode.SEEK_CLOSEST)
       this.startInitialSeekFallbackTimer()
     } catch (err) {
       logger.warn('AVPlayer initial seek threw, fallback to direct play: %{public}s',
@@ -249,6 +309,9 @@ export class AVPlayerEngine implements IPlayerEngine {
   private handleSeekDone(seekDoneTime: number): void {
     if (seekDoneTime >= 0) {
       this.state.positionMs = seekDoneTime
+      if (this.pendingInitialPlayAfterSeek && this.pendingInitialSeekMs > 0) {
+        this.startInitialSeekGuard(this.pendingInitialSeekMs)
+      }
       this.notifyStateChange()
     }
     if (!this.pendingInitialPlayAfterSeek) {
@@ -308,9 +371,10 @@ export class AVPlayerEngine implements IPlayerEngine {
 
   seek(positionMs: number): void {
     if (this.avPlayer) {
+      this.clearInitialSeekGuard()
       this.state.positionMs = positionMs
       this.notifyStateChange()
-      this.avPlayer.seek(positionMs)
+      this.avPlayer.seek(positionMs, media.SeekMode.SEEK_CLOSEST)
     }
   }
 
@@ -405,19 +469,25 @@ export class AVPlayerEngine implements IPlayerEngine {
   }
 
   release(): void {
+    this.prepareGeneration++
     this.clearPrepareTimeout()
     this.clearInitialSeekState()
     this.stopProgressPolling()
-    if (this.avPlayer) {
-      try {
-        this.avPlayer.release()
-      } catch (e) {
-      }
-      this.avPlayer = null
-    }
+    this.releaseActivePlayer()
     this.closeLocalSourceFile()
     this.currentOptions = null
     this.resetState()
+  }
+
+  private releaseActivePlayer(): void {
+    if (this.avPlayer !== null) {
+      try {
+        this.avPlayer.release()
+      } catch (_err) {
+        logger.warn('AVPlayer release failed')
+      }
+      this.avPlayer = null
+    }
   }
 
   private startPrepareTimeout(): void {
@@ -465,6 +535,60 @@ export class AVPlayerEngine implements IPlayerEngine {
     this.pendingInitialSeekMs = -1
   }
 
+  private startInitialSeekGuard(positionMs: number): void {
+    if (positionMs <= 0) {
+      return
+    }
+    this.initialSeekGuardTargetMs = positionMs
+    this.initialSeekGuardUntilMs = Date.now() + INITIAL_SEEK_GUARD_WINDOW_MS
+    this.initialSeekCorrectionCount = 0
+    this.lastInitialSeekCorrectionAtMs = 0
+  }
+
+  private clearInitialSeekGuard(): void {
+    this.initialSeekGuardTargetMs = -1
+    this.initialSeekGuardUntilMs = 0
+    this.initialSeekCorrectionCount = 0
+    this.lastInitialSeekCorrectionAtMs = 0
+  }
+
+  private shouldRejectInitialSeekRegression(positionMs: number, source: string): boolean {
+    if (this.initialSeekGuardTargetMs <= 0) {
+      return false
+    }
+    const now = Date.now()
+    if (now > this.initialSeekGuardUntilMs) {
+      this.clearInitialSeekGuard()
+      return false
+    }
+    if (positionMs >= this.initialSeekGuardTargetMs - INITIAL_SEEK_REGRESSION_TOLERANCE_MS) {
+      return false
+    }
+    logger.warn('AVPlayer initial seek regression ignored: source=%{public}s pos=%{public}d target=%{public}d',
+      source, positionMs, this.initialSeekGuardTargetMs)
+    this.correctInitialSeekRegression(now)
+    return true
+  }
+
+  private correctInitialSeekRegression(now: number): void {
+    if (!this.avPlayer || this.initialSeekCorrectionCount >= INITIAL_SEEK_MAX_CORRECTIONS) {
+      return
+    }
+    if (now - this.lastInitialSeekCorrectionAtMs < INITIAL_SEEK_CORRECTION_INTERVAL_MS) {
+      return
+    }
+    this.initialSeekCorrectionCount++
+    this.lastInitialSeekCorrectionAtMs = now
+    try {
+      logger.warn('AVPlayer initial seek correction: count=%{public}d target=%{public}d',
+        this.initialSeekCorrectionCount, this.initialSeekGuardTargetMs)
+      this.avPlayer.seek(this.initialSeekGuardTargetMs, media.SeekMode.SEEK_CLOSEST)
+    } catch (err) {
+      logger.warn('AVPlayer initial seek correction failed: %{public}s',
+        err instanceof Error ? err.message : String(err))
+    }
+  }
+
   private startProgressPolling(): void {
     if (this.progressPollingTimer >= 0) {
       return
@@ -491,6 +615,9 @@ export class AVPlayerEngine implements IPlayerEngine {
       const duration = this.avPlayer.duration
       let changed = false
       if (currentTime >= 0 && currentTime !== this.state.positionMs) {
+        if (this.shouldRejectInitialSeekRegression(currentTime, 'poll')) {
+          return
+        }
         this.state.positionMs = currentTime
         changed = true
       }
@@ -509,6 +636,7 @@ export class AVPlayerEngine implements IPlayerEngine {
   private failPlayback(message: string): void {
     this.clearPrepareTimeout()
     this.clearInitialSeekState()
+    this.clearInitialSeekGuard()
     this.stopProgressPolling()
     this.state.error = message
     this.state.stateName = 'error'

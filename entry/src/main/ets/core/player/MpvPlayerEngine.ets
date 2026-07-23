@@ -106,6 +106,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
   private ctxId: number = -1
   private readonly prepareTimeoutMs: number = 15000
   private prepareTimeoutTimer: number = -1
+  private isAwaitingFileLoaded: boolean = false
   private hwdecMode: string = 'auto'
   private hlsAdFilterEnabled: boolean = true
   private segAllowImgEnabled: boolean = true
@@ -255,11 +256,23 @@ export class MpvPlayerEngine implements IPlayerEngine {
       this.observeKeyProperties()
 
       if (options.url.length > 0) {
-        const loadArgs: string[] = ['loadfile', options.url]
+        const loadArgs: string[] = ['loadfile', options.url, 'replace']
+        if (options.startPositionMs > 0) {
+          const startPositionSec = Math.max(0, Math.round(options.startPositionMs / 1000))
+          loadArgs.push('start=' + String(startPositionSec))
+          logger.warn('CrashDiag mpv loadfile resume: id=%{public}d startPosition=%{public}dms startSec=%{public}d',
+            this.diagId, options.startPositionMs, startPositionSec)
+        }
         stepStartMs = Date.now()
-        const loadErr = napi.nativeCommand(this.ctxId, loadArgs)
+        let loadErr = napi.nativeCommand(this.ctxId, loadArgs)
         logger.warn('CrashDiag mpv loadfile returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms total=%{public}dms',
           this.diagId, this.ctxId, loadErr, Date.now() - stepStartMs, Date.now() - prepareStartMs)
+        if (loadErr === -4 && options.startPositionMs > 0) {
+          logger.warn('mpv loadfile resume parameter rejected, retrying from beginning')
+          loadErr = napi.nativeCommand(this.ctxId, ['loadfile', options.url, 'replace'])
+          logger.warn('CrashDiag mpv loadfile fallback returned: id=%{public}d ctxId=%{public}d err=%{public}d',
+            this.diagId, this.ctxId, loadErr)
+        }
         logger.info('mpv loadfile command result: %{public}d', loadErr)
         if (loadErr < 0) {
           this.failPlayback('mpv loadfile failed: ' + String(loadErr))
@@ -277,7 +290,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   play(): void {
-    if (!this.isInitialized || this.ctxId < 0 || napi === null) {
+    if (!this.isInitialized || this.ctxId < 0 || napi === null ||
+      this.state.stateName === 'error' || this.state.stateName === 'released') {
       return
     }
     try {
@@ -295,7 +309,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   pause(): void {
-    if (!this.isInitialized || this.ctxId < 0 || napi === null) {
+    if (!this.isInitialized || this.ctxId < 0 || napi === null ||
+      this.state.stateName === 'error' || this.state.stateName === 'released') {
       return
     }
     try {
@@ -333,7 +348,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   seek(positionMs: number): void {
-    if (!this.isInitialized || this.ctxId < 0 || napi === null) {
+    if (!this.isInitialized || this.ctxId < 0 || napi === null ||
+      this.state.stateName === 'error' || this.state.stateName === 'released') {
       return
     }
     try {
@@ -540,6 +556,9 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   private handlePropertyChange(event: MpvEventData): void {
+    if (this.state.stateName === 'error' || this.state.stateName === 'released') {
+      return
+    }
     const name = event.propertyName
     if (name.length === 0) {
       return
@@ -780,6 +799,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   private failPlayback(errorMsg: string): void {
+    this.clearPrepareTimeout()
     logger.error('mpv playback failed: %{public}s', errorMsg)
     this.state.stateName = 'error'
     this.state.error = errorMsg
@@ -788,8 +808,12 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   private startPrepareTimeout(): void {
+    this.clearPrepareTimeout()
+    this.isAwaitingFileLoaded = true
     this.prepareTimeoutTimer = setTimeout(() => {
-      if (this.state.stateName === 'preparing') {
+      this.prepareTimeoutTimer = -1
+      if (this.isAwaitingFileLoaded && this.isInitialized && !this.isReleasing) {
+        this.isAwaitingFileLoaded = false
         logger.error('mpv prepare timeout after %{public}d ms', this.prepareTimeoutMs)
         this.failPlayback('mpv prepare timeout')
       }
@@ -797,6 +821,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
   }
 
   private clearPrepareTimeout(): void {
+    this.isAwaitingFileLoaded = false
     if (this.prepareTimeoutTimer >= 0) {
       clearTimeout(this.prepareTimeoutTimer)
       this.prepareTimeoutTimer = -1

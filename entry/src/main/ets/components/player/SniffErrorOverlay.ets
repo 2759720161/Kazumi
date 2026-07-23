@@ -15,6 +15,7 @@ export struct SniffErrorOverlay {
           direction: GradientDirection.Bottom,
           colors: [['#FF050505', 0.0], ['#FF11151B', 0.58], ['#FF050505', 1.0]]
         })
+        .hitTestBehavior(HitTestMode.None)
 
       Column() {
         Text(this.getDisplayTitle())
@@ -72,9 +73,12 @@ export struct SniffErrorOverlay {
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .border({ width: 0.5, color: '#33FFFFFF' })
       .shadow({ radius: 28, color: '#99000000', offsetY: 10 })
+      .zIndex(1)
     }
     .width('100%')
     .height('100%')
+    .zIndex(20)
+    .hitTestBehavior(HitTestMode.Default)
   }
 
   private getDisplayTitle(): string {

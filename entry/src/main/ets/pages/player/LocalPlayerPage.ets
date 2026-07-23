@@ -1,4 +1,4 @@
-import { PlayerSurface } from '../../components/player/PlayerSurface'
+import { PlayerSurface, releaseRetainedPlayerSession } from '../../components/player/PlayerSurface'
 import { GestureLayer } from '../../components/player/GestureLayer'
 import { DanmakuCanvas } from '../../components/player/DanmakuCanvas'
 import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode, VideoAspectModeHelper } from '../../core/player/IPlayerEngine'
@@ -30,6 +30,9 @@ import {
 const logger = new Logger('LocalPlayerPage')
 
 const HISTORY_SAVE_INTERVAL_MS: number = 5000
+const PLAYER_LIVE_URL_KEY: string = 'playerLivePlaybackUrl'
+const PLAYER_LIVE_POSITION_KEY: string = 'playerLivePlaybackPositionMs'
+const PLAYER_REBUILD_RESUME_GUARD_MS: number = 3000
 
 @Entry
 @Component
@@ -43,6 +46,7 @@ export struct LocalPlayerPage {
   @State videoFileName: string = ''
   @State isPlaying: boolean = false
   @State positionMs: number = 0
+  @State liveStartPositionMs: number = 0
   @State durationMs: number = 0
   @State speed: number = 1.0
   @State speedLabel: string = '1x'
@@ -189,6 +193,7 @@ export struct LocalPlayerPage {
       logger.info('LocalPlayerPage aboutToDisappear skipped release for PiP')
       return
     }
+    releaseRetainedPlayerSession()
     this.playbackSessionStore.reset('local-player')
     this.isPageAlive = false
     this.pauseAutoHideTimer()
@@ -428,6 +433,7 @@ export struct LocalPlayerPage {
       PlayerSurface({
         videoUrl: this.videoUri,
         playbackOptions: this.playbackOptions,
+        liveStartPositionMs: this.liveStartPositionMs,
         fillParent: this.isFullScreen,
         aspectMode: this.currentAspectMode,
         keepAliveOnDisappear: this.shouldKeepPlaybackForPiP(),
@@ -1523,10 +1529,19 @@ export struct LocalPlayerPage {
     if (!this.isPageAlive) {
       return
     }
+    if (this.shouldIgnoreTransientRebuildZeroState(state)) {
+      logger.info('LocalPlayerPage ignore transient rebuild zero: state=%{public}s liveStart=%{public}d',
+        state.stateName, this.liveStartPositionMs)
+      return
+    }
     this.isPlaying = state.playing
     this.positionMs = state.positionMs
     if (state.positionMs > 0) {
       this.lastKnownPositionMs = state.positionMs
+    }
+    if (state.playing && state.positionMs > 0) {
+      this.liveStartPositionMs = state.positionMs
+      this.cacheLivePlaybackPosition(state.positionMs)
     }
     this.durationMs = state.durationMs
     this.volume = state.volume
@@ -1578,6 +1593,30 @@ export struct LocalPlayerPage {
     }
   }
 
+  private shouldIgnoreTransientRebuildZeroState(state: PlayerState): boolean {
+    if (this.liveStartPositionMs < PLAYER_REBUILD_RESUME_GUARD_MS || state.positionMs >= 1000 || state.completed || state.error.length > 0) {
+      return false
+    }
+    return state.stateName === 'creating' ||
+      state.stateName === 'initialized' ||
+      state.stateName === 'prepared' ||
+      state.stateName === 'playing'
+  }
+
+  private cacheLivePlaybackPosition(positionMs: number): void {
+    const targetUrl = this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUri
+    if (targetUrl.length === 0 || positionMs <= 0) {
+      return
+    }
+    AppStorage.setOrCreate(PLAYER_LIVE_URL_KEY, targetUrl)
+    AppStorage.setOrCreate(PLAYER_LIVE_POSITION_KEY, positionMs)
+  }
+
+  private clearLivePlaybackPosition(): void {
+    this.liveStartPositionMs = 0
+    AppStorage.setOrCreate(PLAYER_LIVE_POSITION_KEY, 0)
+  }
+
   private shouldSyncPlaybackSessionState(state: PlayerState): boolean {
     const now = Date.now()
     const stateChanged = state.stateName !== this.lastPlaybackSessionStateName ||
@@ -1619,10 +1658,14 @@ export struct LocalPlayerPage {
 
   private seekTo(positionMs: number): void {
     this.positionMs = positionMs
+    this.liveStartPositionMs = positionMs
     if (positionMs > 0) {
       this.lastKnownPositionMs = positionMs
       this.lastHistorySaveMs = Date.now()
+      this.cacheLivePlaybackPosition(positionMs)
       this.saveLocalHistory()
+    } else {
+      this.clearLivePlaybackPosition()
     }
     if (this.hasEngine && this.playerEngine !== null) {
       this.playerEngine.seek(positionMs)
@@ -2206,6 +2249,10 @@ export struct LocalPlayerPage {
       this.videoUri = videoResult.uri
       this.videoFileName = videoResult.fileName
       this.videoFileSize = videoResult.fileSize
+      this.positionMs = 0
+      this.durationMs = 0
+      this.lastKnownPositionMs = 0
+      this.clearLivePlaybackPosition()
       this.playbackErrorText = ''
       this.clearDanmakuState()
       const options = new PlaybackOptions()

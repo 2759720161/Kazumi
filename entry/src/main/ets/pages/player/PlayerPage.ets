@@ -2869,8 +2869,10 @@ export struct PlayerPage {
     }
     return state.stateName === 'creating' ||
       state.stateName === 'initialized' ||
+      state.stateName === 'preparing' ||
       state.stateName === 'prepared' ||
-      state.stateName === 'playing'
+      state.stateName === 'playing' ||
+      state.stateName === 'paused'
   }
 
   private cacheLivePlaybackPosition(positionMs: number): void {

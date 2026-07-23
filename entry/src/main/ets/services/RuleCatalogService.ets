@@ -50,6 +50,9 @@ export class RuleCatalogService {
   }
 
   static getRuleStatus(item: RuleCatalogItem, localRules: RuleSource[]): string {
+    if (item.repositoryMissing) {
+      return 'nonexistent'
+    }
     for (let i = 0; i < localRules.length; i++) {
       if (localRules[i].name === item.name) {
         if (localRules[i].version === item.version) {

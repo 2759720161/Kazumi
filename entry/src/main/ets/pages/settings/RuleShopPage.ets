@@ -274,15 +274,20 @@ struct RuleShopPage {
 
   @Builder
   RuleStatusBadge(item: RuleCatalogItem): void {
-    Text(RuleCatalogService.getRuleStatus(item, this.localRules) === 'installed' ?
+    Text(RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent' ? '仓库已移除' :
+      RuleCatalogService.getRuleStatus(item, this.localRules) === 'installed' ?
       (this.isRuleEnabled(item.name) ? '已启用' : '已安装') :
       (RuleCatalogService.getRuleStatus(item, this.localRules) === 'update' ? '可更新' : '未安装'))
       .fontSize(11)
       .fontWeight(FontWeight.Medium)
-      .fontColor(RuleCatalogService.getRuleStatus(item, this.localRules) === 'install' ?
-        $r('app.color.text_secondary') : $r('app.color.accent_blue'))
-      .backgroundColor(RuleCatalogService.getRuleStatus(item, this.localRules) === 'install' ?
-        $r('app.color.page_background') : $r('app.color.episode_item_selected_bg'))
+      .fontColor(RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent' ?
+        $r('app.color.status_warning') :
+        RuleCatalogService.getRuleStatus(item, this.localRules) === 'install' ?
+          $r('app.color.text_secondary') : $r('app.color.accent_blue'))
+      .backgroundColor(RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent' ?
+        $r('app.color.page_background') :
+        RuleCatalogService.getRuleStatus(item, this.localRules) === 'install' ?
+          $r('app.color.page_background') : $r('app.color.episode_item_selected_bg'))
       .borderRadius(9)
       .padding({ left: 8, right: 8, top: 3, bottom: 3 })
       .margin({ left: 8 })
@@ -311,7 +316,17 @@ struct RuleShopPage {
 
   @Builder
   StatusButton(item: RuleCatalogItem): void {
-    if (RuleCatalogService.getRuleStatus(item, this.localRules) === 'installed') {
+    if (RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent') {
+      Row() {
+        Text('已移除')
+          .fontSize(13)
+          .fontColor($r('app.color.status_warning'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        this.EnableButtonByName(item.name)
+      }
+      .alignItems(VerticalAlign.Center)
+    } else if (RuleCatalogService.getRuleStatus(item, this.localRules) === 'installed') {
       this.EnableButtonByName(item.name)
     } else if (RuleCatalogService.getRuleStatus(item, this.localRules) === 'update') {
       Row() {
@@ -619,7 +634,7 @@ struct RuleShopPage {
     try {
       const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
       this.localRules = await this.ruleSourceStore.getAll()
-      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
       this.errorMessage = ''
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -632,12 +647,14 @@ struct RuleShopPage {
     }
   }
 
-  private mergeCatalogItems(remoteItems: RuleCatalogItem[], localRules: RuleSource[]): RuleCatalogItem[] {
+  private mergeCatalogItems(remoteItems: RuleCatalogItem[], localRules: RuleSource[],
+    repositorySynced: boolean = false): RuleCatalogItem[] {
     const result: RuleCatalogItem[] = []
     const names: string[] = []
     for (let i = 0; i < localRules.length; i++) {
       const remote = this.findCatalogItem(remoteItems, localRules[i].name)
-      result.push(remote !== null ? remote : this.buildCatalogItemFromLocalRule(localRules[i]))
+      result.push(remote !== null ? remote :
+        this.buildCatalogItemFromLocalRule(localRules[i], repositorySynced))
       names.push(localRules[i].name)
     }
     for (let i = 0; i < remoteItems.length; i++) {
@@ -648,7 +665,7 @@ struct RuleShopPage {
     return result
   }
 
-  private buildCatalogItemFromLocalRule(rule: RuleSource): RuleCatalogItem {
+  private buildCatalogItemFromLocalRule(rule: RuleSource, repositorySynced: boolean = false): RuleCatalogItem {
     const item = new RuleCatalogItem()
     item.name = rule.name
     item.version = rule.version
@@ -656,6 +673,7 @@ struct RuleShopPage {
     item.author = '本地已安装'
     item.lastUpdate = rule.updatedAt > 0 ? rule.updatedAt : rule.createdAt
     item.antiCrawlerEnabled = rule.antiCrawlerConfig.enabled
+    item.repositoryMissing = repositorySynced
     return item
   }
 
@@ -795,7 +813,7 @@ struct RuleShopPage {
 
     try {
       const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
-      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
       this.errorMessage = ''
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -1049,7 +1067,7 @@ struct RuleShopPage {
     const remoteItems = await RuleCatalogService.fetchCatalog(url)
     await this.saveRepositoryStateIfNeeded(url)
     this.localRules = await this.ruleSourceStore.getAll()
-    this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+    this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
     this.repositoryUrl = url
     this.canRefreshRepository = true
     this.errorMessage = ''
@@ -1081,14 +1099,14 @@ struct RuleShopPage {
         if (result === 0) {
           this.backgroundInstallDone++
           this.localRules = await this.ruleSourceStore.getAll()
-          this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+          this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
           this.operationMessage = `后台安装规则 ${this.backgroundInstallDone}/${this.backgroundInstallTotal}`
         } else {
           failed++
         }
       }
       this.localRules = await this.ruleSourceStore.getAll()
-      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
       SettingsChangeSignal.notifyRuleSourceChanged()
       this.operationMessage = failed > 0 ?
         `后台安装完成，失败 ${failed} 条` :

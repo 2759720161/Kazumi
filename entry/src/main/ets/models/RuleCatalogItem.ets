@@ -5,6 +5,9 @@ export class RuleCatalogItem {
   author: string = ''
   lastUpdate: number = 0
   antiCrawlerEnabled: boolean = false
+  // True only when a successful repository refresh confirms this local rule
+  // is no longer present in the remote catalog.
+  repositoryMissing: boolean = false
 
   static fromJSON(json: Record<string, Object>): RuleCatalogItem {
     const item = new RuleCatalogItem()

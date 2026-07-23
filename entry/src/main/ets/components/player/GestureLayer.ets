@@ -47,9 +47,7 @@ export struct GestureLayer {
             .margin({ top: 4 })
         }
         .padding({ left: 20, right: 20, top: 10, bottom: 10 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.overlay_topbar_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+        .backgroundColor(Color.Transparent)
       } else if (this.gestureType === this.GESTURE_VOLUME) {
         Column() {
           Text('音量')
@@ -67,9 +65,7 @@ export struct GestureLayer {
             .margin({ top: 4 })
         }
         .padding({ left: 20, right: 20, top: 10, bottom: 10 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.overlay_topbar_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+        .backgroundColor(Color.Transparent)
       } else if (this.gestureType === this.GESTURE_BRIGHTNESS) {
         Column() {
           Text('亮度')
@@ -87,13 +83,13 @@ export struct GestureLayer {
             .margin({ top: 4 })
         }
         .padding({ left: 20, right: 20, top: 10, bottom: 10 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.overlay_topbar_bg'))
-        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+        .backgroundColor(Color.Transparent)
       }
     }
     .width('100%')
     .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
     .backgroundColor($r('app.color.color_transparent'))
     .hitTestBehavior(this.gestureEnabled ? HitTestMode.Default : HitTestMode.None)
     .onAreaChange((_oldArea: Area, newArea: Area) => {

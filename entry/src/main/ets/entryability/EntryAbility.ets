@@ -51,6 +51,8 @@ import {
 } from '../utils/ContinuationState';
 
 const logger = new Logger('EntryAbility');
+const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady';
+const APP_RDB_READY_KEY: string = 'appRdbReady';
 
 export default class EntryAbility extends UIAbility {
   private displayDensity: number = 3.0;
@@ -59,6 +61,12 @@ export default class EntryAbility extends UIAbility {
 
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    AppStorage.setOrCreate('currentTab', 0);
+    AppStorage.set<number>('currentTab', 0);
+    AppStorage.setOrCreate(APP_PREFERENCES_READY_KEY, false);
+    AppStorage.set<boolean>(APP_PREFERENCES_READY_KEY, false);
+    AppStorage.setOrCreate(APP_RDB_READY_KEY, false);
+    AppStorage.set<boolean>(APP_RDB_READY_KEY, false);
     AppStorage.setOrCreate('topSafeHeight', 0);
     AppStorage.setOrCreate('bottomSafeHeight', 0);
     AppStorage.setOrCreate('keyboardAvoidHeight', 0);
@@ -74,7 +82,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('bottomTabOffset', 0);
     AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
     AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);
-    AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, false);
+    AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, true);
     AppStorage.setOrCreate(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY, false);
     AppStorage.setOrCreate(HIDE_LOCAL_PAGE_KEY, HIDE_LOCAL_PAGE_DEFAULT);
     AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, '');
@@ -216,7 +224,7 @@ export default class EntryAbility extends UIAbility {
     if (!isTabletDevice) {
       mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT);
     } else {
-      mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION);
+      mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED);
     }
   }
 
@@ -275,11 +283,10 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
       AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);
 
-      const advancedOptionsUnlocked = await PreferencesStore.getInstance().getBoolean(
-        ADVANCED_OPTIONS_UNLOCKED_KEY,
-        false
-      );
-      AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, advancedOptionsUnlocked);
+      // Advanced settings are part of the normal application surface.
+      // Keep the legacy preference key for compatibility, but no longer gate
+      // pages or services behind a version-tap unlock gesture.
+      AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, true);
       const playerDebugOptionsUnlocked = await PreferencesStore.getInstance().getBoolean(
         PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
         false
@@ -318,13 +325,19 @@ export default class EntryAbility extends UIAbility {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Failed to init Preferences: %{public}s', msg);
     }
+    AppStorage.setOrCreate(APP_PREFERENCES_READY_KEY, true);
+    AppStorage.set<boolean>(APP_PREFERENCES_READY_KEY, true);
 
     try {
       const rdbManager = RdbManager.getInstance();
       await rdbManager.init(this.context);
+      AppStorage.setOrCreate(APP_RDB_READY_KEY, true);
+      AppStorage.set<boolean>(APP_RDB_READY_KEY, true);
       logger.info('RDB initialized');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      AppStorage.setOrCreate(APP_RDB_READY_KEY, false);
+      AppStorage.set<boolean>(APP_RDB_READY_KEY, false);
       logger.error('Failed to init RDB: %{public}s', msg);
     }
 

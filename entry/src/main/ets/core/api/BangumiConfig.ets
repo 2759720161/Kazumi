@@ -26,7 +26,8 @@ export class BangumiConfig {
     'https://bgmapi.anibt.net',
     'https://next.bgm.tv'
   ];
-  static readonly BANGUMI_IMAGE_BASE: string = 'https://bgmimg.anibt.net';
+  static readonly BANGUMI_IMAGE_BASE: string = 'https://lain.bangumi.lol';
+  static readonly BANGUMI_IMAGE_API_BASE: string = 'https://api.bangumi.lol';
   static readonly BANGUMI_WEB_BASE: string = 'https://bgmmi.anibt.net';
   static readonly BANGUMI_WEB_SEARCH_URLS: string[] = [
     'https://bgmmi.anibt.net/subject_search/',
@@ -50,10 +51,33 @@ export class BangumiConfig {
     url = url.replace('https://lain.bgm.tv/', BangumiConfig.BANGUMI_IMAGE_BASE + '/');
     url = url.replace('http://lain.bgm.tv/', BangumiConfig.BANGUMI_IMAGE_BASE + '/');
     url = url.replace('https://img.bgm.tv/', BangumiConfig.BANGUMI_IMAGE_BASE + '/');
+    url = url.replace('https://bgmimg.anibt.net/', BangumiConfig.BANGUMI_IMAGE_BASE + '/');
+    url = url.replace('http://bgmimg.anibt.net/', BangumiConfig.BANGUMI_IMAGE_BASE + '/');
+    // The calendar mirror returns Bangumi API image URLs. Keep API requests
+    // unchanged elsewhere, but route only these image resources through the
+    // mainland-friendly image mirror.
+    url = url.replace('https://api.bgm.tv/v0/subjects/',
+      BangumiConfig.BANGUMI_IMAGE_API_BASE + '/v0/subjects/');
+    url = url.replace('http://api.bgm.tv/v0/subjects/',
+      BangumiConfig.BANGUMI_IMAGE_API_BASE + '/v0/subjects/');
+    url = url.replace('https://bgmapi.anibt.net/v0/subjects/',
+      BangumiConfig.BANGUMI_IMAGE_API_BASE + '/v0/subjects/');
     if (!url.startsWith('http')) {
       return '';
     }
     return url;
+  }
+
+  static getSubjectImageUrls(subjectId: number): string[] {
+    if (subjectId <= 0) {
+      return [];
+    }
+    const base = `${BangumiConfig.BANGUMI_IMAGE_API_BASE}/v0/subjects/${subjectId}/image`;
+    return [
+      `${base}?type=common`,
+      `${base}?type=large`,
+      `${base}?type=medium`
+    ];
   }
 
   static getSubjectWebUrl(bangumiId: number): string {

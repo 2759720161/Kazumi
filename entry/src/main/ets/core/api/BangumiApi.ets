@@ -517,8 +517,8 @@ export class BangumiApi {
 
     BangumiApi.collectCoverUrls(html, '//lain.bgm.tv/pic/cover/', candidates);
     BangumiApi.collectCoverUrls(html, 'https://lain.bgm.tv/pic/cover/', candidates);
-    BangumiApi.collectCoverUrls(html, '//bgmimg.anibt.net/pic/cover/', candidates);
-    BangumiApi.collectCoverUrls(html, 'https://bgmimg.anibt.net/pic/cover/', candidates);
+    BangumiApi.collectCoverUrls(html, '//lain.bangumi.lol/pic/cover/', candidates);
+    BangumiApi.collectCoverUrls(html, 'https://lain.bangumi.lol/pic/cover/', candidates);
     return candidates;
   }
 
@@ -572,7 +572,8 @@ export class BangumiApi {
       return '';
     }
     if (!normalized.includes('pic/cover') && !normalized.includes('.jpg') &&
-        !normalized.includes('.png') && !normalized.includes('.webp')) {
+        !normalized.includes('.png') && !normalized.includes('.webp') &&
+        !normalized.includes('/v0/subjects/')) {
       return '';
     }
     return normalized;

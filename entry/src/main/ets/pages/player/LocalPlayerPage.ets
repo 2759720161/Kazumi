@@ -19,6 +19,7 @@ import { PiPCallbacks, PiPManager } from '../../services/PiPManager'
 import { TypeNodePiPRoute, TypeNodePiPSession } from '../../services/TypeNodePiPSession'
 import { PlaybackSessionActions, PlaybackSessionStore } from '../../services/PlaybackSessionStore'
 import { router, window, PiPWindow, promptAction } from '@kit.ArkUI'
+import { KeyCode } from '@ohos.multimodalInput.keyCode'
 import { common } from '@kit.AbilityKit'
 import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
 import {
@@ -26,6 +27,10 @@ import {
   PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
 } from '../../utils/PlayerAutoFullscreen'
+import {
+  PLAYER_AUTO_PIP_DEFAULT,
+  PREFS_KEY_PLAYER_AUTO_PIP
+} from '../../utils/PlayerAutoPiP'
 
 const logger = new Logger('LocalPlayerPage')
 
@@ -57,6 +62,7 @@ export struct LocalPlayerPage {
   @State private videoWidth: number = 0
   @State private videoHeight: number = 0
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
   @State screenBrightness: number = 0.5
   @State volume: number = 1.0
@@ -66,6 +72,7 @@ export struct LocalPlayerPage {
   private danmakuManager: DanmakuManager | null = null
   @State isDanmakuEnabled: boolean = true
   @State showMoreMenu: boolean = false
+  @State localCompactMode: boolean = false
   @State showHud: boolean = false
   @State hudText: string = ''
   @State playbackErrorText: string = ''
@@ -88,6 +95,9 @@ export struct LocalPlayerPage {
   @State pendingDanmakuUri: string = ''
   private controlHideTimer: number = -1
   private hudTimer: number = -1
+  private keepScreenOnRequestToken: number = 0
+  private keepScreenOnEnabled: boolean = false
+  private keepScreenOnRequested: boolean = false
   private wasPlayingBeforeDrag: boolean = false
   private lastHistorySaveMs: number = 0
   private historySeekMs: number = -1
@@ -119,6 +129,7 @@ export struct LocalPlayerPage {
 
   aboutToAppear(): void {
     this.isPageAlive = true
+    this.syncKeepScreenOnWithPlayback()
     AppStorage.setOrCreate('playerPageActive', true)
     this.pipManager.setCallbacks(this.buildPiPCallbacks())
     this.registerPlaybackSessionActions()
@@ -175,15 +186,27 @@ export struct LocalPlayerPage {
 
     this.startAutoHideTimer()
     this.loadAspectModePreference()
+    this.loadPlayerAutoPiPPreference()
     this.loadPlayerAutoFullscreenPreference().then(() => {
       this.applyPlayerAutoFullscreenRuntimeState()
     }).catch((_err: Error) => {
       this.applyPlayerAutoFullscreenRuntimeState()
     })
+    setTimeout(() => {
+      if (this.isPageAlive) {
+        try {
+          this.getUIContext().getFocusController().requestFocus('localPlayerKeyboardTarget')
+        } catch (_err) {
+          // The target can temporarily have an unfocusable ancestor during page transitions.
+          logger.warn('Local player keyboard target is not focusable yet')
+        }
+      }
+    }, 0)
   }
 
   aboutToDisappear(): void {
     AppStorage.setOrCreate('playerPageActive', false)
+    this.setKeepScreenOn(false)
     if (this.shouldKeepPlaybackForPiP()) {
       this.pauseAutoHideTimer()
       this.clearHudTimer()
@@ -219,8 +242,10 @@ export struct LocalPlayerPage {
 
   private onAppForegroundChanged(): void {
     if (this.appInForeground) {
+      this.syncKeepScreenOnWithPlayback()
       return
     }
+    this.setKeepScreenOn(false)
     this.pauseForApplicationBackground()
   }
 
@@ -282,8 +307,27 @@ export struct LocalPlayerPage {
     if (this.handleBackFromPlayer()) {
       return true
     }
-    this.leavePlayerWithPiP()
+    if (this.shouldAutoLeaveWithTypeNodePiP()) {
+      this.leavePlayerWithPiP()
+    } else {
+      this.leavePlayerNormally()
+    }
     return true
+  }
+
+  private leavePlayerNormally(): void {
+    if (this.handleBackFromPlayer()) {
+      return
+    }
+    router.back()
+  }
+
+  private shouldAutoLeaveWithTypeNodePiP(): boolean {
+    return this.playerAutoPiP && this.canLeaveWithTypeNodePiP()
+  }
+
+  private canLeaveWithTypeNodePiP(): boolean {
+    return this.videoUri.length > 0 && this.hasEngine
   }
 
   private async startTypeNodePiPForLeaving(): Promise<boolean> {
@@ -425,6 +469,12 @@ export struct LocalPlayerPage {
     .backgroundColor(Color.Black)
     .clip(true)
     .renderFit(RenderFit.RESIZE_FILL)
+    .id('localPlayerKeyboardTarget')
+    .focusable(true)
+    .focusOnTouch(true)
+    .onKeyEvent((event: KeyEvent) => {
+      this.handlePlayerKeyEvent(event)
+    })
   }
 
   @Builder
@@ -495,6 +545,7 @@ export struct LocalPlayerPage {
       screenBrightness: this.screenBrightness,
       isPlaying: this.isPlaying,
       isControlVisible: this.isControlVisible,
+      gestureEnabled: !this.shouldDisablePlayerGestures(),
       onSeek: (positionMs: number) => {
         this.seekTo(positionMs)
         this.showHudText('跳转到 ' + this.formatTime(positionMs))
@@ -514,6 +565,13 @@ export struct LocalPlayerPage {
       },
       onToggleControls: () => {
         this.toggleControls()
+      },
+      onMouseSingleClick: () => {
+        this.togglePlayPause()
+        this.showHudText(this.isPlaying ? '播放' : '暂停')
+      },
+      onMouseDoubleClick: () => {
+        this.toggleFullScreen()
       },
       onTemporarySpeedStart: () => {
         this.startTemporarySpeed()
@@ -623,6 +681,16 @@ export struct LocalPlayerPage {
           .layoutWeight(1)
       }
 
+      if (this.isFullScreen) {
+        this.TopSymbolButton($r('sys.symbol.gobackward_15'), '后退 15 秒', () => {
+          this.seekByFifteenSeconds(false)
+        })
+
+        this.TopSymbolButton($r('sys.symbol.goforward_15'), '前进 15 秒', () => {
+          this.seekByFifteenSeconds(true)
+        })
+      }
+
       this.TopSymbolButton($r('sys.symbol.doc_text'), '弹幕', () => {
         this.handleDanmakuPrimaryAction()
       })
@@ -647,6 +715,7 @@ export struct LocalPlayerPage {
     .zIndex(6)
     .translate({ y: this.isControlVisible ? 0 : -12 })
     .opacity(this.isControlVisible ? 1 : 0)
+    .hitTestBehavior(this.isControlVisible ? HitTestMode.Default : HitTestMode.None)
     .animation({ duration: this.getControlAnimationDuration(), curve: Curve.EaseInOut })
   }
 
@@ -669,6 +738,7 @@ export struct LocalPlayerPage {
     .zIndex(6)
     .translate({ y: this.isControlVisible ? 0 : 12 })
     .opacity(this.shouldShowBottomControlLayer() ? 1 : 0)
+    .hitTestBehavior(this.shouldShowBottomControlLayer() ? HitTestMode.Default : HitTestMode.None)
     .animation({ duration: this.getControlAnimationDuration(), curve: Curve.EaseInOut })
   }
 
@@ -702,7 +772,11 @@ export struct LocalPlayerPage {
       .trackColor('#55FFFFFF')
       .selectedColor($r('app.color.accent_blue'))
       .blockColor($r('app.color.text_on_primary'))
+      .hitTestBehavior(this.shouldShowBottomControlLayer() ? HitTestMode.Default : HitTestMode.None)
       .onChange((value: number, mode: SliderChangeMode) => {
+        if (!this.shouldShowBottomControlLayer()) {
+          return
+        }
         if (mode === SliderChangeMode.Begin) {
           this.isDraggingProgress = true
           this.wasPlayingBeforeDrag = this.isPlaying
@@ -997,7 +1071,7 @@ export struct LocalPlayerPage {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
 
-      Text(this.buildLocalPlaybackSummaryText())
+      Text(this.localCompactMode ? this.buildLocalCompactSummaryText() : this.buildLocalPlaybackSummaryText())
         .fontSize(12)
         .fontColor($r('app.color.text_secondary'))
         .maxLines(1)
@@ -1005,42 +1079,44 @@ export struct LocalPlayerPage {
         .width('100%')
         .margin({ top: 6 })
 
-      this.LocalDanmakuStatusRow()
+      if (!this.localCompactMode) {
+        this.LocalDanmakuStatusRow()
 
-      Column({ space: 8 }) {
-        Row({ space: 8 }) {
-          this.LocalActionButton($r('sys.symbol.doc_text'), this.danmakuFileName.length > 0 ? '更换弹幕' : '加载弹幕',
-            this.danmakuFileName.length > 0 ? '已加载 ' + this.danmakuLoadedCount + ' 条' : 'XML / JSON / ASS',
-            this.danmakuFileName.length > 0, () => {
-              this.pickAndLoadLocalDanmaku()
-            })
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            this.LocalActionButton($r('sys.symbol.doc_text'), this.danmakuFileName.length > 0 ? '更换弹幕' : '加载弹幕',
+              this.danmakuFileName.length > 0 ? '已加载 ' + this.danmakuLoadedCount + ' 条' : 'XML / JSON / ASS',
+              this.danmakuFileName.length > 0, () => {
+                this.pickAndLoadLocalDanmaku()
+              })
 
-          this.LocalActionButton($r('sys.symbol.barrage_setting'), '弹幕设置',
-            '显示密度、字号等', false, () => {
-              this.openDanmakuSettings()
+            this.LocalActionButton($r('sys.symbol.barrage_setting'), '弹幕设置',
+              '显示密度、字号等', false, () => {
+                this.openDanmakuSettings()
+              })
+          }
+          .width('100%')
+
+          Row({ space: 8 }) {
+            this.LocalActionButton($r('sys.symbol.clock'), '时间校准',
+              this.danmakuFileName.length > 0 ? this.formatOffset(this.danmakuOffsetMs) : '先加载弹幕',
+              this.danmakuFileName.length > 0 && this.danmakuOffsetMs !== 0, () => {
+                if (this.danmakuFileName.length > 0) {
+                  this.showDanmakuOffsetPanel = true
+                } else {
+                  this.handleDanmakuPrimaryAction()
+                }
+              })
+
+            this.LocalActionButton($r('sys.symbol.folder'), '更换视频', '重新选择文件', false, () => {
+              this.pickVideoFile()
             })
+          }
+          .width('100%')
         }
         .width('100%')
-
-        Row({ space: 8 }) {
-          this.LocalActionButton($r('sys.symbol.clock'), '时间校准',
-            this.danmakuFileName.length > 0 ? this.formatOffset(this.danmakuOffsetMs) : '先加载弹幕',
-            this.danmakuFileName.length > 0 && this.danmakuOffsetMs !== 0, () => {
-              if (this.danmakuFileName.length > 0) {
-                this.showDanmakuOffsetPanel = true
-              } else {
-                this.handleDanmakuPrimaryAction()
-              }
-            })
-
-          this.LocalActionButton($r('sys.symbol.folder'), '更换视频', '重新选择文件', false, () => {
-            this.pickVideoFile()
-          })
-        }
-        .width('100%')
+        .margin({ top: 12 })
       }
-      .width('100%')
-      .margin({ top: 12 })
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: this.bottomSafeHeight + 16 })
@@ -1123,38 +1199,53 @@ export struct LocalPlayerPage {
         .width('100%')
         .height('100%')
         .backgroundColor($r('app.color.color_transparent'))
+        .hitTestBehavior(HitTestMode.Default)
         .onClick(() => {
           this.showMoreMenu = false
         })
 
       Column() {
-        this.MoreMenuItem(this.isDanmakuEnabled ? '关闭弹幕' : '开启弹幕', () => {
-          this.toggleDanmaku()
-          this.showMoreMenu = false
-        })
-        this.MoreMenuItem('弹幕', () => {
-          this.handleDanmakuPrimaryAction()
-          this.showMoreMenu = false
-        })
-        this.MoreMenuItem('弹幕设置', () => {
-          this.openDanmakuSettings()
-          this.showMoreMenu = false
-        })
-        if (this.danmakuFileName.length > 0) {
-          this.MoreMenuItem('弹幕时间校准', () => {
-            this.showDanmakuOffsetPanel = true
-            this.showMoreMenu = false
-          })
+        Scroll() {
+          Column() {
+            this.MoreMenuItem(this.isDanmakuEnabled ? '关闭弹幕' : '开启弹幕', () => {
+              this.toggleDanmaku()
+              this.showMoreMenu = false
+            })
+            this.MoreMenuItem('弹幕', () => {
+              this.handleDanmakuPrimaryAction()
+              this.showMoreMenu = false
+            })
+            this.MoreMenuItem('弹幕设置', () => {
+              this.openDanmakuSettings()
+              this.showMoreMenu = false
+            })
+            if (this.danmakuFileName.length > 0) {
+              this.MoreMenuItem('弹幕时间校准', () => {
+                this.showDanmakuOffsetPanel = true
+                this.showMoreMenu = false
+              })
+            }
+            this.MoreMenuItem('视频比例', () => {
+              this.showAspectModePanel = true
+            })
+            this.MoreMenuItem('倍速', () => {
+              this.nextSpeed()
+              this.showMoreMenu = false
+            })
+            this.MoreMenuItem(this.localCompactMode ? '关闭简洁模式' : '开启简洁模式', () => {
+              this.localCompactMode = !this.localCompactMode
+              this.showMoreMenu = false
+            })
+          }
+          .width('100%')
         }
-        this.MoreMenuItem('视频比例', () => {
-          this.showAspectModePanel = true
-        })
-        this.MoreMenuItem('倍速', () => {
-          this.nextSpeed()
-          this.showMoreMenu = false
-        })
+        .width('100%')
+        .height(this.getMoreMenuHeight())
+        .scrollable(ScrollDirection.Vertical)
+        .edgeEffect(EdgeEffect.Spring)
+        .hitTestBehavior(HitTestMode.Default)
       }
-      .width(156)
+      .width(176)
       .padding({ top: 8, bottom: 8 })
       .borderRadius(16)
       .backgroundColor($r('app.color.category_menu_surface'))
@@ -1162,6 +1253,7 @@ export struct LocalPlayerPage {
       .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
       .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
+      .hitTestBehavior(HitTestMode.Default)
     }
     .width('100%')
     .height('100%')
@@ -1213,6 +1305,19 @@ export struct LocalPlayerPage {
     .onClick(() => {
       action()
     })
+  }
+
+  private getMoreMenuHeight(): number {
+    if (this.isFullScreen) {
+      return 296
+    }
+    return 128
+  }
+
+  private shouldDisablePlayerGestures(): boolean {
+    return this.showMoreMenu || this.showAspectModePanel || this.showDanmakuSettingsPanel ||
+      this.showDanmakuSettingsSheet || this.showDanmakuManageSheet || this.showDanmakuLoadDialog ||
+      this.showDanmakuOffsetPanel
   }
 
   @Builder
@@ -1535,6 +1640,7 @@ export struct LocalPlayerPage {
       return
     }
     this.isPlaying = state.playing
+    this.syncKeepScreenOnWithPlayback()
     this.positionMs = state.positionMs
     if (state.positionMs > 0) {
       this.lastKnownPositionMs = state.positionMs
@@ -1591,6 +1697,85 @@ export struct LocalPlayerPage {
         this.playerEngine.play()
       }
     }
+  }
+
+  private async setKeepScreenOn(keepScreenOn: boolean): Promise<void> {
+    if (this.keepScreenOnRequested === keepScreenOn && this.keepScreenOnEnabled === keepScreenOn) {
+      return
+    }
+    this.keepScreenOnRequested = keepScreenOn
+    const requestToken = ++this.keepScreenOnRequestToken
+    try {
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext
+      const mainWindow = await window.getLastWindow(context)
+      if (requestToken !== this.keepScreenOnRequestToken) {
+        return
+      }
+      await mainWindow.setWindowKeepScreenOn(keepScreenOn)
+      this.keepScreenOnEnabled = keepScreenOn
+      if (requestToken !== this.keepScreenOnRequestToken) {
+        this.setKeepScreenOn(this.keepScreenOnRequested)
+        return
+      }
+      logger.info('Local screen keep-on changed: %{public}s', String(keepScreenOn))
+    } catch (_err) {
+      logger.warn('Failed to set local screen keep-on: %{public}s', String(keepScreenOn))
+    }
+  }
+
+  private syncKeepScreenOnWithPlayback(): void {
+    const shouldKeepScreenOn = this.isPageAlive && this.appInForeground && this.isPlaying &&
+      !this.shouldKeepPlaybackForPiP()
+    this.setKeepScreenOn(shouldKeepScreenOn)
+  }
+
+  private handlePlayerKeyEvent(event: KeyEvent): void {
+    if (event.type !== KeyType.Down) {
+      return
+    }
+
+    if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+      if (this.isFullScreen) {
+        this.toggleFullScreen()
+      }
+      return
+    }
+
+    if (this.showDanmakuSettingsPanel || this.showDanmakuSettingsSheet) {
+      return
+    }
+
+    switch (event.keyCode) {
+      case KeyCode.KEYCODE_SPACE:
+        this.togglePlayPause()
+        this.showHudText(this.isPlaying ? '播放' : '暂停')
+        break
+      case KeyCode.KEYCODE_DPAD_LEFT:
+        this.seekTo(Math.max(this.positionMs - 5000, 0))
+        this.showHudText('后退 5 秒')
+        break
+      case KeyCode.KEYCODE_DPAD_RIGHT:
+        this.seekTo(Math.min(this.positionMs + 5000, this.durationMs))
+        this.showHudText('前进 5 秒')
+        break
+      case KeyCode.KEYCODE_DPAD_UP:
+        this.changePlayerVolume(0.05)
+        break
+      case KeyCode.KEYCODE_DPAD_DOWN:
+        this.changePlayerVolume(-0.05)
+        break
+      default:
+        break
+    }
+  }
+
+  private changePlayerVolume(delta: number): void {
+    const nextVolume = Math.max(0, Math.min(1, this.volume + delta))
+    this.volume = nextVolume
+    if (this.hasEngine && this.playerEngine !== null) {
+      this.playerEngine.setVolume(nextVolume)
+    }
+    this.showHudText(`音量 ${Math.round(nextVolume * 100)}%`)
   }
 
   private shouldIgnoreTransientRebuildZeroState(state: PlayerState): boolean {
@@ -1794,6 +1979,16 @@ export struct LocalPlayerPage {
     return success
   }
 
+  private seekByFifteenSeconds(forward: boolean): void {
+    if (!this.hasEngine || this.durationMs <= 0) {
+      return
+    }
+    const offsetMs = forward ? 15000 : -15000
+    const targetMs = Math.max(0, Math.min(this.positionMs + offsetMs, this.durationMs))
+    this.seekTo(targetMs)
+    this.showHudText(forward ? '前进 15 秒' : '后退 15 秒')
+  }
+
   private registerPlaybackSessionActions(): void {
     const actions = new PlaybackSessionActions()
     actions.onPlay = () => {
@@ -1865,6 +2060,7 @@ export struct LocalPlayerPage {
         this.isPlaying = true
       }
       this.isPiPActive = false
+      this.syncKeepScreenOnWithPlayback()
     }
     callbacks.onPiPStopped = () => {
       if (this.isRestoringFromPiP) {
@@ -1878,6 +2074,7 @@ export struct LocalPlayerPage {
       }
       this.keepPlaybackForPiP = false
       this.isPiPActive = false
+      this.syncKeepScreenOnWithPlayback()
     }
     return callbacks
   }
@@ -1940,7 +2137,7 @@ export struct LocalPlayerPage {
         if (this.isPhoneDevice()) {
           await mainWindow.setPreferredOrientation(this.fullscreenRestoreOrientation)
         } else {
-          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED)
         }
         mainWindow.disableLandscapeMultiWindow().catch((err: BusinessError) => {
           logger.warn('disableLandscapeMultiWindow failed: %{public}d', err.code)
@@ -2064,7 +2261,7 @@ export struct LocalPlayerPage {
     this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
     this.setFullScreenMode(false)
-    this.setAutoRotationEnabled(true)
+    this.setAutoRotationEnabled(this.playerAutoFullscreen)
     setTimeout(() => {
       this.getUIContext().animateTo({
         duration: 350,
@@ -2085,13 +2282,13 @@ export struct LocalPlayerPage {
       const mainWindow = await window.getLastWindow(context)
       if (this.isPhoneDevice()) {
         if (enabled) {
-          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED)
         } else {
           await mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT)
         }
       } else {
-        // Tablet: always allow auto rotation
-        await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+        // Tablets follow the sensor only while the system rotation lock allows it.
+        await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED)
       }
     } catch (_err) {
       logger.warn('Failed to set auto rotation: %{public}s', _err instanceof Error ? _err.message : String(_err))
@@ -2124,6 +2321,19 @@ export struct LocalPlayerPage {
       this.currentAspectMode = savedMode as VideoAspectMode
     } catch (_err) {
       this.currentAspectMode = VideoAspectMode.contain
+    }
+  }
+
+  private async loadPlayerAutoPiPPreference(): Promise<void> {
+    try {
+      this.playerAutoPiP = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_PLAYER_AUTO_PIP,
+        PLAYER_AUTO_PIP_DEFAULT
+      )
+      AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, this.playerAutoPiP)
+    } catch (_err) {
+      this.playerAutoPiP = PLAYER_AUTO_PIP_DEFAULT
+      AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, PLAYER_AUTO_PIP_DEFAULT)
     }
   }
 
@@ -2482,6 +2692,21 @@ export struct LocalPlayerPage {
       parts.push(this.formatFileSize(this.videoFileSize))
     }
     parts.push(this.speedLabel)
+    return parts.join(' · ')
+  }
+
+  private buildLocalCompactSummaryText(): string {
+    const parts: string[] = []
+    if (this.durationMs > 0) {
+      parts.push(this.formatTime(this.positionMs) + ' / ' + this.formatTime(this.durationMs))
+    } else if (this.positionMs > 0) {
+      parts.push(this.formatTime(this.positionMs))
+    } else {
+      parts.push('准备播放')
+    }
+    if (this.videoFileSize > 0) {
+      parts.push(this.formatFileSize(this.videoFileSize))
+    }
     return parts.join(' · ')
   }
 

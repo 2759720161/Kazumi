@@ -12,7 +12,19 @@ const SEEK_THRESHOLD_MS = 5000
 const DISPATCH_POLL_INTERVAL_MS = 100
 const DISPATCH_LOG_INTERVAL = 100
 const BASE_MAX_LATE_DISPATCH_MS = 4500
-const MAX_PENDING_TIMERS = 500
+const MAX_PENDING_DISPATCHES = 500
+
+class PendingDanmakuDispatch {
+  item: DanmakuItem
+  emitAtMs: number
+  generation: number
+
+  constructor(item: DanmakuItem, emitAtMs: number, generation: number) {
+    this.item = item
+    this.emitAtMs = emitAtMs
+    this.generation = generation
+  }
+}
 
 export class DanmakuTimeSync {
   private trackAllocator: DanmakuTrackAllocator
@@ -34,7 +46,8 @@ export class DanmakuTimeSync {
   private stats: DanmakuRuntimeStats
   private timelineOffsetMs: number = 0
   private dispatchGeneration: number = 0
-  private pendingTimerIds: number[] = []
+  private pendingDispatches: PendingDanmakuDispatch[] = []
+  private dispatchBatch: DanmakuItem[] = []
 
   constructor(trackAllocator: DanmakuTrackAllocator, renderer: DanmakuRenderer, stats: DanmakuRuntimeStats) {
     this.trackAllocator = trackAllocator
@@ -85,6 +98,7 @@ export class DanmakuTimeSync {
       } else {
         this.renderer.pauseRendering()
         this.stopDispatchPoll()
+        this.clearPendingDispatches()
       }
     }
 
@@ -146,6 +160,8 @@ export class DanmakuTimeSync {
     this.currentSpeed = 1.0
     this.timelineOffsetMs = 0
     this.dispatchGeneration = 0
+    this.pendingDispatches = []
+    this.dispatchBatch = []
   }
 
   resyncAfterResize(): void {
@@ -190,10 +206,7 @@ export class DanmakuTimeSync {
 
   private invalidatePendingTimers(): void {
     this.dispatchGeneration++
-    for (let i = 0; i < this.pendingTimerIds.length; i++) {
-      clearTimeout(this.pendingTimerIds[i])
-    }
-    this.pendingTimerIds = []
+    this.clearPendingDispatches()
     if (this.renderer !== null) {
       this.renderer.clearAll()
     }
@@ -203,13 +216,8 @@ export class DanmakuTimeSync {
     this.dispatchIndex = this.findDispatchIndex(this.resolveSourcePosition(this.currentPositionMs))
   }
 
-  private removePendingTimerId(timerId: number): void {
-    for (let i = 0; i < this.pendingTimerIds.length; i++) {
-      if (this.pendingTimerIds[i] === timerId) {
-        this.pendingTimerIds.splice(i, 1)
-        return
-      }
-    }
+  private clearPendingDispatches(): void {
+    this.pendingDispatches = []
   }
 
   private refreshDispatchState(): void {
@@ -256,6 +264,7 @@ export class DanmakuTimeSync {
     if (this.durationMs > 0 && this.currentPositionMs > this.durationMs) {
       this.currentPositionMs = this.durationMs
     }
+    this.flushPendingDispatches(Date.now())
     this.dispatchDanmaku(this.currentPositionMs)
   }
 
@@ -275,7 +284,8 @@ export class DanmakuTimeSync {
 
     const sourcePositionMs = this.resolveSourcePosition(positionMs)
 
-    const batch: DanmakuItem[] = []
+    const batch = this.dispatchBatch
+    batch.length = 0
     while (this.dispatchIndex < this.allDanmaku.length) {
       const item = this.allDanmaku[this.dispatchIndex]
       if (item.timeMs > sourcePositionMs) {
@@ -307,39 +317,56 @@ export class DanmakuTimeSync {
       }
       if (itemSecond !== currentSecond || i === batch.length) {
         if (i > groupStart) {
-          const group: DanmakuItem[] = []
-          for (let j = groupStart; j < i; j++) {
-            group.push(batch[j])
-          }
-          this.dispatchGroupWithStagger(group, positionMs)
+          this.dispatchGroupWithStagger(batch, groupStart, i, positionMs)
         }
         groupStart = i
         currentSecond = itemSecond
       }
     }
+    batch.length = 0
   }
 
-  private dispatchGroupWithStagger(group: DanmakuItem[], positionMs: number): void {
-    const total = group.length
+  private dispatchGroupWithStagger(group: DanmakuItem[], startIndex: number, endIndex: number, positionMs: number): void {
+    const total = endIndex - startIndex
+    const now = Date.now()
     for (let i = 0; i < total; i++) {
+      const item = group[startIndex + i]
       const staggerDelay = Math.floor(i * 1000 / total)
       if (staggerDelay === 0) {
-        this.emitDanmaku(group[i], positionMs)
+        this.emitDanmaku(item, positionMs)
       } else {
-        if (this.pendingTimerIds.length >= MAX_PENDING_TIMERS) {
-          this.emitDanmaku(group[i], positionMs)
+        if (this.pendingDispatches.length >= MAX_PENDING_DISPATCHES) {
+          this.emitDanmaku(item, positionMs)
           continue
         }
-        const capturedGeneration = this.dispatchGeneration
-        const capturedItem = group[i]
-        const timerId = setTimeout(() => {
-          this.removePendingTimerId(timerId)
-          if (this.dispatchGeneration === capturedGeneration) {
-            this.emitDanmaku(capturedItem, positionMs)
-          }
-        }, staggerDelay)
-        this.pendingTimerIds.push(timerId)
+        this.pendingDispatches.push(new PendingDanmakuDispatch(
+          item, now + staggerDelay, this.dispatchGeneration))
       }
+    }
+  }
+
+  private flushPendingDispatches(now: number): void {
+    if (this.pendingDispatches.length === 0) {
+      return
+    }
+
+    let writeIndex = 0
+    for (let i = 0; i < this.pendingDispatches.length; i++) {
+      const pending = this.pendingDispatches[i]
+      if (pending.generation !== this.dispatchGeneration) {
+        continue
+      }
+      if (pending.emitAtMs <= now && this.currentPlaying) {
+        this.emitDanmaku(pending.item, this.currentPositionMs)
+        continue
+      }
+      if (writeIndex !== i) {
+        this.pendingDispatches[writeIndex] = pending
+      }
+      writeIndex++
+    }
+    if (writeIndex < this.pendingDispatches.length) {
+      this.pendingDispatches.length = writeIndex
     }
   }
 

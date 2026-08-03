@@ -5,7 +5,6 @@ import { RuleSourceStore } from '../store/RuleSourceStore'
 import { RuleSource } from '../models/RuleSource'
 import { WebDavClient, WebDavConfig } from '../network/WebDavClient'
 import { Logger } from '../utils/Logger'
-import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../utils/AdvancedOptionsUnlock'
 import { BangumiConfig } from '../core/api/BangumiConfig'
 import { BangumiApi } from '../core/api/BangumiApi'
 import { AnimeItem } from '../models/AnimeItem'
@@ -212,7 +211,7 @@ export class HistorySyncService {
   }
 
   private async isWebDavFeatureUnlocked(): Promise<boolean> {
-    return await PreferencesStore.getInstance().getBoolean(ADVANCED_OPTIONS_UNLOCKED_KEY, false)
+    return true
   }
 
   private async ensureWebDavFeatureUnlocked(): Promise<void> {

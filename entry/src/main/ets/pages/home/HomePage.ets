@@ -248,6 +248,7 @@ export struct HomePage {
       this.hasLoadError = hero.length === 0 && trending.length === 0
       this.isLoading = false
 
+      this.loadRemainingTrendingSection(token)
       this.loadSeasonalSection(token)
       this.loadHighScoreSection(token)
       this.enrichHeroSection(token)
@@ -273,6 +274,7 @@ export struct HomePage {
       }
       this.seasonalList = [...items]
       this.seasonLabel = this.vm.seasonLabel
+      this.loadRemainingSeasonalSection(token)
     } catch (err) {
       logger.warn('loadHomeSeasonal failed')
     } finally {
@@ -289,6 +291,7 @@ export struct HomePage {
         return
       }
       this.highScoreList = [...items]
+      this.loadRemainingHighScoreSection(token)
     } catch (err) {
       logger.warn('loadHomeHighScore failed')
     } finally {
@@ -309,6 +312,30 @@ export struct HomePage {
     } catch (err) {
       logger.warn('enrichHomeHeroList failed')
     }
+  }
+
+  private async loadRemainingTrendingSection(token: number): Promise<void> {
+    await this.vm.loadRemainingTrending((items: RecommendCardModel[]): void => {
+      if (token === this.loadToken) {
+        this.trendingList = items
+      }
+    }, (): boolean => token === this.loadToken)
+  }
+
+  private async loadRemainingSeasonalSection(token: number): Promise<void> {
+    await this.vm.loadRemainingSeasonal((items: RecommendCardModel[]): void => {
+      if (token === this.loadToken) {
+        this.seasonalList = items
+      }
+    }, (): boolean => token === this.loadToken)
+  }
+
+  private async loadRemainingHighScoreSection(token: number): Promise<void> {
+    await this.vm.loadRemainingHighScore((items: RecommendCardModel[]): void => {
+      if (token === this.loadToken) {
+        this.highScoreList = items
+      }
+    }, (): boolean => token === this.loadToken)
   }
 
   @Builder
@@ -436,7 +463,13 @@ export struct HomePage {
 
     this.tagLoading = true
     try {
-      await this.vm.loadByTag(tag)
+      await this.vm.loadByTag(tag, (items: RecommendCardModel[]): void => {
+        if (requestVersion === this.tagRequestVersion && this.selectedTag === tag) {
+          this.tagTopicList = items
+        }
+      }, (): boolean => {
+        return requestVersion === this.tagRequestVersion && this.selectedTag === tag
+      })
       if (requestVersion === this.tagRequestVersion && this.selectedTag === tag) {
         this.tagTopicList = this.vm.tagTopicList
       }

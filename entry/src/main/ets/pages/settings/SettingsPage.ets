@@ -4,12 +4,16 @@ import { PreferencesStore } from '../../store/PreferencesStore'
 import { SecurityPolicy } from '../../network/SecurityPolicy'
 import { RuleCatalogService } from '../../services/RuleCatalogService'
 import { common, ConfigurationConstant } from '@kit.AbilityKit'
+import { commentManager } from '@kit.AppGalleryKit'
+import { BusinessError } from '@kit.BasicServicesKit'
 import { Logger } from '../../utils/Logger'
-import { router } from '@kit.ArkUI'
+import { promptAction, router } from '@kit.ArkUI'
 import { RULE_SOURCE_VERSION_KEY } from '../../store/SettingsChangeSignal'
 import {
   HdsNavigation,
-  HdsNavigationTitleMode
+  HdsNavigationTitleMode,
+  HdsNavDestination,
+  HdsNavDestinationTitleMode
 } from '@kit.UIDesignKit'
 import {
   getTopSpacerHeight,
@@ -49,15 +53,25 @@ import {
 } from '../../utils/MpvSettings'
 import {
   ADVANCED_OPTIONS_UNLOCKED_KEY,
-  ADVANCED_OPTIONS_UNLOCK_TAP_COUNT,
   HIDE_LOCAL_PAGE_KEY,
   PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
   PLAYER_DEBUG_OPTIONS_UNLOCK_TAP_COUNT,
   PLAYER_DEBUG_OPTIONS_UNLOCK_WINDOW_MS
 } from '../../utils/AdvancedOptionsUnlock'
 import { AppConstants } from '../../constants/AppConstants'
+import { RuleShopPageContent } from './RuleShopPage'
+import { DanmakuSettingsPageContent } from './DanmakuSettingsPage'
+import { WebDavSyncPageContent } from './WebDavSyncPage'
+import { HistoryPageContent } from '../history/HistoryPage'
 
 const logger = new Logger('SettingsPage')
+const SETTINGS_DESTINATION_RULE_SHOP: string = 'settings_rule_shop'
+const SETTINGS_DESTINATION_DANMAKU: string = 'settings_danmaku'
+const SETTINGS_DESTINATION_HISTORY: string = 'settings_history'
+const SETTINGS_DESTINATION_WEBDAV: string = 'settings_webdav'
+const SETTINGS_DESTINATION_PLAYER: string = 'settings_player'
+const SETTINGS_DESTINATION_APP: string = 'settings_app'
+const SETTINGS_DESTINATION_ABOUT: string = 'settings_about'
 
 @CustomDialog
 struct SponsorDialog {
@@ -112,9 +126,11 @@ struct SponsorDialog {
 
 @Component
 export struct SettingsPage {
+  @Prop standaloneDestination: string = ''
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
+  @StorageLink('screenHeightVp') screenHeightVp: number = 0
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabShowAnimation') bottomTabShowAnimation: boolean = BOTTOM_TAB_SHOW_ANIMATION_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
@@ -133,15 +149,18 @@ export struct SettingsPage {
   @State rules: RuleSource[] = []
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private scroller: Scroller = new Scroller()
+  private playerSettingsScroller: Scroller = new Scroller()
+  private appSettingsScroller: Scroller = new Scroller()
+  private aboutScroller: Scroller = new Scroller()
+  private settingsPathStack: NavPathStack = new NavPathStack()
 
   @State colorMode: number = -1
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State showPlayerEngineMenu: boolean = false
   @State showMpvHwdecMenu: boolean = false
-  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = false
+  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = true
   @StorageLink(HIDE_LOCAL_PAGE_KEY) hideLocalPage: boolean = false
   @StorageLink(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY) playerDebugOptionsUnlocked: boolean = false
-  @State versionTapCount: number = 0
   @State playerEngineTapCount: number = 0
   private playerEngineFirstTapTime: number = 0
   private sponsorDialogController: CustomDialogController | null = new CustomDialogController({
@@ -153,6 +172,7 @@ export struct SettingsPage {
   })
   @StorageLink(RULE_SOURCE_VERSION_KEY) @Watch('onRuleSourceVersionChange') ruleSourceVersion: number = 0
   @State updatableCount: number = 0
+  @State selectedSettingsDestination: string = ''
   private updateCheckToken: number = 0
 
   aboutToAppear(): void {
@@ -168,47 +188,334 @@ export struct SettingsPage {
   }
 
   build() {
+    Stack() {
+      if (this.standaloneDestination.length > 0) {
+        this.StandaloneSettingsDetail()
+      } else {
+        HdsNavigation(this.settingsPathStack) {
+        Scroll(this.scroller) {
+          Column() {
+            Blank()
+              .height(getTopSpacerHeight(this.topSafeHeight))
+              .width('100%')
+
+            this.SettingsCategorySection()
+
+            Blank()
+              .height(getBottomSpacerHeight(this.bottomSafeHeight))
+              .width('100%')
+              .hitTestBehavior(HitTestMode.None)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .padding({ left: 12, right: 12 })
+          .constraintSize({ minHeight: '100%' })
+        }
+        .width('100%')
+        .height('100%')
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Off)
+        .clip(false)
+        .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
+          this.updateBottomTabOffset(yOffset)
+        })
+        .onScrollStop(() => {
+          this.snapBottomTabOffset()
+        })
+      }
+      .width('100%')
+      .height('100%')
+      .mode(this.shouldUseSettingsSplitMode() ? NavigationMode.Split : NavigationMode.Stack)
+      .navDestination(this.SettingsDestinationBuilder)
+      .navBarWidth(300)
+      .navBarWidthRange({ minWidth: 240, maxWidth: 360 })
+      .minContentWidth(360)
+      .divider({
+        color: $r('app.color.divider_color'),
+        startMargin: 0,
+        endMargin: 0
+      })
+      .enableDragBar(false)
+      .enableModeChangeAnimation(true)
+      .onNavigationModeChange((mode: NavigationMode) => {
+        this.handleSettingsNavigationModeChange(mode)
+      })
+      .titleBar(buildTitleBarOptions('我的', this.hdsMaterialLevel))
+      .bindToScrollable([this.scroller])
+      .titleMode(HdsNavigationTitleMode.MINI)
+      .hideBackButton(true)
+      .backgroundColor(Color.Transparent)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  private StandaloneSettingsDetail(): void {
     HdsNavigation() {
-      Scroll(this.scroller) {
+      Scroll(this.getSettingsDetailScroller(this.standaloneDestination)) {
         Column() {
           Blank()
             .height(getTopSpacerHeight(this.topSafeHeight))
             .width('100%')
 
-          this.QuickAccessSection()
-          this.PlayerSection()
-          this.AppSection()
-          this.AdvancedSection()
+          if (this.standaloneDestination === SETTINGS_DESTINATION_PLAYER) {
+            this.PlayerSection(false)
+          } else {
+            this.AppSection(false)
+          }
 
           Blank()
-            .height(getBottomSpacerHeight(this.bottomSafeHeight))
+            .height(this.bottomSafeHeight + 24)
             .width('100%')
             .hitTestBehavior(HitTestMode.None)
         }
         .width('100%')
+        .alignItems(HorizontalAlign.Start)
         .padding({ left: 12, right: 12 })
+        .constraintSize({ minHeight: '100%' })
       }
       .width('100%')
       .height('100%')
       .edgeEffect(EdgeEffect.Spring)
       .scrollBar(BarState.Off)
       .clip(false)
-      .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
-        this.updateBottomTabOffset(yOffset)
-      })
-      .onScrollStop(() => {
-        this.snapBottomTabOffset()
-      })
     }
     .width('100%')
     .height('100%')
     .mode(NavigationMode.Stack)
-    .titleBar(buildTitleBarOptions('我的', this.hdsMaterialLevel))
-    .bindToScrollable([this.scroller])
+    .titleBar(buildTitleBarOptions(this.getSettingsDestinationTitle(this.standaloneDestination), this.hdsMaterialLevel))
+    .bindToScrollable([this.getSettingsDetailScroller(this.standaloneDestination)])
     .titleMode(HdsNavigationTitleMode.MINI)
-    .hideBackButton(true)
+    .hideBackButton(false)
     .backgroundColor(Color.Transparent)
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  private SettingsCategorySection(): void {
+    Column() {
+      this.SectionHeader('应用设置')
+      Column() {
+        if (this.showAdvancedPlayerOptions) {
+          this.SettingsRouteItem(
+            $r('sys.symbol.cart'),
+            '规则仓库',
+            this.updatableCount > 0 ? this.updatableCount + ' 条规则可更新' : '浏览、安装和导入规则',
+            SETTINGS_DESTINATION_RULE_SHOP,
+            () => {
+              this.openSettingsRouteDestination(SETTINGS_DESTINATION_RULE_SHOP, 'pages/settings/RuleShopPage')
+            },
+            this.updatableCount
+          )
+          this.ItemDivider()
+        }
+
+        this.SettingsRouteItem(
+          $r('sys.symbol.barrage_setting'),
+          '弹幕设置',
+          '来源、样式、屏蔽与缓存',
+          SETTINGS_DESTINATION_DANMAKU,
+          () => {
+            this.openSettingsRouteDestination(SETTINGS_DESTINATION_DANMAKU, 'pages/settings/DanmakuSettingsPage')
+          }
+        )
+
+        if (this.showAdvancedPlayerOptions) {
+          this.ItemDivider()
+          this.SettingsRouteItem($r('sys.symbol.clock'), '历史记录', '查看播放历史',
+            SETTINGS_DESTINATION_HISTORY, () => {
+            this.openSettingsRouteDestination(SETTINGS_DESTINATION_HISTORY, 'pages/history/HistoryPage')
+          })
+          this.ItemDivider()
+          this.SettingsRouteItem(
+            $r('sys.symbol.arrow_2_circlepath'),
+            '观看历史同步',
+            '通过 WebDAV 同步多设备观看记录',
+            SETTINGS_DESTINATION_WEBDAV,
+            () => {
+              this.openSettingsRouteDestination(SETTINGS_DESTINATION_WEBDAV, 'pages/settings/WebDavSyncPage')
+            }
+          )
+        }
+
+        this.ItemDivider()
+        this.SettingsCategoryItem(
+          $r('sys.symbol.play_round_rectangle'),
+          '播放器',
+          '播放引擎、全屏与画质设置',
+          SETTINGS_DESTINATION_PLAYER
+        )
+        this.ItemDivider()
+        this.SettingsCategoryItem(
+          $r('sys.symbol.moon'),
+          '外观动效',
+          '主题、沉浸光感与底栏动效',
+          SETTINGS_DESTINATION_APP
+        )
+        if (this.shouldUseSettingsSplitMode()) {
+          this.ItemDivider()
+          this.SettingsCategoryItem(
+            $r('sys.symbol.info_circle'),
+            '关于',
+            '版本、开源组件与支持作者',
+            SETTINGS_DESTINATION_ABOUT
+          )
+        }
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+
+      if (!this.shouldUseSettingsSplitMode()) {
+        this.AdvancedSection(true)
+      }
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private SettingsCategoryItem(icon: Resource, title: string, desc: string, destination: string): void {
+    Row() {
+      this.SettingIcon(icon)
+      this.SettingTitle(title, desc)
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
+    }
+    .width('100%')
+    .height(72)
+    .padding({ left: 16, right: 16 })
+    .borderRadius(12)
+    .backgroundColor(this.selectedSettingsDestination === destination ?
+      $r('app.color.category_menu_item_selected') : Color.Transparent)
+    .onClick(() => {
+      this.openSettingsDestination(destination)
+    })
+    .stateStyles({
+      pressed: {
+        .backgroundColor($r('app.color.category_menu_item_selected'))
+      },
+      normal: {
+        .backgroundColor(this.selectedSettingsDestination === destination ?
+          $r('app.color.category_menu_item_selected') : Color.Transparent)
+      }
+    })
+  }
+
+  @Builder
+  private SettingsRouteItem(icon: Resource, title: string, desc: string, destination: string,
+    action: () => void, badgeCount: number = 0): void {
+    Row() {
+      this.SettingIcon(icon)
+      this.SettingTitle(title, desc)
+
+      if (badgeCount > 0) {
+        Text(`${badgeCount}`)
+          .fontSize(12)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+          .textAlign(TextAlign.Center)
+          .width(22)
+          .height(22)
+          .borderRadius(11)
+          .backgroundColor($r('app.color.status_error'))
+          .margin({ left: 8, right: 8 })
+      }
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
+    }
+    .width('100%')
+    .height(72)
+    .padding({ left: 16, right: 16 })
+    .borderRadius(12)
+    .backgroundColor(this.selectedSettingsDestination === destination ?
+      $r('app.color.category_menu_item_selected') : Color.Transparent)
+    .onClick(action)
+    .stateStyles({
+      pressed: {
+        .backgroundColor($r('app.color.category_menu_item_selected'))
+      },
+      normal: {
+        .backgroundColor(this.selectedSettingsDestination === destination ?
+          $r('app.color.category_menu_item_selected') : Color.Transparent)
+      }
+    })
+  }
+
+  @Builder
+  private SettingsDestinationBuilder(name: string, _param: Object): void {
+    HdsNavDestination() {
+      if (name === SETTINGS_DESTINATION_RULE_SHOP) {
+        RuleShopPageContent({ embedded: true })
+      } else if (name === SETTINGS_DESTINATION_DANMAKU) {
+        DanmakuSettingsPageContent({ embedded: true })
+      } else if (name === SETTINGS_DESTINATION_HISTORY) {
+        HistoryPageContent({ embedded: true })
+      } else if (name === SETTINGS_DESTINATION_WEBDAV) {
+        WebDavSyncPageContent({ embedded: true })
+      } else {
+        Scroll(this.getSettingsDetailScroller(name)) {
+          Column() {
+            Blank()
+              .height(getTopSpacerHeight(this.topSafeHeight))
+              .width('100%')
+
+            if (name === SETTINGS_DESTINATION_PLAYER) {
+              this.PlayerSection(false)
+            } else if (name === SETTINGS_DESTINATION_APP) {
+              this.AppSection(false)
+            } else {
+              this.AdvancedSection(false)
+            }
+
+            Blank()
+              .height(this.getSettingsDestinationBottomSpacerHeight())
+              .width('100%')
+              .hitTestBehavior(HitTestMode.None)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .padding({ left: 12, right: 12 })
+          .constraintSize({ minHeight: '100%' })
+        }
+        .width('100%')
+        .height('100%')
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Off)
+        .clip(false)
+        .onDidScroll((_xOffset: number, yOffset: number, _scrollState: ScrollState) => {
+          this.updateBottomTabOffset(yOffset, this.getSettingsDetailScroller(name))
+        })
+        .onScrollStop(() => {
+          this.snapBottomTabOffset()
+        })
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .titleBar(buildTitleBarOptions(this.getSettingsDestinationTitle(name), this.hdsMaterialLevel))
+    .hideTitleBar(this.isEmbeddedSettingsDestination(name))
+    .bindToScrollable([this.getSettingsDetailScroller(name)])
+    .titleMode(HdsNavDestinationTitleMode.MINI)
+    .hideBackButton(this.shouldUseSettingsSplitMode())
+    .backgroundColor($r('app.color.page_background'))
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .onShown(() => {
+      this.selectedSettingsDestination = name
+    })
+    .onHidden(() => {
+      setTimeout(() => {
+        this.syncSelectedSettingsDestination()
+      }, 0)
+    })
   }
 
   @Builder
@@ -276,9 +583,11 @@ export struct SettingsPage {
   }
 
   @Builder
-  QuickAccessSection(): void {
+  QuickAccessSection(showHeader: boolean = true): void {
     Column() {
-      this.SectionHeader('快捷入口')
+      if (showHeader) {
+        this.SectionHeader('快捷入口')
+      }
       Column() {
         if (this.showAdvancedPlayerOptions) {
           Row() {
@@ -381,9 +690,11 @@ export struct SettingsPage {
   }
 
   @Builder
-  PlayerSection(): void {
+  PlayerSection(showHeader: boolean = true): void {
     Column() {
-      this.SectionHeader('播放器')
+      if (showHeader) {
+        this.SectionHeader('播放器')
+      }
       Column() {
         Row() {
           this.SettingIcon($r('sys.symbol.play_round_rectangle'))
@@ -487,9 +798,11 @@ export struct SettingsPage {
   }
 
   @Builder
-  AppSection(): void {
+  AppSection(showHeader: boolean = true): void {
     Column() {
-      this.SectionHeader('应用')
+      if (showHeader) {
+        this.SectionHeader('外观动效')
+      }
       Column() {
         Row() {
           this.SettingIcon($r('sys.symbol.moon'))
@@ -580,11 +893,15 @@ export struct SettingsPage {
   }
 
   @Builder
-  AdvancedSection(): void {
+  AdvancedSection(showHeader: boolean = true): void {
     Column() {
-      this.SectionHeader('关于')
+      if (showHeader) {
+        this.SectionHeader('关于')
+      }
       Column() {
         this.VersionInfoItem()
+        this.ItemDivider()
+        this.AppReviewItem()
         this.ItemDivider()
         this.QqGroupItem()
         this.ItemDivider()
@@ -748,9 +1065,19 @@ export struct SettingsPage {
     .height(64)
     .padding({ left: 16, right: 16 })
     .borderRadius(12)
-    .onClick(() => {
-      this.handleVersionTap()
-    })
+  }
+
+  @Builder
+  AppReviewItem(): void {
+    this.NavigationItem(
+      $r('sys.symbol.star_fill'),
+      '给个好评',
+      '在应用市场评分与评论',
+      '',
+      () => {
+        this.requestAppReview()
+      }
+    )
   }
 
   @Builder
@@ -1087,6 +1414,115 @@ export struct SettingsPage {
     .onClick(action)
   }
 
+  private openSettingsDestination(destination: string, animated: boolean = true): void {
+    if (!this.shouldUseSettingsSplitMode()) {
+      const pageUrl = this.getStandaloneSettingsPageUrl(destination)
+      if (pageUrl.length > 0) {
+        router.pushUrl({ url: pageUrl })
+        return
+      }
+    }
+    const pathNames = this.settingsPathStack.getAllPathName()
+    const currentDestination = pathNames.length > 0 ? pathNames[pathNames.length - 1] : ''
+    if (currentDestination === destination) {
+      this.selectedSettingsDestination = destination
+      return
+    }
+    this.selectedSettingsDestination = destination
+    if (this.settingsPathStack.size() > 0) {
+      this.settingsPathStack.replacePath({ name: destination }, animated)
+    } else {
+      this.settingsPathStack.pushPath({ name: destination }, animated)
+    }
+  }
+
+  private openSettingsRouteDestination(destination: string, pageUrl: string): void {
+    if (this.shouldUseSettingsSplitMode()) {
+      this.openSettingsDestination(destination)
+      return
+    }
+    router.pushUrl({ url: pageUrl })
+  }
+
+  private shouldUseSettingsSplitMode(): boolean {
+    return this.screenWidthVp >= 600 && this.screenHeightVp > 0 && this.screenWidthVp > this.screenHeightVp
+  }
+
+  private handleSettingsNavigationModeChange(mode: NavigationMode): void {
+    if (mode !== NavigationMode.Stack || this.settingsPathStack.size() === 0) {
+      return
+    }
+    this.settingsPathStack.clear(false)
+    this.selectedSettingsDestination = ''
+  }
+
+  private getStandaloneSettingsPageUrl(destination: string): string {
+    if (destination === SETTINGS_DESTINATION_PLAYER) {
+      return 'pages/settings/PlayerSettingsPage'
+    }
+    if (destination === SETTINGS_DESTINATION_APP) {
+      return 'pages/settings/AppearanceSettingsPage'
+    }
+    return ''
+  }
+
+  private getSettingsDestinationBottomSpacerHeight(): number {
+    if (this.shouldUseSettingsSplitMode()) {
+      return getBottomSpacerHeight(this.bottomSafeHeight)
+    }
+    return this.bottomSafeHeight + 24
+  }
+
+  private syncSelectedSettingsDestination(): void {
+    const pathNames = this.settingsPathStack.getAllPathName()
+    this.selectedSettingsDestination = pathNames.length > 0 ? pathNames[pathNames.length - 1] : ''
+  }
+
+  private getSettingsDestinationTitle(destination: string): string {
+    if (destination === SETTINGS_DESTINATION_RULE_SHOP) {
+      return '规则仓库'
+    }
+    if (destination === SETTINGS_DESTINATION_DANMAKU) {
+      return '弹幕设置'
+    }
+    if (destination === SETTINGS_DESTINATION_HISTORY) {
+      return '历史记录'
+    }
+    if (destination === SETTINGS_DESTINATION_WEBDAV) {
+      return '观看历史同步'
+    }
+    if (destination === SETTINGS_DESTINATION_PLAYER) {
+      return '播放器'
+    }
+    if (destination === SETTINGS_DESTINATION_APP) {
+      return '外观动效'
+    }
+    if (destination === SETTINGS_DESTINATION_ABOUT) {
+      return '关于'
+    }
+    return '关于'
+  }
+
+  private isEmbeddedSettingsDestination(destination: string): boolean {
+    return destination === SETTINGS_DESTINATION_RULE_SHOP ||
+      destination === SETTINGS_DESTINATION_DANMAKU ||
+      destination === SETTINGS_DESTINATION_HISTORY ||
+      destination === SETTINGS_DESTINATION_WEBDAV
+  }
+
+  private getSettingsDetailScroller(destination: string): Scroller {
+    if (destination === SETTINGS_DESTINATION_PLAYER) {
+      return this.playerSettingsScroller
+    }
+    if (destination === SETTINGS_DESTINATION_APP) {
+      return this.appSettingsScroller
+    }
+    if (destination === SETTINGS_DESTINATION_ABOUT) {
+      return this.aboutScroller
+    }
+    return this.aboutScroller
+  }
+
   private async loadSettings(): Promise<void> {
     const token = ++this.updateCheckToken
     this.updatableCount = 0
@@ -1096,10 +1532,7 @@ export struct SettingsPage {
       this.enabledRuleCount = this.rules.filter((r: RuleSource) => r.enabled).length
 
       const prefs = PreferencesStore.getInstance()
-      this.showAdvancedPlayerOptions = await prefs.getBoolean(
-        ADVANCED_OPTIONS_UNLOCKED_KEY,
-        this.showAdvancedPlayerOptions
-      )
+      this.showAdvancedPlayerOptions = true
       this.playerDebugOptionsUnlocked = await prefs.getBoolean(
         PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
         this.playerDebugOptionsUnlocked
@@ -1184,22 +1617,6 @@ export struct SettingsPage {
     })
   }
 
-  private handleVersionTap(): void {
-    if (this.showAdvancedPlayerOptions) {
-      return
-    }
-    this.versionTapCount += 1
-    logger.info('Version info tap count: %{public}d', this.versionTapCount)
-    if (this.versionTapCount >= ADVANCED_OPTIONS_UNLOCK_TAP_COUNT) {
-      this.showAdvancedPlayerOptions = true
-      this.versionTapCount = 0
-      PreferencesStore.getInstance().setBoolean(ADVANCED_OPTIONS_UNLOCKED_KEY, true).catch((err: Error) => {
-        logger.error('Persist advanced options unlocked failed: %{public}s', err instanceof Error ? err.message : String(err))
-      })
-      logger.info('Advanced player settings unlocked from version info')
-    }
-  }
-
   private handlePlayerEngineDebugTap(): void {
     const now = Date.now()
     if (this.playerEngineFirstTapTime === 0 ||
@@ -1225,6 +1642,46 @@ export struct SettingsPage {
   private openSponsorDialog(): void {
     logger.info('Open sponsor dialog')
     this.sponsorDialogController?.open()
+  }
+
+  private async requestAppReview(): Promise<void> {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext
+    try {
+      await commentManager.showCommentDialog(context)
+      logger.info('App review dialog opened')
+    } catch (err) {
+      const error = err as BusinessError
+      logger.error('Open app review dialog failed: %{public}d %{public}s', error.code, error.message)
+      if (error.code === 1021500006) {
+        promptAction.showToast({ message: '请先登录华为账号' })
+        return
+      }
+      if (error.code === 1021500007) {
+        promptAction.showToast({ message: '当前版本已经评价过了' })
+        return
+      }
+      if (error.code === 1021500008) {
+        promptAction.showToast({ message: '已达到应用评价次数上限' })
+        return
+      }
+      if (error.code === 1021500009) {
+        promptAction.showToast({ message: '距离上次评价未满一年' })
+        return
+      }
+      await this.openAppGalleryReviewPage(context)
+    }
+  }
+
+  private async openAppGalleryReviewPage(context: common.UIAbilityContext): Promise<void> {
+    const bundleName = context.applicationInfo.name
+    const link = 'https://appgallery.huawei.com/app/detail?id=' + bundleName + '&action=write-review'
+    try {
+      await context.openLink(link, { appLinkingOnly: false })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('Open AppGallery review page failed: %{public}s', message)
+      promptAction.showToast({ message: '暂时无法打开应用评价' })
+    }
   }
 
   private async setPlayerEngine(engine: string): Promise<void> {
@@ -1396,12 +1853,12 @@ export struct SettingsPage {
     return -1
   }
 
-  private updateBottomTabOffset(deltaY: number): void {
+  private updateBottomTabOffset(deltaY: number, activeScroller: Scroller = this.scroller): void {
     if (!this.bottomTabAutoHide) {
       this.bottomTabOffset = 0
       return
     }
-    const currentOffset = this.scroller.currentOffset()
+    const currentOffset = activeScroller.currentOffset()
     if (currentOffset.yOffset <= 0) {
       requestBottomTabAnimation(false)
       this.bottomTabOffset = 0

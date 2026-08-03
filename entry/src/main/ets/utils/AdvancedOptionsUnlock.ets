@@ -1,5 +1,4 @@
 export const ADVANCED_OPTIONS_UNLOCKED_KEY: string = 'advancedOptionsUnlocked'
-export const ADVANCED_OPTIONS_UNLOCK_TAP_COUNT: number = 20
 export const PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY: string = 'playerDebugOptionsUnlocked'
 export const PLAYER_DEBUG_OPTIONS_UNLOCK_TAP_COUNT: number = 30
 export const PLAYER_DEBUG_OPTIONS_UNLOCK_WINDOW_MS: number = 60000

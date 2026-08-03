@@ -83,6 +83,15 @@ export struct TimelinePage {
     }
   }
 
+  onPageShow(): void {
+    // The timeline page remains mounted while detail pages are pushed. Clone
+    // the current items on return so cover fields enriched in the background
+    // are propagated to recycled TimelineAnimeCard components immediately.
+    if (this.calendar.length >= WEEKDAY_TAB_COUNT) {
+      this.calendar = this.cloneCalendar(this.calendar)
+    }
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       HdsNavigation() {
@@ -124,9 +133,13 @@ export struct TimelinePage {
               .hitTestBehavior(HitTestMode.None)
           }
           .width('100%')
+          .constraintSize({ minHeight: '100%' })
+          .justifyContent(FlexAlign.Start)
+          .alignItems(HorizontalAlign.Start)
         }
         .width('100%')
         .height('100%')
+        .align(Alignment.TopStart)
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
         .clip(false)
@@ -209,7 +222,11 @@ export struct TimelinePage {
         GridItem() {
           TimelineAnimeCard({ animeItem: item })
         }
-      }, (item: AnimeItem, index?: number) => `tl_${this.selectedWeekdayIndex}_${index}_${item.name}`)
+      }, (item: AnimeItem, index?: number) =>
+        // The calendar first renders lightweight subject records and enriches
+        // them with cover URLs afterwards. Include the cover in the key so a
+        // recycled GridItem is rebuilt when enrichment finishes.
+        `tl_${this.selectedYear}_${this.selectedQuarter}_${this.selectedWeekdayIndex}_${index}_${item.bangumiId}_${item.name}_${item.getGridCover()}`)
     }
     .columnsTemplate(this.getTimelineCardColumns())
     .columnsGap(10)
@@ -855,7 +872,14 @@ export struct TimelinePage {
   private cloneCalendar(source: AnimeItem[][]): AnimeItem[][] {
     const result: AnimeItem[][] = []
     for (let i = 0; i < source.length; i++) {
-      result.push(source[i].slice())
+      // enrichCalendarItemsForDay mutates the existing AnimeItem instances.
+      // Clone the items as well as the arrays so TimelineAnimeCard @Watch
+      // receives a new prop object and replaces its initial placeholder.
+      const clonedDay: AnimeItem[] = []
+      for (let j = 0; j < source[i].length; j++) {
+        clonedDay.push(AnimeItem.fromJSON(source[i][j].toJSON()))
+      }
+      result.push(clonedDay)
     }
     return result
   }

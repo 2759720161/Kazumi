@@ -489,6 +489,7 @@ export struct SourceSheet {
       }
     }
     .height(38)
+    .alignItems(VerticalAlign.Center)
     .padding({ left: 14, right: 10 })
     .borderRadius(SOURCE_SHEET_PILL_RADIUS)
     .backgroundColor(this.selectedPluginIndex === index ? $r('app.color.button_ghost_bg') : $r('app.color.card_background'))

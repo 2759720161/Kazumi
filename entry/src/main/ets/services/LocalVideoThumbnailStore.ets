@@ -101,7 +101,7 @@ export class LocalVideoThumbnailStore {
 
   private writeBinary(path: string, data: ArrayBuffer): void {
     const dirPath = path.substring(0, path.lastIndexOf('/'))
-    if (!fs.accessSync(dirPath)) {
+    if (!this.pathExists(dirPath)) {
       fs.mkdirSync(dirPath, true)
     }
     const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY)
@@ -109,6 +109,14 @@ export class LocalVideoThumbnailStore {
       fs.writeSync(file.fd, data)
     } finally {
       fs.closeSync(file)
+    }
+  }
+
+  private pathExists(path: string): boolean {
+    try {
+      return fs.accessSync(path)
+    } catch (_err) {
+      return false
     }
   }
 

@@ -55,6 +55,29 @@ export class ImageCacheStore {
     return '';
   }
 
+  /** Returns an existing cached file without starting a network request. */
+  getExistingCachedImageUri(urls: string[]): string {
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i].trim();
+      if (url.length === 0 || url.startsWith('file://') || this.isFailedRecently(url)) {
+        continue;
+      }
+      try {
+        const path = this.getCachePath(url);
+        if (!fs.accessSync(path)) {
+          continue;
+        }
+        const stat = fs.statSync(path);
+        if (stat.size > 100) {
+          return fileUri.getUriFromPath(path);
+        }
+      } catch (err) {
+        logger.warn('Read cached image failed: %{public}s', extractErrorMsg(err as Object));
+      }
+    }
+    return '';
+  }
+
   private async downloadImage(url: string): Promise<ArrayBuffer> {
     const request = http.createHttp();
     try {

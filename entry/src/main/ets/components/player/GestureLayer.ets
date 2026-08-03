@@ -18,6 +18,8 @@ export struct GestureLayer {
   onToggleControls?: () => void
   onTemporarySpeedStart?: () => void
   onTemporarySpeedEnd?: () => void
+  onMouseSingleClick?: () => void
+  onMouseDoubleClick?: () => void
 
   private readonly GESTURE_NONE: number = 0
   private readonly GESTURE_SEEK: number = 1
@@ -31,6 +33,12 @@ export struct GestureLayer {
   private panStartY: number = 0
   private gestureStartValue: number = 0
   private isLongPressActive: boolean = false
+  private mouseGestureActive: boolean = false
+  private mouseClickTimer: number = -1
+  private lastMouseClickMs: number = 0
+  private lastWheelVolume: number = -1
+  private lastWheelVolumeMs: number = 0
+  private readonly MOUSE_DOUBLE_CLICK_INTERVAL_MS: number = 300
 
   build() {
     Column() {
@@ -176,6 +184,9 @@ export struct GestureLayer {
 
         TapGesture({ count: 2 })
           .onAction(() => {
+            if (this.mouseGestureActive) {
+              return
+            }
             if (this.onTogglePlayPause) {
               this.onTogglePlayPause()
             }
@@ -183,6 +194,9 @@ export struct GestureLayer {
 
         TapGesture({ count: 1 })
           .onAction(() => {
+            if (this.mouseGestureActive) {
+              return
+            }
             if (this.onToggleControls) {
               this.onToggleControls()
             } else if (this.onShowControls) {
@@ -191,6 +205,79 @@ export struct GestureLayer {
           })
       )
     )
+    .onMouse((event: MouseEvent) => {
+      this.handleMouseEvent(event)
+    })
+    .onAxisEvent((event: AxisEvent) => {
+      this.handleMouseWheel(event)
+    })
+  }
+
+  private handleMouseWheel(event: AxisEvent): void {
+    if (!this.gestureEnabled || event.axisVertical === undefined || event.axisVertical === 0) {
+      return
+    }
+
+    // HarmonyOS reports forward scrolling as a negative vertical axis value.
+    const now = Date.now()
+    const baseVolume = this.lastWheelVolume >= 0 && now - this.lastWheelVolumeMs < 500
+      ? this.lastWheelVolume : this.volume
+    const volumeDelta = event.axisVertical < 0 ? 0.05 : -0.05
+    const nextVolume = this.clamp01(baseVolume + volumeDelta)
+    if (Math.abs(nextVolume - baseVolume) < 0.001) {
+      return
+    }
+    this.lastWheelVolume = nextVolume
+    this.lastWheelVolumeMs = now
+    if (this.onVolumeChange) {
+      this.onVolumeChange(nextVolume)
+    }
+  }
+
+  private handleMouseEvent(event: MouseEvent): void {
+    if (event.button !== MouseButton.Left) {
+      return
+    }
+
+    if (event.action === MouseAction.Press) {
+      this.mouseGestureActive = true
+      return
+    }
+
+    if (event.action !== MouseAction.Release) {
+      return
+    }
+
+    const now = Date.now()
+    const isDoubleClick = this.lastMouseClickMs > 0 &&
+      now - this.lastMouseClickMs <= this.MOUSE_DOUBLE_CLICK_INTERVAL_MS
+    if (isDoubleClick) {
+      this.clearMouseClickTimer()
+      this.lastMouseClickMs = 0
+      if (this.onMouseDoubleClick) {
+        this.onMouseDoubleClick()
+      }
+      this.mouseGestureActive = false
+      return
+    }
+
+    this.lastMouseClickMs = now
+    this.clearMouseClickTimer()
+    this.mouseClickTimer = setTimeout(() => {
+      this.mouseClickTimer = -1
+      this.lastMouseClickMs = 0
+      if (this.onMouseSingleClick) {
+        this.onMouseSingleClick()
+      }
+      this.mouseGestureActive = false
+    }, this.MOUSE_DOUBLE_CLICK_INTERVAL_MS)
+  }
+
+  private clearMouseClickTimer(): void {
+    if (this.mouseClickTimer >= 0) {
+      clearTimeout(this.mouseClickTimer)
+      this.mouseClickTimer = -1
+    }
   }
 
   private resetGestureState(): void {

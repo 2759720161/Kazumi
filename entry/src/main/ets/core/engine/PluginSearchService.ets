@@ -14,6 +14,7 @@ import { RuleMode } from '../../models/ApiRuleConfig'
 const logger = new Logger('PluginSearchService')
 
 const SEARCH_CONCURRENCY = 4
+const YEAR_LONG_RUNNING_MARKER = '年番'
 
 export class PluginSearchService {
   private ruleStore: RuleSourceStore = new RuleSourceStore()
@@ -22,6 +23,7 @@ export class PluginSearchService {
   private requestHandler: RequestPolicyHandler = new RequestPolicyHandler()
   private antiCrawlHandler: AntiCrawlHandler = new AntiCrawlHandler()
   private pluginStates: PluginSearchState[] = []
+  private resultKeywordMap: Map<string, string> = new Map()
   private onStateChange: ((states: PluginSearchState[]) => void) | null = null
   private searchEpoch: number = 0
 
@@ -57,6 +59,7 @@ export class PluginSearchService {
     }
 
     this.pluginStates = []
+    this.resultKeywordMap.clear()
     for (let i = 0; i < enabledRules.length; i++) {
       this.pluginStates.push(PluginSearchState.pending(enabledRules[i].id, enabledRules[i].name))
     }
@@ -91,40 +94,21 @@ export class PluginSearchService {
     }
     try {
       const runtime = new RuleRuntimeModel(rule)
-      if (rule.searchMode === RuleMode.API) {
-        const results = await this.apiRuleStrategy.search(rule, keyword)
-        if (this.searchEpoch !== epoch) {
-          return
-        }
-        if (results.length === 0) {
-          this.updateState(stateIndex, PluginSearchState.noResult(rule.id, rule.name), epoch)
-          return
-        }
-        this.updateSearchResults(stateIndex, rule, results, epoch)
-        return
-      }
-
-      const html = await this.requestHandler.fetchWithRule(runtime, keyword)
+      const keywords = this.buildPlaybackSearchKeywords(keyword)
+      const results = await this.searchRuleWithKeywords(rule, runtime, keywords, epoch)
       if (this.searchEpoch !== epoch) {
         return
       }
-
-      if (runtime.hasAntiCrawler && this.antiCrawlHandler.isCaptchaResponse(html)) {
+      if (results.status === 'captcha') {
         logger.warn('Captcha detected for rule %{public}s', rule.name)
         this.updateState(stateIndex, PluginSearchState.captcha(rule.id, rule.name, '需要验证码验证'), epoch)
         return
       }
-
-      const results = this.searchExecutor.parseSearchResults(html, runtime)
-      if (this.searchEpoch !== epoch) {
-        return
-      }
-      if (results.length === 0) {
+      if (results.items.length === 0) {
         this.updateState(stateIndex, PluginSearchState.noResult(rule.id, rule.name), epoch)
         return
       }
-
-      this.updateSearchResults(stateIndex, rule, results, epoch)
+      this.updateSearchResults(stateIndex, rule, results.items, epoch)
     } catch (err) {
       if (this.searchEpoch !== epoch) {
         return
@@ -135,8 +119,68 @@ export class PluginSearchService {
     }
   }
 
+  private async searchRuleWithKeywords(rule: RuleSource, runtime: RuleRuntimeModel, keywords: string[],
+    epoch: number): Promise<PlaybackRuleSearchResult> {
+    const merged: AnimeItem[] = []
+    const seenKeys: Set<string> = new Set()
+    let captchaDetected = false
+    let lastErrorMessage = ''
+
+    for (let i = 0; i < keywords.length; i++) {
+      if (this.searchEpoch !== epoch) {
+        return PlaybackRuleSearchResult.items(merged)
+      }
+      const searchKeyword = keywords[i]
+      logger.info('Search rule %{public}s with playback keyword=%{public}s', rule.name, searchKeyword)
+
+      try {
+        if (rule.searchMode === RuleMode.API) {
+          const results = await this.apiRuleStrategy.search(rule, searchKeyword)
+          if (this.searchEpoch !== epoch) {
+            return PlaybackRuleSearchResult.items(merged)
+          }
+          this.appendUniqueSearchResults(rule, merged, results, seenKeys, searchKeyword)
+          continue
+        }
+
+        const html = await this.requestHandler.fetchWithRule(runtime, searchKeyword)
+        if (this.searchEpoch !== epoch) {
+          return PlaybackRuleSearchResult.items(merged)
+        }
+        if (runtime.hasAntiCrawler && this.antiCrawlHandler.isCaptchaResponse(html)) {
+          captchaDetected = true
+          if (merged.length === 0) {
+            continue
+          }
+          break
+        }
+        const results = this.searchExecutor.parseSearchResults(html, runtime)
+        if (this.searchEpoch !== epoch) {
+          return PlaybackRuleSearchResult.items(merged)
+        }
+        this.appendUniqueSearchResults(rule, merged, results, seenKeys, searchKeyword)
+      } catch (err) {
+        if (this.searchEpoch !== epoch) {
+          return PlaybackRuleSearchResult.items(merged)
+        }
+        lastErrorMessage = this.normalizeErrorMessage(err instanceof Error ? err.message : String(err))
+        logger.warn('Search rule %{public}s keyword=%{public}s failed: %{public}s',
+          rule.name, searchKeyword, lastErrorMessage)
+      }
+    }
+
+    if (merged.length === 0 && captchaDetected) {
+      return PlaybackRuleSearchResult.captcha()
+    }
+    if (merged.length === 0 && lastErrorMessage.length > 0) {
+      throw new Error(lastErrorMessage)
+    }
+    return PlaybackRuleSearchResult.items(merged)
+  }
+
   async querySource(pluginId: number, keyword: string): Promise<void> {
     const currentEpoch = ++this.searchEpoch
+    this.resultKeywordMap.clear()
     const stateIndex = this.pluginStates.findIndex((s: PluginSearchState) => s.pluginId === pluginId)
     if (stateIndex === -1) {
       return
@@ -159,6 +203,7 @@ export class PluginSearchService {
       return
     }
     const currentEpoch = ++this.searchEpoch
+    this.resultKeywordMap.clear()
     const state = this.pluginStates[stateIndex]
     const rule = await this.ruleStore.getById(state.pluginId)
     if (this.searchEpoch !== currentEpoch) {
@@ -389,9 +434,66 @@ export class PluginSearchService {
       ref.url = results[i].url
       ref.sourceId = rule.id
       ref.sourceName = rule.name
+      ref.keyword = this.resultKeywordMap.get(this.buildScopedSearchResultKey(rule, results[i])) ?? ''
       refs.push(ref)
     }
     this.updateState(stateIndex, PluginSearchState.success(rule.id, rule.name, refs), epoch)
+  }
+
+  private buildPlaybackSearchKeywords(keyword: string): string[] {
+    const trimmed = keyword.trim()
+    const keywords: string[] = []
+    const addKeyword = (candidate: string): void => {
+      const normalized = this.normalizePlaybackKeyword(candidate)
+      if (normalized.length === 0) {
+        return
+      }
+      if (keywords.indexOf(normalized) === -1) {
+        keywords.push(normalized)
+      }
+    }
+
+    if (trimmed.indexOf(YEAR_LONG_RUNNING_MARKER) !== -1) {
+      addKeyword(trimmed.replace(YEAR_LONG_RUNNING_MARKER, ''))
+    }
+    addKeyword(trimmed)
+    return keywords
+  }
+
+  private normalizePlaybackKeyword(keyword: string): string {
+    return keyword.replace(/\s+/g, ' ').trim()
+  }
+
+  private appendUniqueSearchResults(rule: RuleSource, target: AnimeItem[], source: AnimeItem[], seenKeys: Set<string>,
+    keyword: string): void {
+    for (let i = 0; i < source.length; i++) {
+      const item = source[i]
+      const key = this.buildScopedSearchResultKey(rule, item)
+      if (key.length === 0 || seenKeys.has(key)) {
+        continue
+      }
+      seenKeys.add(key)
+      this.resultKeywordMap.set(key, keyword)
+      target.push(item)
+    }
+  }
+
+  private buildSearchResultDedupKey(item: AnimeItem): string {
+    if (item.url.length > 0) {
+      return 'url:' + item.url
+    }
+    if (item.name.length > 0) {
+      return 'name:' + item.name
+    }
+    return ''
+  }
+
+  private buildScopedSearchResultKey(rule: RuleSource, item: AnimeItem): string {
+    const key = this.buildSearchResultDedupKey(item)
+    if (key.length === 0) {
+      return ''
+    }
+    return String(rule.id) + '|' + key
   }
 
   private updateState(index: number, state: PluginSearchState, epoch: number): void {
@@ -432,5 +534,23 @@ export class PluginSearchService {
       return 1
     }
     return 2
+  }
+}
+
+class PlaybackRuleSearchResult {
+  items: AnimeItem[] = []
+  status: string = 'items'
+
+  static items(items: AnimeItem[]): PlaybackRuleSearchResult {
+    const result = new PlaybackRuleSearchResult()
+    result.items = items
+    result.status = 'items'
+    return result
+  }
+
+  static captcha(): PlaybackRuleSearchResult {
+    const result = new PlaybackRuleSearchResult()
+    result.status = 'captcha'
+    return result
   }
 }

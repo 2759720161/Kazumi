@@ -29,7 +29,19 @@ const logger = new Logger('WebDavSyncPage')
 
 @Entry
 @Component
-export struct WebDavSyncPage {
+struct WebDavSyncPage {
+  build() {
+    Column() {
+      WebDavSyncPageContent()
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+export struct WebDavSyncPageContent {
+  @Prop embedded: boolean = false
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
@@ -90,7 +102,7 @@ export struct WebDavSyncPage {
     .titleBar(this.buildWebDavTitleBarOptions())
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
-    .hideBackButton(false)
+    .hideBackButton(this.embedded)
     .backgroundColor(Color.Transparent)
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
   }

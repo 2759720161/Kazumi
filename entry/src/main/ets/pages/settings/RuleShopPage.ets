@@ -30,6 +30,18 @@ const PREF_RULE_REPOSITORY_URL = 'rule_repository_url'
 @Entry
 @Component
 struct RuleShopPage {
+  build() {
+    Column() {
+      RuleShopPageContent()
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+export struct RuleShopPageContent {
+  @Prop embedded: boolean = false
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
@@ -74,6 +86,10 @@ struct RuleShopPage {
             this.OperationMessageSection()
             this.CatalogList()
 
+            if (!this.loading && this.catalogItems.length === 0 && this.errorMessage.length === 0) {
+              this.EmptyCatalogSection()
+            }
+
             if (this.errorMessage.length > 0) {
               this.ErrorSection()
             }
@@ -103,6 +119,7 @@ struct RuleShopPage {
       .titleBar(this.buildRepositoryTitleBarOptions())
       .bindToScrollable([this.scroller])
       .titleMode(HdsNavigationTitleMode.MINI)
+      .hideBackButton(this.embedded)
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
 
@@ -211,8 +228,6 @@ struct RuleShopPage {
         }, (item: RuleCatalogItem) => this.buildCatalogItemKey(item))
       }
       .width('100%')
-    } else if (!this.loading && this.errorMessage.length === 0) {
-      this.EmptyCatalogSection()
     }
   }
 
@@ -526,30 +541,23 @@ struct RuleShopPage {
   @Builder
   EmptyCatalogSection(): void {
     Column() {
-      SymbolGlyph($r('sys.symbol.info_circle'))
-        .fontSize(36)
-        .fontColor([$r('app.color.text_secondary')])
-        .margin({ bottom: 10 })
-
       Text('暂无规则')
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
-        .margin({ bottom: 4 })
+        .margin({ bottom: 6 })
 
       Text(this.repositoryUrl.length > 0 ? '刷新仓库或从右上角导入规则' : '请先从右上角通过链接导入规则仓库')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
+        .textAlign(TextAlign.Center)
     }
     .width('100%')
-    .constraintSize({ minHeight: 180 })
-    .padding({ top: 36, bottom: 36 })
+    .layoutWeight(1)
+    .constraintSize({ minHeight: 220 })
+    .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-    .margin({ bottom: 8 })
+    .padding({ left: 16, right: 16 })
   }
 
   private getSortedItems(): RuleCatalogItem[] {

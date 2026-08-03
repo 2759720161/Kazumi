@@ -1,12 +1,13 @@
 import { RecommendCardModel } from '../models/RecommendCardModel'
 import { AnimeItem } from '../models/AnimeItem'
 import { HistoryRecord } from '../models/HistoryRecord'
-import { BangumiApi } from '../core/api/BangumiApi'
+import { BangumiApi, BangumiSearchProgressOptions } from '../core/api/BangumiApi'
 import { HistoryStore } from '../store/HistoryStore'
 import { RECOMMEND_GENRE_TAGS } from '../constants/RecommendTags'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('RecommendViewModel')
+const HOME_SECTION_PAGE_SIZE: number = 24
 
 export class RecommendViewModel {
   heroList: RecommendCardModel[] = []
@@ -50,57 +51,76 @@ export class RecommendViewModel {
     }
   }
 
-  async loadByTag(tag: string): Promise<void> {
+  async loadByTag(tag: string, onProgress?: (items: RecommendCardModel[]) => void,
+    shouldContinue?: () => boolean): Promise<void> {
     if (tag === this.currentTag) {
+      if (onProgress) {
+        onProgress(this.copyList(this.tagTopicList))
+      }
       return
     }
     this.currentTag = tag
     this.tagTopicList = []
     try {
-      const results = await BangumiApi.searchByTagWithSort(tag, 'rank', 24, 0)
-      const models: RecommendCardModel[] = []
-      for (let i = 0; i < results.length; i++) {
-        models.push(RecommendCardModel.fromAnimeItem(results[i]))
+      const options = new BangumiSearchProgressOptions()
+      options.shouldContinue = shouldContinue
+      options.onResults = (items: AnimeItem[]): void => {
+        if ((shouldContinue && !shouldContinue()) || this.currentTag !== tag) {
+          return
+        }
+        this.tagTopicList = this.buildRecommendModels(items)
+        if (onProgress) {
+          onProgress(this.copyList(this.tagTopicList))
+        }
       }
-      this.tagTopicList = models
+      const results = await BangumiApi.searchAnimeProgressive('', [tag], 'rank', options)
+      if ((shouldContinue && !shouldContinue()) || this.currentTag !== tag) {
+        return
+      }
+      this.tagTopicList = this.buildRecommendModels(results)
+      if (onProgress) {
+        onProgress(this.copyList(this.tagTopicList))
+      }
       logger.info('loadByTag: tag=%{public}s count=%{public}d', tag, this.tagTopicList.length)
     } catch (err) {
       logger.warn('loadByTag failed for %{public}s', tag)
     }
   }
 
-  async loadMoreTrending(): Promise<void> {
-    try {
-      const results = await BangumiApi.getTrendsList(this.trendingList.length)
-      for (let i = 0; i < results.length; i++) {
-        this.trendingList.push(RecommendCardModel.fromAnimeItem(results[i]))
-      }
-    } catch (err) {
-      logger.warn('loadMoreTrending failed')
-    }
+  async loadRemainingTrending(onProgress?: (items: RecommendCardModel[]) => void,
+    shouldContinue?: () => boolean): Promise<void> {
+    await this.loadRemainingSection(
+      this.trendingList,
+      async (offset: number): Promise<AnimeItem[]> => BangumiApi.getTrendsList(offset),
+      onProgress,
+      shouldContinue,
+      'trending'
+    )
   }
 
-  async loadMoreHighScore(): Promise<void> {
-    try {
-      const results = await BangumiApi.searchHighScoreSubjects(24, this.highScoreList.length)
-      for (let i = 0; i < results.length; i++) {
-        this.highScoreList.push(RecommendCardModel.fromAnimeItem(results[i]))
-      }
-    } catch (err) {
-      logger.warn('loadMoreHighScore failed')
-    }
+  async loadRemainingHighScore(onProgress?: (items: RecommendCardModel[]) => void,
+    shouldContinue?: () => boolean): Promise<void> {
+    await this.loadRemainingSection(
+      this.highScoreList,
+      async (offset: number): Promise<AnimeItem[]> =>
+        BangumiApi.searchHighScoreSubjects(HOME_SECTION_PAGE_SIZE, offset),
+      onProgress,
+      shouldContinue,
+      'highScore'
+    )
   }
 
-  async loadMoreSeasonal(): Promise<void> {
-    try {
-      const range = BangumiApi.getCurrentSeasonRange()
-      const results = await BangumiApi.searchSeasonalSubjects(range.start, range.end, 24, this.seasonalList.length)
-      for (let i = 0; i < results.length; i++) {
-        this.seasonalList.push(RecommendCardModel.fromAnimeItem(results[i]))
-      }
-    } catch (err) {
-      logger.warn('loadMoreSeasonal failed')
-    }
+  async loadRemainingSeasonal(onProgress?: (items: RecommendCardModel[]) => void,
+    shouldContinue?: () => boolean): Promise<void> {
+    const range = BangumiApi.getCurrentSeasonRange()
+    await this.loadRemainingSection(
+      this.seasonalList,
+      async (offset: number): Promise<AnimeItem[]> =>
+        BangumiApi.searchSeasonalSubjects(range.start, range.end, HOME_SECTION_PAGE_SIZE, offset),
+      onProgress,
+      shouldContinue,
+      'seasonal'
+    )
   }
 
   async loadHomeTrending(): Promise<RecommendCardModel[]> {
@@ -268,5 +288,66 @@ export class RecommendViewModel {
       models.push(RecommendCardModel.copyOf(items[i]))
     }
     return models
+  }
+
+  private buildRecommendModels(items: AnimeItem[]): RecommendCardModel[] {
+    const models: RecommendCardModel[] = []
+    for (let i = 0; i < items.length; i++) {
+      models.push(RecommendCardModel.fromAnimeItem(items[i]))
+    }
+    return models
+  }
+
+  private async loadRemainingSection(target: RecommendCardModel[],
+    loader: (offset: number) => Promise<AnimeItem[]>,
+    onProgress?: (items: RecommendCardModel[]) => void,
+    shouldContinue?: () => boolean,
+    sectionName: string = 'section'): Promise<void> {
+    let offset = HOME_SECTION_PAGE_SIZE
+    try {
+      while (!shouldContinue || shouldContinue()) {
+        const results = await loader(offset)
+        if (shouldContinue && !shouldContinue()) {
+          return
+        }
+        const addedCount = this.appendUniqueModels(target, results)
+        if (addedCount > 0 && onProgress) {
+          onProgress(this.copyList(target))
+        }
+        if (results.length < HOME_SECTION_PAGE_SIZE || addedCount === 0) {
+          break
+        }
+        offset += HOME_SECTION_PAGE_SIZE
+      }
+      logger.info('loadRemainingSection: section=%{public}s count=%{public}d', sectionName, target.length)
+    } catch (err) {
+      logger.warn('loadRemainingSection failed for %{public}s', sectionName)
+    }
+  }
+
+  private appendUniqueModels(target: RecommendCardModel[], items: AnimeItem[]): number {
+    const seenKeys: Set<string> = new Set()
+    for (let i = 0; i < target.length; i++) {
+      seenKeys.add(this.getRecommendModelKey(target[i]))
+    }
+    let addedCount = 0
+    for (let i = 0; i < items.length; i++) {
+      const model = RecommendCardModel.fromAnimeItem(items[i])
+      const key = this.getRecommendModelKey(model)
+      if (seenKeys.has(key)) {
+        continue
+      }
+      seenKeys.add(key)
+      target.push(model)
+      addedCount++
+    }
+    return addedCount
+  }
+
+  private getRecommendModelKey(item: RecommendCardModel): string {
+    if (item.bangumiId > 0) {
+      return 'id:' + item.bangumiId.toString()
+    }
+    return 'title:' + item.title + ':' + item.originalTitle
   }
 }

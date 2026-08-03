@@ -34,6 +34,7 @@ import { TypeNodePiPRoute, TypeNodePiPSession } from '../../services/TypeNodePiP
 import { PlaybackSessionActions, PlaybackSessionStore } from '../../services/PlaybackSessionStore'
 import { Logger } from '../../utils/Logger'
 import { router, window, PiPWindow, promptAction } from '@kit.ArkUI'
+import { KeyCode } from '@ohos.multimodalInput.keyCode'
 import { audio } from '@kit.AudioKit'
 import { common } from '@kit.AbilityKit'
 import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
@@ -188,6 +189,7 @@ export struct PlayerPage {
   private pendingVolumeValue: number = -1
   private keepScreenOnRequestToken: number = 0
   private keepScreenOnEnabled: boolean = false
+  private keepScreenOnRequested: boolean = false
   private wasPlayingBeforeDrag: boolean = false
   private episodePanelPanStartOffsetX: number = 0
   private bangumiCover: string = ''
@@ -196,7 +198,7 @@ export struct PlayerPage {
   private sourceName: string = ''
   private historySeekMs: number = -1
   private temporarySpeedBeforeLongPress: number = -1
-  private readonly speedOptions: number[] = [0.5, 0.75, 1.0, 1.25, 1.75, 2.0]
+  private readonly speedOptions: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0]
   private audioManager: audio.AudioManager | null = null
   private mediaVolumeMinLevel: number = -1
   private mediaVolumeMaxLevel: number = -1
@@ -303,7 +305,7 @@ export struct PlayerPage {
     this.initializePiP()
     this.loadSystemMediaVolume()
     this.startAutoHideTimer()
-    this.setKeepScreenOn(true)
+    this.syncKeepScreenOnWithPlayback()
     this.loadAspectModePreference()
     this.loadPlayerAutoFullscreenPreference().then(() => {
       this.applyPlayerAutoFullscreenRuntimeState()
@@ -312,6 +314,16 @@ export struct PlayerPage {
     })
     this.loadPlayerAutoPiPPreference()
     this.episodeGridColumns = this.getEpisodeGridColumns()
+    setTimeout(() => {
+      if (this.isPageAlive) {
+        try {
+          this.getUIContext().getFocusController().requestFocus('playerKeyboardTarget')
+        } catch (_err) {
+          // The target can temporarily have an unfocusable ancestor during page transitions.
+          logger.warn('Player keyboard target is not focusable yet')
+        }
+      }
+    }, 0)
   }
 
   aboutToDisappear(): void {
@@ -358,8 +370,10 @@ export struct PlayerPage {
 
   private onAppForegroundChanged(): void {
     if (this.appInForeground) {
+      this.syncKeepScreenOnWithPlayback()
       return
     }
+    this.setKeepScreenOn(false)
     this.pauseForApplicationBackground()
   }
 
@@ -534,11 +548,7 @@ export struct PlayerPage {
         this.BackgroundSnifferWeb()
       }
 
-      if (this.shouldUseTabletPlayerLayout()) {
-        this.TabletPlayerLayout()
-      } else {
-        this.StackedPlayerLayout()
-      }
+      this.AdaptivePlayerLayout()
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -562,7 +572,7 @@ export struct PlayerPage {
   }
 
   @Builder
-  private StackedPlayerLayout() {
+  private AdaptivePlayerLayout() {
     Column() {
       Column()
         .width('100%')
@@ -570,55 +580,36 @@ export struct PlayerPage {
         .opacity(this.nonVideoOpacity)
         .backgroundColor($r('app.color.page_background_media'))
 
-      this.VideoSection()
-
-      Column() {
-        this.PanelSection()
-      }
-      .width('100%')
-      .height(this.isFullScreen ? 0 : undefined)
-      .layoutWeight(this.isFullScreen ? 0 : 1)
-      .opacity(this.nonVideoOpacity)
-      .clip(true)
-    }
-    .width('100%')
-    .height('100%')
-    .zIndex(1)
-    .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
-  }
-
-  @Builder
-  private TabletPlayerLayout() {
-    Column() {
-      Column()
-        .width('100%')
-        .height(this.isFullScreen ? 0 : getEffectiveTopSafeHeight(this.topSafeHeight))
-        .opacity(this.nonVideoOpacity)
-        .backgroundColor($r('app.color.page_background_media'))
-
-      Row() {
+      Flex({
+        direction: this.shouldUseTabletPlayerLayout() ? FlexDirection.Row : FlexDirection.Column
+      }) {
         Column() {
           this.VideoSection()
         }
-        .layoutWeight(1)
-        .height('100%')
+        .width(this.shouldUseTabletPlayerLayout() ? undefined : '100%')
+        .height(this.isFullScreen || this.shouldUseTabletPlayerLayout() ? '100%' : undefined)
+        .layoutWeight(this.isFullScreen || this.shouldUseTabletPlayerLayout() ? 1 : 0)
         .justifyContent(FlexAlign.Center)
         .backgroundColor(Color.Black)
 
-        if (!this.isFullScreen) {
-          Column() {
-            this.PanelSection()
-          }
-          .width(this.getTabletPlayerPanelWidth())
-          .height('100%')
-          .clip(true)
-          .backgroundColor($r('app.color.page_background_media'))
-          .border({ width: { left: 0.5 }, color: $r('app.color.divider_color') })
+        Column() {
+          this.PanelSection()
         }
+        .width(this.isFullScreen ? 0 :
+          (this.shouldUseTabletPlayerLayout() ? this.getTabletPlayerPanelWidth() : '100%'))
+        .height(this.isFullScreen ? 0 : (this.shouldUseTabletPlayerLayout() ? '100%' : undefined))
+        .layoutWeight(this.isFullScreen || this.shouldUseTabletPlayerLayout() ? 0 : 1)
+        .visibility(this.isFullScreen ? Visibility.None : Visibility.Visible)
+        .opacity(this.nonVideoOpacity)
+        .clip(true)
+        .backgroundColor($r('app.color.page_background_media'))
+        .border({
+          width: { left: this.shouldUseTabletPlayerLayout() && !this.isFullScreen ? 0.5 : 0 },
+          color: $r('app.color.divider_color')
+        })
       }
       .width('100%')
       .layoutWeight(1)
-      .alignItems(VerticalAlign.Center)
     }
     .width('100%')
     .height('100%')
@@ -835,6 +826,12 @@ export struct PlayerPage {
     .backgroundColor(Color.Black)
     .clip(true)
     .renderFit(RenderFit.RESIZE_FILL)
+    .id('playerKeyboardTarget')
+    .focusable(true)
+    .focusOnTouch(true)
+    .onKeyEvent((event: KeyEvent) => {
+      this.handlePlayerKeyEvent(event)
+    })
   }
 
   @Builder
@@ -939,6 +936,13 @@ export struct PlayerPage {
           },
           onToggleControls: () => {
             this.toggleControls()
+          },
+          onMouseSingleClick: () => {
+            this.togglePlayPause()
+            this.showHudText(this.isPlaying ? '播放' : '暂停')
+          },
+          onMouseDoubleClick: () => {
+            this.toggleFullScreen()
           },
           onTemporarySpeedStart: () => {
             this.startTemporarySpeed()
@@ -1104,6 +1108,16 @@ export struct PlayerPage {
         this.CastPickerToolButton()
       }
 
+      if (this.isFullScreen) {
+        this.TopSymbolButton($r('sys.symbol.gobackward_15'), '后退 15 秒', () => {
+          this.seekByFifteenSeconds(false)
+        })
+
+        this.TopSymbolButton($r('sys.symbol.goforward_15'), '前进 15 秒', () => {
+          this.seekByFifteenSeconds(true)
+        })
+      }
+
       this.TopSymbolButton(this.showMoreMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
         this.showMoreMenu ? '收起' : '更多', () => {
         this.showMoreMenu = !this.showMoreMenu
@@ -1124,6 +1138,7 @@ export struct PlayerPage {
     .zIndex(6)
     .translate({ y: this.isControlVisible ? 0 : -12 })
     .opacity(this.isControlVisible ? 1 : 0)
+    .hitTestBehavior(this.isControlVisible ? HitTestMode.Default : HitTestMode.None)
     .animation({ duration: this.getControlAnimationDuration(), curve: Curve.EaseInOut })
   }
 
@@ -1376,6 +1391,7 @@ export struct PlayerPage {
     .zIndex(6)
     .translate({ y: this.isControlVisible ? 0 : 12 })
     .opacity(this.isControlVisible ? 1 : 0)
+    .hitTestBehavior(this.isControlVisible ? HitTestMode.Default : HitTestMode.None)
     .animation({ duration: this.getControlAnimationDuration(), curve: Curve.EaseInOut })
   }
 
@@ -1411,7 +1427,11 @@ export struct PlayerPage {
       .trackColor('#55FFFFFF')
       .selectedColor($r('app.color.accent_blue'))
       .blockColor($r('app.color.text_on_primary'))
+      .hitTestBehavior(this.isControlVisible ? HitTestMode.Default : HitTestMode.None)
       .onChange((value: number, mode: SliderChangeMode) => {
+        if (!this.isControlVisible) {
+          return
+        }
         if (mode === SliderChangeMode.Begin) {
           this.isDraggingProgress = true
           this.wasPlayingBeforeDrag = this.isPlaying
@@ -2282,12 +2302,12 @@ export struct PlayerPage {
   }
 
   private nextSpeed(): void {
-    const speeds: number[] = [0.5, 0.75, 1.0, 1.25, 1.75, 2.0]
-    const currentIdx = this.findCurrentSpeedIndex(speeds)
-    const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % speeds.length : 2
-    this.changeSpeed(speeds[nextIdx])
-    this.showHudText(this.formatSpeedLabel(speeds[nextIdx]))
-    logger.info('Player speed changed by UI: %{public}s', this.formatSpeedLabel(speeds[nextIdx]))
+    const currentIdx = this.findCurrentSpeedIndex(this.speedOptions)
+    const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % this.speedOptions.length : 2
+    const nextSpeed = this.speedOptions[nextIdx]
+    this.changeSpeed(nextSpeed)
+    this.showHudText(this.formatSpeedLabel(nextSpeed))
+    logger.info('Player speed changed by UI: %{public}s', this.formatSpeedLabel(nextSpeed))
   }
 
   private openSpeedPanel(): void {
@@ -2751,6 +2771,7 @@ export struct PlayerPage {
       return
     }
     this.isPlaying = state.playing
+    this.syncKeepScreenOnWithPlayback()
     this.updatePlayerLoadingState(state)
     this.isPlayerBuffering = this.resolvePlayerBufferingState(state)
     if (!this.isDraggingProgress) {
@@ -2953,6 +2974,7 @@ export struct PlayerPage {
     if (this.hasEngine && this.playerEngine !== null) {
       const nextPlaying = !this.isPlaying
       this.isPlaying = nextPlaying
+      this.syncKeepScreenOnWithPlayback()
       if (!nextPlaying) {
         this.playerEngine.pause()
         this.castSessionManager.sendPause()
@@ -2997,6 +3019,58 @@ export struct PlayerPage {
     if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedPanel && this.selectedPanelTab !== 1) {
       this.startAutoHideTimer()
     }
+  }
+
+  private handlePlayerKeyEvent(event: KeyEvent): void {
+    if (event.type !== KeyType.Down) {
+      return
+    }
+
+    if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+      if (this.isFullScreen) {
+        this.toggleFullScreen()
+      }
+      return
+    }
+
+    if (this.showEpisodeSidePanel || this.showDanmakuSettingsPanel || this.showDanmakuSettingsSheet ||
+      this.showMoreMenu || this.showSpeedPanel || this.showAspectModePanel ||
+      this.showRoadPickerPopup || this.showSideRoadPickerPopup) {
+      return
+    }
+
+    switch (event.keyCode) {
+      case KeyCode.KEYCODE_SPACE:
+        this.togglePlayPause()
+        this.showHudText(this.isPlaying ? '播放' : '暂停')
+        break
+      case KeyCode.KEYCODE_DPAD_LEFT:
+        this.seekTo(Math.max(this.positionMs - 5000, 0))
+        this.showHudText('后退 5 秒')
+        break
+      case KeyCode.KEYCODE_DPAD_RIGHT:
+        this.seekTo(Math.min(this.positionMs + 5000, this.durationMs))
+        this.showHudText('前进 5 秒')
+        break
+      case KeyCode.KEYCODE_DPAD_UP:
+        this.changePlayerVolume(0.05)
+        break
+      case KeyCode.KEYCODE_DPAD_DOWN:
+        this.changePlayerVolume(-0.05)
+        break
+      default:
+        break
+    }
+  }
+
+  private changePlayerVolume(delta: number): void {
+    const nextVolume = Math.max(0, Math.min(1, this.volume + delta))
+    this.volume = nextVolume
+    this.requestSystemMediaVolume(nextVolume)
+    if (this.hasEngine && this.playerEngine !== null) {
+      this.playerEngine.setVolume(nextVolume)
+    }
+    this.showHudText(`音量 ${Math.round(nextVolume * 100)}%`)
   }
 
   private shouldSyncPlaybackSessionState(state: PlayerState): boolean {
@@ -3191,10 +3265,11 @@ export struct PlayerPage {
   }
 
   private async setKeepScreenOn(keepScreenOn: boolean): Promise<void> {
-    const requestToken = ++this.keepScreenOnRequestToken
-    if (this.keepScreenOnEnabled === keepScreenOn) {
+    if (this.keepScreenOnRequested === keepScreenOn && this.keepScreenOnEnabled === keepScreenOn) {
       return
     }
+    this.keepScreenOnRequested = keepScreenOn
+    const requestToken = ++this.keepScreenOnRequestToken
 
     try {
       const context = getContext(this)
@@ -3203,12 +3278,21 @@ export struct PlayerPage {
         return
       }
       await mainWindow.setWindowKeepScreenOn(keepScreenOn)
-      if (requestToken === this.keepScreenOnRequestToken) {
-        this.keepScreenOnEnabled = keepScreenOn
+      this.keepScreenOnEnabled = keepScreenOn
+      if (requestToken !== this.keepScreenOnRequestToken) {
+        this.setKeepScreenOn(this.keepScreenOnRequested)
+        return
       }
+      logger.info('Screen keep-on changed: %{public}s', String(keepScreenOn))
     } catch (_err) {
       logger.warn('Failed to set screen keep-on: %{public}s', String(keepScreenOn))
     }
+  }
+
+  private syncKeepScreenOnWithPlayback(): void {
+    const shouldKeepScreenOn = this.isPageAlive && this.appInForeground && this.isPlaying &&
+      !this.shouldKeepPlaybackForPiP()
+    this.setKeepScreenOn(shouldKeepScreenOn)
   }
 
   private clearBrightnessApplyTimer(): void {
@@ -3511,7 +3595,7 @@ export struct PlayerPage {
         if (this.isPhoneDevice()) {
           await mainWindow.setPreferredOrientation(this.fullscreenRestoreOrientation)
         } else {
-          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED)
         }
         mainWindow.disableLandscapeMultiWindow().catch((err: BusinessError) => {
           logger.warn('disableLandscapeMultiWindow failed: %{public}d', err.code)
@@ -3534,6 +3618,16 @@ export struct PlayerPage {
       this.playerAutoFullscreen = PLAYER_AUTO_FULLSCREEN_DEFAULT
       AppStorage.setOrCreate('playerAutoFullscreen', PLAYER_AUTO_FULLSCREEN_DEFAULT)
     }
+  }
+
+  private seekByFifteenSeconds(forward: boolean): void {
+    if (!this.hasEngine || this.durationMs <= 0) {
+      return
+    }
+    const offsetMs = forward ? 15000 : -15000
+    const targetMs = Math.max(0, Math.min(this.positionMs + offsetMs, this.durationMs))
+    this.seekTo(targetMs)
+    this.showHudText(forward ? '前进 15 秒' : '后退 15 秒')
   }
 
   private async loadPlayerAutoPiPPreference(): Promise<void> {
@@ -3656,7 +3750,7 @@ export struct PlayerPage {
     this.autoFullscreenExitCheckPending = false
     this.suppressControlAnimation = true
     this.setFullScreenMode(false)
-    this.setAutoRotationEnabled(true)
+    this.setAutoRotationEnabled(this.playerAutoFullscreen)
     setTimeout(() => {
       this.getUIContext().animateTo({
         duration: 350,
@@ -3679,13 +3773,13 @@ export struct PlayerPage {
       const mainWindow = await window.getLastWindow(context)
       if (this.isPhoneDevice()) {
         if (enabled) {
-          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+          await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED)
         } else {
           await mainWindow.setPreferredOrientation(window.Orientation.PORTRAIT)
         }
       } else {
-        // Tablet: always allow auto rotation
-        await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION)
+        // Tablets follow the sensor only while the system rotation lock allows it.
+        await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED)
       }
     } catch (_err) {
       logger.warn('Failed to set auto rotation: %{public}s', _err instanceof Error ? _err.message : String(_err))
@@ -4265,6 +4359,7 @@ export struct PlayerPage {
         this.isPlaying = true
       }
       this.isPiPActive = false
+      this.syncKeepScreenOnWithPlayback()
     }
     callbacks.onPiPStopped = () => {
       if (this.isRestoringFromPiP) {
@@ -4278,6 +4373,7 @@ export struct PlayerPage {
       }
       this.keepPlaybackForPiP = false
       this.isPiPActive = false
+      this.syncKeepScreenOnWithPlayback()
     }
     return callbacks
   }

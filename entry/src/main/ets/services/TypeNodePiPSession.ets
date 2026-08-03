@@ -3,6 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit'
 import { common } from '@kit.AbilityKit'
 import { IPlayerEngine, PlaybackOptions, PlayerState } from '../core/player/IPlayerEngine'
 import { PlayerEngineFactory } from '../core/player/PlayerEngineFactory'
+import { AVPlayerEngine } from '../core/player/AVPlayerEngine'
 import { PlaybackRoad } from '../models/PlaybackRoad'
 import { Logger } from '../utils/Logger'
 import { PlaybackSessionActions, PlaybackSessionStore } from './PlaybackSessionStore'
@@ -142,7 +143,12 @@ export class TypeNodePiPSession {
     if (this.playerEngine !== null || this.playbackOptions === null || this.surfaceId.length === 0) {
       return
     }
-    this.playerEngine = await PlayerEngineFactory.create()
+    if (this.playbackOptions.isLocalFile) {
+      logger.info('TypeNode PiP uses AVPlayer for local file')
+      this.playerEngine = new AVPlayerEngine()
+    } else {
+      this.playerEngine = await PlayerEngineFactory.create()
+    }
     this.playerEngine.setSurfaceId(this.surfaceId)
     this.playerEngine.onStateChange((state: PlayerState) => {
       this.syncPlaybackClock()

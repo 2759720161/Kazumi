@@ -48,6 +48,9 @@ export struct DetailHeroBackground {
   }
 
   private selectBestCover(): string {
+    if (this.cover.startsWith('file://') || this.cover.startsWith('/')) {
+      return this.cover
+    }
     if (this.bangumiCover.length > 0) {
       return this.bangumiCover
     }

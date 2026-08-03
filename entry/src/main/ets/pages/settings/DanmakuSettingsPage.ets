@@ -174,10 +174,22 @@ struct DanmakuSettingsSwitchRow {
 
 @Entry
 @Component
-export struct DanmakuSettingsPage {
+struct DanmakuSettingsPage {
+  build() {
+    Column() {
+      DanmakuSettingsPageContent()
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+export struct DanmakuSettingsPageContent {
+  @Prop embedded: boolean = false
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
-  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = false
+  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = true
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State danmakuBorder: boolean = true
   @State danmakuBorderSize: number = 1.5
@@ -259,6 +271,7 @@ export struct DanmakuSettingsPage {
     .titleBar(buildTitleBarOptions('弹幕设置', this.hdsMaterialLevel))
     .bindToScrollable([this.scroller])
     .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(this.embedded)
     .backgroundColor(Color.Transparent)
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
   }

@@ -7,9 +7,11 @@ import { DetailInfoPanel } from '../../components/detail/DetailInfoPanel'
 import { DetailFloatingPlayButton } from '../../components/detail/DetailFloatingPlayButton'
 import { SourceSheet, SourceSheetSnapshot } from '../../components/detail/SourceSheet'
 import { BangumiApi } from '../../core/api/BangumiApi'
+import { BangumiConfig } from '../../core/api/BangumiConfig'
 import { PlaybackRoad, PlaybackSource } from '../../models/PlaybackRoad'
 import { EpisodeData } from '../../models/EpisodeData'
 import { HistoryStore } from '../../store/HistoryStore'
+import { ImageCacheStore } from '../../store/ImageCacheStore'
 import { HistoryRecord } from '../../models/HistoryRecord'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { ThemeColorStore } from '../../services/ThemeColorStore'
@@ -100,15 +102,16 @@ export struct DetailPage {
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private contentScroller: Scroller = new Scroller()
   private sourceSheetSnapshot: SourceSheetSnapshot | null = null
+  private coverCacheRequestKey: string = ''
 
 
   aboutToAppear(): void {
     const params = router.getParams() as Record<string, Object>
     if (params !== null) {
       if (params['animeName'] !== undefined) this.animeName = params['animeName'] as string
-      if (params['animeCover'] !== undefined) this.animeCover = params['animeCover'] as string
-      if (params['animeCoverFallback'] !== undefined) this.animeCoverFallback = params['animeCoverFallback'] as string
-      if (params['animeBangumiCover'] !== undefined) this.animeBangumiCover = params['animeBangumiCover'] as string
+      if (params['animeCover'] !== undefined) this.animeCover = BangumiConfig.normalizeImageUrl(params['animeCover'] as string)
+      if (params['animeCoverFallback'] !== undefined) this.animeCoverFallback = BangumiConfig.normalizeImageUrl(params['animeCoverFallback'] as string)
+      if (params['animeBangumiCover'] !== undefined) this.animeBangumiCover = BangumiConfig.normalizeImageUrl(params['animeBangumiCover'] as string)
       if (params['animeDesc'] !== undefined) this.animeDesc = params['animeDesc'] as string
       if (params['animeOriginalName'] !== undefined) this.animeOriginalName = params['animeOriginalName'] as string
       if (params['animeAirDate'] !== undefined) this.animeAirDate = params['animeAirDate'] as string
@@ -130,6 +133,7 @@ export struct DetailPage {
     this.refreshSectionTheme()
     this.fetchSubjectDetail()
     this.currentCoverImage = this.selectBestCoverImage()
+    this.prepareCachedCover(this.buildCoverKey())
 
     if (this.autoOpenSourceSheet) {
       setTimeout(() => {
@@ -225,7 +229,7 @@ export struct DetailPage {
     Scroll(this.contentScroller) {
       Stack({ alignContent: Alignment.TopStart }) {
         DetailHeroBackground({
-          cover: this.animeCover,
+          cover: this.getCoverImageSrc(),
           coverFallback: this.animeCoverFallback,
           bangumiCover: this.animeBangumiCover,
           topSafeHeight: getEffectiveTopSafeHeight(this.topSafeHeight)
@@ -370,7 +374,7 @@ export struct DetailPage {
   private ContentPanel() {
     Column() {
       DetailInfoPanel({
-        cover: this.animeCover,
+        cover: this.getCoverImageSrc(),
         coverFallback: this.animeCoverFallback,
         bangumiCover: this.animeBangumiCover,
         ratingScore: this.animeRatingScore,
@@ -860,9 +864,9 @@ export struct DetailPage {
       if (subject !== null) {
         if (this.animeName.length === 0 && subject.name.length > 0) this.animeName = subject.name
         const detailCover = subject.getDetailCover()
-        if (this.animeBangumiCover.length === 0 && detailCover.length > 0) this.animeBangumiCover = detailCover
-        else if (this.animeBangumiCover.length === 0 && subject.bangumiCover.length > 0) this.animeBangumiCover = subject.bangumiCover
-        if (this.animeCover.length === 0 && subject.cover.length > 0) this.animeCover = subject.cover
+        if (this.animeBangumiCover.length === 0 && detailCover.length > 0) this.animeBangumiCover = BangumiConfig.normalizeImageUrl(detailCover)
+        else if (this.animeBangumiCover.length === 0 && subject.bangumiCover.length > 0) this.animeBangumiCover = BangumiConfig.normalizeImageUrl(subject.bangumiCover)
+        if (this.animeCover.length === 0 && subject.cover.length > 0) this.animeCover = BangumiConfig.normalizeImageUrl(subject.cover)
         if (this.animeDesc.length === 0 && subject.desc.length > 0) this.animeDesc = subject.desc
         if (this.animeOriginalName.length === 0 && subject.originalName.length > 0) this.animeOriginalName = subject.originalName
         if (this.animeAliases.length === 0 && subject.aliases.length > 0) this.animeAliases = subject.aliases
@@ -877,6 +881,7 @@ export struct DetailPage {
         logger.info('Detail subject applied: %{public}s eps=%{public}d airDate=%{public}s',
           this.animeName, this.animeEps, this.animeAirDate)
         this.currentCoverImage = this.selectBestCoverImage()
+        this.prepareCachedCover(this.buildCoverKey())
         this.refreshSectionTheme()
       }
     } catch (err) {
@@ -1037,12 +1042,63 @@ export struct DetailPage {
   }
 
   private tryNextCoverImage(): void {
-    if (this.currentCoverImage === this.animeBangumiCover && this.animeCover.length > 0) {
-      this.currentCoverImage = this.animeCover
-    } else if (this.currentCoverImage === this.animeCover && this.animeCoverFallback.length > 0) {
-      this.currentCoverImage = this.animeCoverFallback
-    } else {
-      this.currentCoverImage = ''
+    const urls = this.buildCoverUrls()
+    const currentIndex = urls.indexOf(this.currentCoverImage)
+    if (currentIndex >= 0 && currentIndex + 1 < urls.length) {
+      this.currentCoverImage = urls[currentIndex + 1]
+      this.prepareCachedCover(this.buildCoverKey())
+      return
+    }
+    if (this.currentCoverImage.startsWith('file://') || this.currentCoverImage.startsWith('/')) {
+      this.currentCoverImage = this.selectBestCoverImage()
+      this.prepareCachedCover(this.buildCoverKey())
+      return
+    }
+    this.currentCoverImage = ''
+  }
+
+  private buildCoverKey(): string {
+    return `${this.animeBangumiCover}|${this.animeCover}|${this.animeCoverFallback}|${this.bangumiId}`
+  }
+
+  private buildCoverUrls(): string[] {
+    const urls: string[] = []
+    this.appendCoverUrl(urls, this.animeBangumiCover)
+    this.appendCoverUrl(urls, this.animeCover)
+    this.appendCoverUrl(urls, this.animeCoverFallback)
+    const subjectImageUrls = BangumiConfig.getSubjectImageUrls(this.bangumiId)
+    for (let i = 0; i < subjectImageUrls.length; i++) {
+      this.appendCoverUrl(urls, subjectImageUrls[i])
+    }
+    return urls
+  }
+
+  private appendCoverUrl(urls: string[], raw: string): void {
+    const url = BangumiConfig.normalizeImageUrl(raw)
+    if (url.length === 0 || urls.indexOf(url) >= 0) {
+      return
+    }
+    urls.push(url)
+  }
+
+  private async prepareCachedCover(expectedKey: string): Promise<void> {
+    const urls = this.buildCoverUrls()
+    if (urls.length === 0 || this.coverCacheRequestKey === expectedKey) {
+      return
+    }
+    this.coverCacheRequestKey = expectedKey
+    try {
+      const localUri = await ImageCacheStore.getInstance().getCachedImageUri(urls)
+      if (this.buildCoverKey() === expectedKey && localUri.length > 0) {
+        this.currentCoverImage = localUri
+      }
+    } catch (err) {
+      logger.warn('Detail cover cache failed: %{public}s',
+        err instanceof Error ? err.message : String(err))
+    } finally {
+      if (this.coverCacheRequestKey === expectedKey) {
+        this.coverCacheRequestKey = ''
+      }
     }
   }
 

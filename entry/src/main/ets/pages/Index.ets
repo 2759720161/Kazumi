@@ -34,6 +34,7 @@ import {
 } from '../utils/HdsPageStyle'
 
 const logger = new Logger('Index')
+const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady'
 
 @Entry
 @Component
@@ -49,13 +50,14 @@ struct Index {
   bottomTabAnimationToken: number = 0
   @StorageLink(BOTTOM_TAB_ANIMATION_HIDDEN_KEY) bottomTabAnimationHidden: boolean = false
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) @Watch('onAdvancedOptionsUnlockedChanged')
-  advancedOptionsUnlocked: boolean = false
+  advancedOptionsUnlocked: boolean = true
   @StorageLink(HIDE_LOCAL_PAGE_KEY) @Watch('onHideLocalPageChanged')
   hideLocalPage: boolean = false
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @StorageLink(CONTINUATION_RESTORE_PAYLOAD_KEY) continuationRestorePayload: string = ''
   @StorageLink(CONTINUATION_RESTORE_TOKEN_KEY) @Watch('onContinuationRestoreTokenChanged')
   continuationRestoreToken: number = 0
+  @StorageLink(APP_PREFERENCES_READY_KEY) appPreferencesReady: boolean = false
   @State private hdsImmersiveMaterialSupported: boolean = true
   private tabsController: HdsTabsController = new HdsTabsController()
   private bottomTabControllerHidden: boolean = false
@@ -64,6 +66,7 @@ struct Index {
   private readonly backExitIntervalMs: number = 2000
   private lastBackPressTime: number = 0
   private handledContinuationRestoreToken: number = -1
+  private pendingMainTabIndex: number = -1
 
   aboutToAppear(): void {
     this.refreshHdsMaterialSupport()
@@ -110,7 +113,10 @@ struct Index {
 
   build() {
     Column() {
-      HdsTabs({ controller: this.tabsController }) {
+      HdsTabs({
+        controller: this.tabsController,
+        index: this.currentTab
+      }) {
         if (this.advancedOptionsUnlocked) {
           TabContent() {
             HomePage()
@@ -149,6 +155,13 @@ struct Index {
       .width('100%')
       .height('100%')
       .onChange((index: number) => {
+        if (this.pendingMainTabIndex >= 0 && index !== this.pendingMainTabIndex) {
+          logger.info('Ignore stale main tab index during rebuild: %{public}d', index)
+          return
+        }
+        if (index === this.pendingMainTabIndex) {
+          this.pendingMainTabIndex = -1
+        }
         logger.info('Main tab changed: %{public}d', index)
         this.currentTab = index
         ContinuationState.markIndex(index)
@@ -251,16 +264,58 @@ struct Index {
   }
 
   private onAdvancedOptionsUnlockedChanged(): void {
-    // Settings is always the last tab; if user was on it, stay on it
-    this.currentTab = this.getSettingsTabIndex()
+    if (!this.appPreferencesReady) {
+      logger.info('Restore advanced tabs during startup; keep Home selected')
+      this.switchMainTabAfterStructureChange(0)
+      return
+    }
+    // Unlocking inserts three tabs before Settings. Switch by page identity instead
+    // of retaining the old numeric index, which would now point to Timeline.
+    this.switchMainTabAfterStructureChange(this.getSettingsTabIndex())
+  }
+
+  private switchMainTabAfterStructureChange(targetIndex: number): void {
+    this.pendingMainTabIndex = targetIndex
+    this.currentTab = targetIndex
+    ContinuationState.markIndex(targetIndex)
+    this.synchronizeMainTabAfterRebuild(targetIndex)
+  }
+
+  private synchronizeMainTabAfterRebuild(targetIndex: number, attempt: number = 0): void {
+    const delayMs = attempt === 0 ? 32 : 80
+    setTimeout(() => {
+      if (this.pendingMainTabIndex !== targetIndex) {
+        return
+      }
+      try {
+        this.tabsController.changeIndex(targetIndex)
+      } catch (err) {
+        this.pendingMainTabIndex = -1
+        const msg = err instanceof Error ? err.message : String(err)
+        logger.warn('Synchronize main tab after rebuild failed: %{public}s', msg)
+        return
+      }
+      if (this.pendingMainTabIndex === targetIndex && attempt < 2) {
+        this.synchronizeMainTabAfterRebuild(targetIndex, attempt + 1)
+      }
+    }, delayMs)
   }
 
   private onHideLocalPageChanged(): void {
-    // If current tab exceeds new range, clamp to settings (last tab)
-    const maxIndex = this.getSettingsTabIndex()
-    if (this.currentTab > maxIndex) {
-      this.currentTab = maxIndex
+    const previousSettingsIndex = this.advancedOptionsUnlocked
+      ? (this.hideLocalPage ? 4 : 3)
+      : (this.hideLocalPage ? 1 : 0)
+    const previousLocalIndex = this.advancedOptionsUnlocked ? 3 : 0
+
+    if (this.currentTab === previousSettingsIndex ||
+      (this.hideLocalPage && this.currentTab === previousLocalIndex)) {
+      this.switchMainTabAfterStructureChange(this.getSettingsTabIndex())
+      return
     }
+
+    const maxIndex = this.getSettingsTabIndex()
+    const targetIndex = Math.min(Math.max(this.currentTab, 0), maxIndex)
+    this.switchMainTabAfterStructureChange(targetIndex)
   }
 
   private onBottomTabAnimationTokenChanged(): void {

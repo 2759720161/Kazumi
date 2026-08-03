@@ -14,6 +14,11 @@ const PROXY_CANDIDATES: string[] = [
 ]
 const DANMAKU_API_TIMEOUT_MS = 15000
 const DANMAKU_API_MAX_RETRIES = 1
+const DANDAN_SEARCH_V2_PATHS: string[] = [
+  '/api/v2/search/anime',
+  '/api/v2/search/episodes',
+  '/api/v2/search/adv',
+]
 
 const USER_AGENTS: string[] = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
@@ -40,22 +45,23 @@ export class DandanApiClient {
   }
 
   async get(path: string, queryParameters?: Record<string, string>): Promise<ResponseWrapper> {
+    const resolvedQueryParameters = this.withSearchV2Parameter(path, queryParameters)
     const hasCredentials = this.credentialStore.hasCredentials()
 
     if (hasCredentials) {
       logger.info('弹幕API模式: official-signed, host=%{public}s', OFFICIAL_API_BASE)
       logger.info('官方凭据: 已配置')
-      const result = await this.signedGet(path, queryParameters)
+      const result = await this.signedGet(path, resolvedQueryParameters)
       if (result.statusCode === 403) {
         logger.warn('官方API签名鉴权失败(HTTP 403), 降级到反代候选列表')
-        return await this.proxyGetWithCandidates(path, queryParameters)
+        return await this.proxyGetWithCandidates(path, resolvedQueryParameters)
       }
       return result
     }
 
     logger.info('弹幕API模式: proxy, host=%{public}s', PROXY_CANDIDATES.length > 0 ? PROXY_CANDIDATES[0] : 'none')
     logger.info('官方凭据: 未配置')
-    return await this.proxyGetWithCandidates(path, queryParameters)
+    return await this.proxyGetWithCandidates(path, resolvedQueryParameters)
   }
 
   private async signedGet(path: string, queryParameters?: Record<string, string>): Promise<ResponseWrapper> {
@@ -174,6 +180,24 @@ export class DandanApiClient {
       }
     }
     return url
+  }
+
+  private withSearchV2Parameter(path: string, queryParameters?: Record<string, string>): Record<string, string> | undefined {
+    if (DANDAN_SEARCH_V2_PATHS.indexOf(path) < 0) {
+      return queryParameters
+    }
+
+    const nextParameters: Record<string, string> = {}
+    if (queryParameters !== undefined) {
+      const keys = Object.keys(queryParameters)
+      for (let i = 0; i < keys.length; i++) {
+        nextParameters[keys[i]] = queryParameters[keys[i]]
+      }
+    }
+    if (nextParameters['v2'] === undefined) {
+      nextParameters['v2'] = 'true'
+    }
+    return nextParameters
   }
 
   private getRandomUA(): string {

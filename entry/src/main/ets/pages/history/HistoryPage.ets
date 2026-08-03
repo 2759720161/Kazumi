@@ -57,12 +57,24 @@ class HistoryMenuIconContent {
 
 @Entry
 @Component
-export struct HistoryPage {
+struct HistoryPage {
+  build() {
+    Column() {
+      HistoryPageContent()
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+export struct HistoryPageContent {
+  @Prop embedded: boolean = false
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
-  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = false
+  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = true
   @State histories: HistoryRecord[] = []
   @State isLoading: boolean = true
   @State loadError: boolean = false
@@ -71,6 +83,7 @@ export struct HistoryPage {
   @State showDeleteDialog: boolean = false
   @State historyRenderVersion: number = 0
   @State isSyncing: boolean = false
+  @State contentWidthVp: number = 0
   private historyStore: HistoryStore = new HistoryStore()
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
   private playbackSearchService: PluginSearchService = new PluginSearchService()
@@ -126,7 +139,7 @@ export struct HistoryPage {
       .titleBar(this.buildCustomTitleBarOptions())
       .bindToScrollable([this.scroller])
       .titleMode(HdsNavigationTitleMode.MINI)
-      .hideBackButton(false)
+    .hideBackButton(this.embedded)
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
 
@@ -137,6 +150,12 @@ export struct HistoryPage {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.page_background'))
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const width = Number(newArea.width)
+      if (width > 0 && Math.abs(this.contentWidthVp - width) >= 1) {
+        this.contentWidthVp = width
+      }
+    })
   }
 
   @Builder
@@ -840,13 +859,18 @@ export struct HistoryPage {
 
 
   private getColumnCount(): number {
-    if (this.screenWidthVp >= 840) {
+    const layoutWidth: number = this.getLayoutWidth()
+    if (layoutWidth >= 840) {
       return 3
     }
-    if (this.screenWidthVp >= 600) {
+    if (layoutWidth >= 600) {
       return 2
     }
     return 1
+  }
+
+  private getLayoutWidth(): number {
+    return this.contentWidthVp > 0 ? this.contentWidthVp : this.screenWidthVp
   }
 
   private getSkeletonRows(): number[][] {
@@ -890,7 +914,7 @@ export struct HistoryPage {
     }
     const totalPadding: number = CARD_MARGIN_H * 2
     const totalGaps: number = GRID_GAP * (cols - 1)
-    const available: number = this.screenWidthVp - totalPadding - totalGaps
+    const available: number = this.getLayoutWidth() - totalPadding - totalGaps
     const cardW: number = Math.floor(available / cols)
     return cardW
   }

@@ -12,6 +12,8 @@
     "pages/settings/DanmakuSettingsPage",
     "pages/settings/DanmakuBlockRulesPage",
     "pages/settings/RuleShopPage",
+    "pages/settings/PlayerSettingsPage",
+    "pages/settings/AppearanceSettingsPage",
     "pages/settings/ThirdPartyPage",
     "pages/player/LocalPlayerPage"
   ]

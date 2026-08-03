@@ -16,7 +16,7 @@ import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../../utils/AdvancedOptionsUnlock
 struct ThirdPartyPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
-  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = false
+  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = true
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   private scroller: Scroller = new Scroller()
 

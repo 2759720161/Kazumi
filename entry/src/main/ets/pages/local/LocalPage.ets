@@ -46,6 +46,7 @@ export struct LocalPage {
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @StorageLink(LOCAL_VIDEO_HISTORY_VERSION_KEY) @Watch('onLocalHistoryVersionChanged') localHistoryVersion: number = 0
+  @StorageLink('appRdbReady') @Watch('onRdbReadyChanged') appRdbReady: boolean = false
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State localHistory: LocalVideoRecord[] = []
@@ -53,6 +54,7 @@ export struct LocalPage {
   @State ownFolderScanned: boolean = false
   @State ownFolderScanFailed: boolean = false
   @State ownFolderScanning: boolean = false
+  @State ownFolderCoverRenderVersion: number = 0
   @State selectedLocalTabIndex: number = 0
   @State showDeleteConfirm: boolean = false
   @State pendingDeleteId: number = -1
@@ -65,9 +67,15 @@ export struct LocalPage {
   private hasScannedOwnDownloadFolder: boolean = false
   private isGeneratingCovers: boolean = false
   private isGeneratingOwnFolderCovers: boolean = false
+  private pendingOwnFolderCoverGeneration: boolean = false
+  private pendingOwnFolderRescan: boolean = false
 
   aboutToAppear(): void {
-    this.loadLocalHistory()
+    if (this.appRdbReady) {
+      this.loadLocalHistory()
+    } else {
+      logger.info('本地播放记录等待RDB初始化')
+    }
     if (this.isActive) {
       this.scanOwnDownloadFolderIfNeeded()
     }
@@ -82,21 +90,37 @@ export struct LocalPage {
   }
 
   onPageShow(): void {
-    this.loadLocalHistory()
+    if (this.appRdbReady) {
+      this.loadLocalHistory()
+    } else {
+      logger.info('本地播放记录等待RDB初始化')
+    }
     if (this.isActive) {
-      this.scanOwnDownloadFolderIfNeeded()
+      this.scanOwnDownloadFolderIfNeeded(true)
+    }
+  }
+
+  onRdbReadyChanged(): void {
+    logger.info('Local page RDB ready changed: %{public}s', String(this.appRdbReady))
+    if (!this.appRdbReady) {
+      return
+    }
+    this.refreshLocalHistoryBindings()
+    if (this.isActive) {
+      this.scanOwnDownloadFolderIfNeeded(true)
     }
   }
 
   onLocalHistoryVersionChanged(): void {
-    this.refreshLocalHistoryBindings()
+    if (this.appRdbReady) {
+      this.refreshLocalHistoryBindings()
+    }
   }
 
   onActiveChanged(): void {
     logger.info('Local page active changed: %{public}s', String(this.isActive))
     if (this.isActive) {
-      this.scanOwnDownloadFolderIfNeeded()
-      this.ensureOwnFolderCovers()
+      this.scanOwnDownloadFolderIfNeeded(true)
     }
   }
 
@@ -411,7 +435,8 @@ export struct LocalPage {
         Column({ space: 8 }) {
           ForEach(this.ownFolderVideos, (record: LocalVideoRecord) => {
             this.OwnFolderVideoCard(record)
-          }, (record: LocalVideoRecord) => 'own_folder_' + record.fileUri + '_' + record.fileSize)
+          }, (record: LocalVideoRecord) => 'own_folder_' + record.fileUri + '_' + record.fileSize + '_' +
+            record.coverUri + '_' + this.ownFolderCoverRenderVersion)
         }
         .width('100%')
       } else {
@@ -871,12 +896,19 @@ export struct LocalPage {
   }
 
   private async loadLocalHistory(): Promise<void> {
+    if (!this.appRdbReady) {
+      logger.info('跳过加载本地播放记录，RDB尚未初始化')
+      return
+    }
     try {
       this.localHistory = await this.localVideoHistoryStore.getAll()
       this.ensureMissingCovers()
     } catch (err) {
-      logger.warn('加载本地播放记录失败: %{public}s', err instanceof Error ? err.message : String(err))
-      this.localHistory = []
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.warn('加载本地播放记录失败: %{public}s', msg)
+      if (msg.indexOf('RdbStore not initialized') < 0) {
+        this.localHistory = []
+      }
     }
   }
 
@@ -921,11 +953,12 @@ export struct LocalPage {
     }
   }
 
-  private async scanOwnDownloadFolderIfNeeded(): Promise<void> {
-    if (this.hasScannedOwnDownloadFolder) {
+  private async scanOwnDownloadFolderIfNeeded(force: boolean = false): Promise<void> {
+    if (this.hasScannedOwnDownloadFolder && !force) {
       return
     }
     if (this.ownFolderScanning) {
+      this.pendingOwnFolderRescan = this.pendingOwnFolderRescan || force
       return
     }
     this.ownFolderScanning = true
@@ -941,7 +974,8 @@ export struct LocalPage {
         return
       }
       this.hasScannedOwnDownloadFolder = true
-      this.ownFolderVideos = this.mergeOwnFolderHistoryBindings(records, await this.localVideoHistoryStore.getAll())
+      const historyRecords = await this.loadLocalHistoryForMerge()
+      this.ownFolderVideos = this.mergeOwnFolderHistoryBindings(records, historyRecords)
       this.ownFolderScanned = true
       this.ownFolderScanFailed = false
       logger.info('读取用户Download包名目录完成: %{public}d', records.length)
@@ -952,6 +986,10 @@ export struct LocalPage {
       logger.warn('读取用户Download包名目录失败: %{public}s', err instanceof Error ? err.message : String(err))
     } finally {
       this.ownFolderScanning = false
+      if (this.pendingOwnFolderRescan) {
+        this.pendingOwnFolderRescan = false
+        this.scanOwnDownloadFolderIfNeeded(true)
+      }
     }
   }
 
@@ -962,9 +1000,13 @@ export struct LocalPage {
 
   private async ensureOwnFolderCovers(): Promise<void> {
     if (this.isGeneratingOwnFolderCovers || this.ownFolderVideos.length === 0) {
+      if (this.isGeneratingOwnFolderCovers) {
+        this.pendingOwnFolderCoverGeneration = true
+      }
       return
     }
     this.isGeneratingOwnFolderCovers = true
+    this.pendingOwnFolderCoverGeneration = false
     try {
       const maxGenerateCount = this.ownFolderVideos.length
       for (let i = 0; i < maxGenerateCount; i++) {
@@ -991,12 +1033,20 @@ export struct LocalPage {
         }
         this.ownFolderVideos[currentIndex].coverUri = coverUri
         this.ownFolderVideos = this.ownFolderVideos.slice()
+        this.ownFolderCoverRenderVersion++
+        const fileKey = this.buildLocalFileKey(record)
+        if (this.appRdbReady && fileKey.length > 0) {
+          await this.localVideoHistoryStore.updateCoverUri(fileKey, coverUri)
+        }
         logger.info('本地目录视频封面已更新: %{public}s', record.fileName)
       }
     } catch (err) {
       logger.warn('生成本地目录视频封面失败: %{public}s', err instanceof Error ? err.message : String(err))
     } finally {
       this.isGeneratingOwnFolderCovers = false
+      if (this.pendingOwnFolderCoverGeneration) {
+        this.ensureOwnFolderCovers()
+      }
     }
   }
 
@@ -1008,6 +1058,19 @@ export struct LocalPage {
       }
     }
     return -1
+  }
+
+  private async loadLocalHistoryForMerge(): Promise<LocalVideoRecord[]> {
+    if (!this.appRdbReady) {
+      logger.info('本地目录暂不合并历史，RDB尚未初始化')
+      return []
+    }
+    try {
+      return await this.localVideoHistoryStore.getAll()
+    } catch (err) {
+      logger.warn('读取本地历史用于目录合并失败: %{public}s', err instanceof Error ? err.message : String(err))
+      return []
+    }
   }
 
   private mergeOwnFolderHistoryBindings(records: LocalVideoRecord[], historyRecords: LocalVideoRecord[]): LocalVideoRecord[] {

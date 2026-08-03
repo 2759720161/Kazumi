@@ -113,6 +113,9 @@ export class MpvPlayerEngine implements IPlayerEngine {
   private detailEnhancerQuality: number = -1
   private pendingAspectMode: VideoAspectMode | null = null
   private isReleasing: boolean = false
+  private prepareStartedAtMs: number = 0
+  private loadfileStartedAtMs: number = 0
+  private activeUrlFingerprint: string = ''
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
@@ -186,8 +189,15 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
   prepare(options: PlaybackOptions): void {
     const prepareStartMs = Date.now()
+    this.prepareStartedAtMs = prepareStartMs
+    this.loadfileStartedAtMs = 0
+    this.activeUrlFingerprint = this.fingerprintUrl(options.url)
     logger.warn('CrashDiag mpv prepare start: id=%{public}d urlLength=%{public}d surfaceId=%{public}s',
       this.diagId, options.url.length, this.surfaceId)
+    logger.warn('CrashDiag mpv input: id=%{public}d urlHash=%{public}s local=%{public}s startMs=%{public}d ' +
+      'refererLen=%{public}d userAgentLen=%{public}d headerNames=%{public}s',
+      this.diagId, this.activeUrlFingerprint, String(options.isLocalFile), options.startPositionMs,
+      options.referer.length, options.userAgent.length, this.describeOptionHeaderNames(options.headers))
     logger.info('mpv prepare start, urlLength=%{public}d, surfaceId=%{public}s', options.url.length, this.surfaceId)
     this.clearPrepareTimeout()
     this.isReleasing = false
@@ -246,33 +256,30 @@ export class MpvPlayerEngine implements IPlayerEngine {
       }
 
       const eventCtxId = this.ctxId
-      napi.nativeOnEvent(eventCtxId, (event: MpvEventData) => {
+      const eventRegistrationErr = napi.nativeOnEvent(eventCtxId, (event: MpvEventData) => {
         if (this.isReleasing || this.ctxId !== eventCtxId || event.ctxId !== eventCtxId) {
           return
         }
         this.handleMpvEvent(event)
       })
+      logger.info('CrashDiag mpv event registration: id=%{public}d ctxId=%{public}d err=%{public}d',
+        this.diagId, eventCtxId, eventRegistrationErr)
 
       this.observeKeyProperties()
 
       if (options.url.length > 0) {
+        // The resume position is configured through the `start` property in
+        // applyMpvOptions. Passing `start=...` as a loadfile argument makes
+        // libmpv parse it as the command index and rejects the command.
         const loadArgs: string[] = ['loadfile', options.url, 'replace']
-        if (options.startPositionMs > 0) {
-          const startPositionSec = Math.max(0, Math.round(options.startPositionMs / 1000))
-          loadArgs.push('start=' + String(startPositionSec))
-          logger.warn('CrashDiag mpv loadfile resume: id=%{public}d startPosition=%{public}dms startSec=%{public}d',
-            this.diagId, options.startPositionMs, startPositionSec)
-        }
+        this.loadfileStartedAtMs = Date.now()
+        this.isAwaitingFileLoaded = true
+        logger.warn('CrashDiag mpv loadfile begin: id=%{public}d urlHash=%{public}s argCount=%{public}d',
+          this.diagId, this.activeUrlFingerprint, loadArgs.length)
         stepStartMs = Date.now()
-        let loadErr = napi.nativeCommand(this.ctxId, loadArgs)
+        const loadErr = napi.nativeCommand(this.ctxId, loadArgs)
         logger.warn('CrashDiag mpv loadfile returned: id=%{public}d ctxId=%{public}d err=%{public}d elapsed=%{public}dms total=%{public}dms',
           this.diagId, this.ctxId, loadErr, Date.now() - stepStartMs, Date.now() - prepareStartMs)
-        if (loadErr === -4 && options.startPositionMs > 0) {
-          logger.warn('mpv loadfile resume parameter rejected, retrying from beginning')
-          loadErr = napi.nativeCommand(this.ctxId, ['loadfile', options.url, 'replace'])
-          logger.warn('CrashDiag mpv loadfile fallback returned: id=%{public}d ctxId=%{public}d err=%{public}d',
-            this.diagId, this.ctxId, loadErr)
-        }
         logger.info('mpv loadfile command result: %{public}d', loadErr)
         if (loadErr < 0) {
           this.failPlayback('mpv loadfile failed: ' + String(loadErr))
@@ -489,7 +496,10 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.state.stateName = 'preparing'
         this.state.playing = false
         this.notifyStateChange()
-        logger.info('CrashDiag mpv event: id=%{public}d start-file', this.diagId)
+        logger.info('CrashDiag mpv event: id=%{public}d urlHash=%{public}s event=start-file elapsed=%{public}dms ' +
+          'error=%{public}d reason=%{public}d snapshot=%{public}s',
+          this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), event.errorCode, event.reason,
+          this.readMpvPlaybackSnapshot())
         logger.info('mpv event: start-file')
         break
 
@@ -503,12 +513,19 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.state.playing = true
         this.fetchVideoSize()
         this.notifyStateChange()
-        logger.info('CrashDiag mpv event: id=%{public}d file-loaded', this.diagId)
+        logger.info('CrashDiag mpv event: id=%{public}d urlHash=%{public}s event=file-loaded elapsed=%{public}dms ' +
+          'loadfileElapsed=%{public}dms snapshot=%{public}s',
+          this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), this.elapsedSinceLoadfile(),
+          this.readMpvPlaybackSnapshot())
         logger.info('mpv event: file-loaded')
         break
 
       case MPV_EVENT_END_FILE:
         this.clearPrepareTimeout()
+        logger.info('CrashDiag mpv event: id=%{public}d urlHash=%{public}s event=end-file elapsed=%{public}dms ' +
+          'error=%{public}d reason=%{public}d snapshot=%{public}s',
+          this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), event.errorCode, event.reason,
+          this.readMpvPlaybackSnapshot())
         if (event.reason === 0) {
           this.state.completed = true
           this.state.playing = false
@@ -546,6 +563,9 @@ export class MpvPlayerEngine implements IPlayerEngine {
     const prefix = event.logPrefix.length > 0 ? event.logPrefix : 'mpv'
     const level = event.logLevel.length > 0 ? event.logLevel : 'info'
     const text = event.logText.length > 900 ? event.logText.substring(0, 900) : event.logText
+    logger.info('CrashDiag mpv log meta: id=%{public}d urlHash=%{public}s elapsed=%{public}dms ' +
+      'prefix=%{public}s level=%{public}s textLength=%{public}d',
+      this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), prefix, level, event.logText.length)
     if (level === 'fatal' || level === 'error') {
       logger.error('mpv log [%{public}s/%{public}s] %{public}s', prefix, level, text)
     } else if (level === 'warn') {
@@ -579,6 +599,14 @@ export class MpvPlayerEngine implements IPlayerEngine {
         break
 
       case 'pause':
+        // mpv emits pause=false while it is still opening the URL. Do not
+        // expose that intermediate state as playback before file-loaded.
+        if (this.isAwaitingFileLoaded || this.state.stateName === 'preparing') {
+          this.state.playing = false
+          this.state.stateName = 'preparing'
+          this.notifyStateChange()
+          break
+        }
         this.state.playing = !this.readMpvFlag(event)
         if (this.state.playing && this.state.stateName !== 'completed') {
           this.state.stateName = 'playing'
@@ -596,7 +624,14 @@ export class MpvPlayerEngine implements IPlayerEngine {
         break
 
       case 'buffering-state':
-        this.state.buffering = event.propertyValueDouble > 0
+        const buffering = event.propertyValueDouble > 0
+        if (buffering !== this.state.buffering) {
+          logger.info('CrashDiag mpv buffering: id=%{public}d urlHash=%{public}s buffering=%{public}s ' +
+            'value=%{public}f elapsed=%{public}dms snapshot=%{public}s',
+            this.diagId, this.activeUrlFingerprint, String(buffering), event.propertyValueDouble,
+            this.elapsedSincePrepare(), this.readMpvPlaybackSnapshot())
+        }
+        this.state.buffering = buffering
         break
 
       default:
@@ -610,6 +645,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
       return
     }
     try {
+      const msgLevelErr = napi.nativeSetProperty(this.ctxId, 'msg-level',
+        'cplayer=info,demuxer=debug,stream=debug,ffmpeg=debug')
       napi.nativeSetProperty(this.ctxId, 'vo', 'ohcodec')
       napi.nativeSetProperty(this.ctxId, 'ao', 'ohaudio')
       napi.nativeSetProperty(this.ctxId, 'hwdec', this.hwdecMode)
@@ -627,14 +664,20 @@ export class MpvPlayerEngine implements IPlayerEngine {
         logger.info('HLS options set: demuxer-lavf-o=%{public}s', demuxerOpts.join(','))
       }
 
+      let referrerErr = 0
+      let userAgentErr = 0
+      let proxyErr = 0
+      let headerErr = 0
+      let startErr = 0
+      let startValue = ''
       if (options.referer.length > 0) {
-        napi.nativeSetProperty(this.ctxId, 'referrer', options.referer)
+        referrerErr = napi.nativeSetProperty(this.ctxId, 'referrer', options.referer)
       }
       if (options.userAgent.length > 0) {
-        napi.nativeSetProperty(this.ctxId, 'user-agent', options.userAgent)
+        userAgentErr = napi.nativeSetProperty(this.ctxId, 'user-agent', options.userAgent)
       }
       if (options.proxy.length > 0) {
-        napi.nativeSetProperty(this.ctxId, 'http-proxy', options.proxy)
+        proxyErr = napi.nativeSetProperty(this.ctxId, 'http-proxy', options.proxy)
       }
       if (options.streamMetadata !== null && !options.streamMetadata.isEmpty()) {
         logger.info('mpv stream metadata: %{public}s', options.streamMetadata.summary())
@@ -656,14 +699,24 @@ export class MpvPlayerEngine implements IPlayerEngine {
           }
         }
         if (headerParts.length > 0) {
-          napi.nativeSetProperty(this.ctxId, 'http-header-fields', headerParts.join(','))
+          headerErr = napi.nativeSetProperty(this.ctxId, 'http-header-fields', headerParts.join(','))
           logger.info('mpv http headers applied: count=%{public}d names=%{public}s',
             headerParts.length, this.describeHeaderNames(headerParts))
         }
       }
       if (options.startPositionMs > 0) {
-        napi.nativeSetProperty(this.ctxId, 'start', String(options.startPositionMs / 1000))
+        startValue = String(options.startPositionMs / 1000)
+        startErr = napi.nativeSetProperty(this.ctxId, 'start', startValue)
       }
+      logger.info('CrashDiag mpv options result: id=%{public}d urlHash=%{public}s msgLevelErr=%{public}d ' +
+        'referrer=%{public}s/%{public}d userAgent=%{public}s/%{public}d proxy=%{public}s/%{public}d ' +
+        'headers=%{public}s/%{public}d start=%{public}s/%{public}d',
+        this.diagId, this.activeUrlFingerprint, msgLevelErr,
+        options.referer.length > 0 ? 'set' : 'empty', referrerErr,
+        options.userAgent.length > 0 ? 'set' : 'empty', userAgentErr,
+        options.proxy.length > 0 ? 'set' : 'empty', proxyErr,
+        Object.keys(options.headers).length > 0 ? 'set' : 'empty', headerErr,
+        startValue.length > 0 ? startValue : 'empty', startErr)
     } catch (_err) {
       logger.warn('applyMpvOptions partially failed (non-fatal)')
     }
@@ -743,11 +796,14 @@ export class MpvPlayerEngine implements IPlayerEngine {
       return
     }
     try {
-      napi.nativeObserveProperty(this.ctxId, 1, 'time-pos', MPV_FORMAT_DOUBLE)
-      napi.nativeObserveProperty(this.ctxId, 2, 'duration', MPV_FORMAT_DOUBLE)
-      napi.nativeObserveProperty(this.ctxId, 3, 'pause', MPV_FORMAT_FLAG)
-      napi.nativeObserveProperty(this.ctxId, 4, 'eof-reached', MPV_FORMAT_FLAG)
-      napi.nativeObserveProperty(this.ctxId, 5, 'buffering-state', MPV_FORMAT_DOUBLE)
+      const timePosErr = napi.nativeObserveProperty(this.ctxId, 1, 'time-pos', MPV_FORMAT_DOUBLE)
+      const durationErr = napi.nativeObserveProperty(this.ctxId, 2, 'duration', MPV_FORMAT_DOUBLE)
+      const pauseErr = napi.nativeObserveProperty(this.ctxId, 3, 'pause', MPV_FORMAT_FLAG)
+      const eofErr = napi.nativeObserveProperty(this.ctxId, 4, 'eof-reached', MPV_FORMAT_FLAG)
+      const bufferingErr = napi.nativeObserveProperty(this.ctxId, 5, 'buffering-state', MPV_FORMAT_DOUBLE)
+      logger.info('CrashDiag mpv observe properties: id=%{public}d timePos=%{public}d duration=%{public}d ' +
+        'pause=%{public}d eof=%{public}d buffering=%{public}d',
+        this.diagId, timePosErr, durationErr, pauseErr, eofErr, bufferingErr)
     } catch (_err) {
       logger.warn('observe properties failed (non-fatal)')
     }
@@ -800,7 +856,10 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
   private failPlayback(errorMsg: string): void {
     this.clearPrepareTimeout()
-    logger.error('mpv playback failed: %{public}s', errorMsg)
+    logger.error('mpv playback failed: id=%{public}d urlHash=%{public}s elapsed=%{public}dms ' +
+      'error=%{public}s snapshot=%{public}s',
+      this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), errorMsg,
+      this.readMpvPlaybackSnapshot())
     this.state.stateName = 'error'
     this.state.error = errorMsg
     this.state.playing = false
@@ -814,7 +873,10 @@ export class MpvPlayerEngine implements IPlayerEngine {
       this.prepareTimeoutTimer = -1
       if (this.isAwaitingFileLoaded && this.isInitialized && !this.isReleasing) {
         this.isAwaitingFileLoaded = false
-        logger.error('mpv prepare timeout after %{public}d ms', this.prepareTimeoutMs)
+        logger.error('mpv prepare timeout: id=%{public}d urlHash=%{public}s timeoutMs=%{public}d ' +
+          'elapsed=%{public}dms loadfileElapsed=%{public}dms snapshot=%{public}s',
+          this.diagId, this.activeUrlFingerprint, this.prepareTimeoutMs, this.elapsedSincePrepare(),
+          this.elapsedSinceLoadfile(), this.readMpvPlaybackSnapshot())
         this.failPlayback('mpv prepare timeout')
       }
     }, this.prepareTimeoutMs)
@@ -826,5 +888,60 @@ export class MpvPlayerEngine implements IPlayerEngine {
       clearTimeout(this.prepareTimeoutTimer)
       this.prepareTimeoutTimer = -1
     }
+  }
+
+  private elapsedSincePrepare(): number {
+    if (this.prepareStartedAtMs <= 0) {
+      return -1
+    }
+    return Math.max(0, Date.now() - this.prepareStartedAtMs)
+  }
+
+  private elapsedSinceLoadfile(): number {
+    if (this.loadfileStartedAtMs <= 0) {
+      return -1
+    }
+    return Math.max(0, Date.now() - this.loadfileStartedAtMs)
+  }
+
+  private fingerprintUrl(url: string): string {
+    let hash = 17
+    for (let i = 0; i < url.length; i++) {
+      hash = (hash * 31 + url.charCodeAt(i)) % 2147483647
+    }
+    return String(hash)
+  }
+
+  private describeOptionHeaderNames(headers: Record<string, string>): string {
+    const keys = Object.keys(headers)
+    if (keys.length === 0) {
+      return '<empty>'
+    }
+    const names: string[] = []
+    for (let i = 0; i < keys.length; i++) {
+      const normalized = this.normalizeMpvHeaderName(keys[i])
+      if (normalized.length > 0) {
+        names.push(normalized)
+      }
+    }
+    return names.length > 0 ? names.join('|') : '<unsupported>'
+  }
+
+  private readMpvPlaybackSnapshot(): string {
+    if (this.ctxId < 0 || napi === null) {
+      return 'ctx=unavailable'
+    }
+    const names = ['demuxer', 'duration', 'time-pos', 'video-format', 'audio-format',
+      'cache-buffering-state', 'paused-for-cache', 'eof-reached']
+    const parts: string[] = []
+    for (let i = 0; i < names.length; i++) {
+      try {
+        const value = napi.nativeGetProperty(this.ctxId, names[i])
+        parts.push(names[i] + '=' + (value !== null && value.length > 0 ? value : '<null>'))
+      } catch (_err) {
+        parts.push(names[i] + '=<error>')
+      }
+    }
+    return parts.join('|')
   }
 }

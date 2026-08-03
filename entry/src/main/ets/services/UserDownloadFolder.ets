@@ -107,6 +107,7 @@ export class UserDownloadFolder {
           record.fileUri = new fileUri.FileUri(filePath).toString()
           record.fileName = UserDownloadFolder.getFileName(relativePath)
           record.fileSize = stat.size
+          record.fileKey = record.fileUri + '|' + record.fileSize + '|' + record.fileName
           records.push(record)
           videoMatchKeys.push(UserDownloadFolder.buildMatchKey(relativePath))
         } else if (UserDownloadFolder.isDanmakuFile(relativePath)) {

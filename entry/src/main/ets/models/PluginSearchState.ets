@@ -63,4 +63,5 @@ export class SearchResultRef {
   url: string = ''
   sourceId: number = -1
   sourceName: string = ''
+  keyword: string = ''
 }

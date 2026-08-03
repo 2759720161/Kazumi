@@ -1,6 +1,7 @@
 import { AnimeItem } from '../../models/AnimeItem'
 import { router } from '@kit.ArkUI'
 import { ImageCacheStore } from '../../store/ImageCacheStore'
+import { BangumiConfig } from '../../core/api/BangumiConfig'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('TimelineAnimeCard')
@@ -12,10 +13,11 @@ export struct TimelineAnimeCard {
   @State coverKey: string = ''
   @State hasCoverError: boolean = false
   @State isPressed: boolean = false
+  private cacheRequestKey: string = ''
 
   aboutToAppear(): void {
     this.coverKey = this.buildCoverKey()
-    this.currentCover = ''
+    this.currentCover = this.selectBestCover()
     this.hasCoverError = false
     this.prepareCachedCover(this.coverKey)
   }
@@ -23,11 +25,14 @@ export struct TimelineAnimeCard {
   build() {
     Row() {
       Stack() {
-        Image(this.getCoverSource())
+        // Keep the image source expression state-aware so recycled GridItems
+        // refresh immediately when a calendar item or cached URI changes.
+        Image(this.currentCover.length > 0 ?
+          this.currentCover : $r('app.media.ic_placeholder'))
           .draggable(false)
           .width(92)
           .height(132)
-          .objectFit(this.currentCover.length > 0 && !this.hasCoverError ? ImageFit.Cover : ImageFit.Contain)
+          .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
           .borderRadius(10)
           .alt($r('app.media.ic_placeholder'))
           .onError(() => {
@@ -150,15 +155,8 @@ export struct TimelineAnimeCard {
     })
   }
 
-  private getCoverSource(): ResourceStr {
-    if (this.currentCover.length > 0 && !this.hasCoverError) {
-      return this.currentCover
-    }
-    return $r('app.media.ic_placeholder')
-  }
-
   private selectBestCover(): string {
-    return this.animeItem.getGridCover()
+    return BangumiConfig.normalizeImageUrl(this.animeItem.getGridCover())
   }
 
   private buildSubtitle(): string {
@@ -189,7 +187,7 @@ export struct TimelineAnimeCard {
   }
 
   private buildCoverKey(): string {
-    return `${this.animeItem.coverCommon}|${this.animeItem.coverMedium}|${this.animeItem.bangumiCover}|${this.animeItem.cover}|${this.animeItem.coverFallback}`
+    return `${this.animeItem.bangumiId}|${this.animeItem.coverCommon}|${this.animeItem.coverMedium}|${this.animeItem.bangumiCover}|${this.animeItem.cover}|${this.animeItem.coverFallback}`
   }
 
   private onAnimeItemChanged(): void {
@@ -198,27 +196,35 @@ export struct TimelineAnimeCard {
       return
     }
     this.coverKey = nextKey
-    this.currentCover = ''
+    this.currentCover = this.selectBestCover()
     this.hasCoverError = false
     this.prepareCachedCover(nextKey)
   }
 
   private async prepareCachedCover(expectedKey: string): Promise<void> {
     const urls: string[] = this.buildCoverUrls()
-    if (urls.length === 0) {
+    if (urls.length === 0 || this.cacheRequestKey === expectedKey) {
       return
     }
 
-    const localUri = await ImageCacheStore.getInstance().getCachedImageUri(urls)
-    if (this.coverKey !== expectedKey) {
-      return
-    }
-    if (localUri.length > 0) {
-      this.currentCover = localUri
-      this.hasCoverError = false
-    } else if (this.coverKey === expectedKey) {
-      this.currentCover = this.selectBestCover()
-      this.hasCoverError = false
+    // AceImage may receive a CDN 403 because it cannot attach the same
+    // headers as the cache client. Keep one authenticated cache request per
+    // card and use its local file as the stable image source.
+    this.cacheRequestKey = expectedKey
+
+    try {
+      const localUri = await ImageCacheStore.getInstance().getCachedImageUri(urls)
+      if (this.coverKey !== expectedKey) {
+        return
+      }
+      if (localUri.length > 0) {
+        this.currentCover = localUri
+        this.hasCoverError = false
+      }
+    } finally {
+      if (this.cacheRequestKey === expectedKey) {
+        this.cacheRequestKey = ''
+      }
     }
   }
 
@@ -229,19 +235,24 @@ export struct TimelineAnimeCard {
     this.pushCoverUrl(urls, this.animeItem.bangumiCover)
     this.pushCoverUrl(urls, this.animeItem.cover)
     this.pushCoverUrl(urls, this.animeItem.coverFallback)
+    const subjectImageUrls = BangumiConfig.getSubjectImageUrls(this.animeItem.bangumiId)
+    for (let i = 0; i < subjectImageUrls.length; i++) {
+      this.pushCoverUrl(urls, subjectImageUrls[i])
+    }
     return urls
   }
 
   private pushCoverUrl(urls: string[], url: string): void {
-    if (url.length === 0) {
+    const normalizedUrl = BangumiConfig.normalizeImageUrl(url)
+    if (normalizedUrl.length === 0) {
       return
     }
-    const compactUrl = this.compactBangumiCoverUrl(url)
+    const compactUrl = this.compactBangumiCoverUrl(normalizedUrl)
     if (urls.indexOf(compactUrl) < 0) {
       urls.push(compactUrl)
     }
-    if (compactUrl !== url && urls.indexOf(url) < 0) {
-      urls.push(url)
+    if (compactUrl !== normalizedUrl && urls.indexOf(normalizedUrl) < 0) {
+      urls.push(normalizedUrl)
     }
   }
 
@@ -256,25 +267,23 @@ export struct TimelineAnimeCard {
   }
 
   private tryNextCover(): void {
-    if (this.currentCover === this.animeItem.coverCommon && this.animeItem.coverMedium.length > 0) {
-      this.currentCover = this.animeItem.coverMedium
-      this.hasCoverError = false
-      return
+    // A cache file can be removed while the page is alive. Never keep a
+    // stale file URI as the card source; restart from the remote cover list.
+    if (this.currentCover.startsWith('file://') || this.currentCover.startsWith('/')) {
+      const remoteCover = this.selectBestCover()
+      if (remoteCover.length > 0) {
+        this.currentCover = remoteCover
+        this.hasCoverError = false
+        this.prepareCachedCover(this.coverKey)
+        return
+      }
     }
-    if ((this.currentCover === this.animeItem.coverCommon || this.currentCover === this.animeItem.coverMedium) &&
-      this.animeItem.bangumiCover.length > 0) {
-      this.currentCover = this.animeItem.bangumiCover
+    const urls = this.buildCoverUrls()
+    const currentIndex = urls.indexOf(this.currentCover)
+    if (currentIndex >= 0 && currentIndex + 1 < urls.length) {
+      this.currentCover = urls[currentIndex + 1]
       this.hasCoverError = false
-      return
-    }
-    if (this.currentCover !== this.animeItem.cover && this.animeItem.cover.length > 0) {
-      this.currentCover = this.animeItem.cover
-      this.hasCoverError = false
-      return
-    }
-    if (this.currentCover !== this.animeItem.coverFallback && this.animeItem.coverFallback.length > 0) {
-      this.currentCover = this.animeItem.coverFallback
-      this.hasCoverError = false
+      this.prepareCachedCover(this.coverKey)
       return
     }
     this.currentCover = ''

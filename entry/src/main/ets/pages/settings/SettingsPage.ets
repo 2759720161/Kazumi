@@ -63,6 +63,23 @@ import { RuleShopPageContent } from './RuleShopPage'
 import { DanmakuSettingsPageContent } from './DanmakuSettingsPage'
 import { WebDavSyncPageContent } from './WebDavSyncPage'
 import { HistoryPageContent } from '../history/HistoryPage'
+import {
+  ANTI_PEEP_ENABLED_DEFAULT,
+  AntiPeepService,
+  PREFS_KEY_ANTI_PEEP_ENABLED
+} from '../../services/AntiPeepService'
+import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  API26_MATERIAL_STYLE_THIN,
+  API26_MATERIAL_STYLE_REGULAR,
+  API26_MATERIAL_STYLE_THICK,
+  API26_MATERIAL_STYLE_ULTRA_THIN,
+  API26_MATERIAL_STYLE_ULTRA_THICK,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  getApi26MaterialStyleLabel,
+  isImmersiveMaterialSupported,
+  normalizeApi26MaterialStyle
+} from '../../utils/ImmersiveMaterial'
 
 const logger = new Logger('SettingsPage')
 const SETTINGS_DESTINATION_RULE_SHOP: string = 'settings_rule_shop'
@@ -145,6 +162,7 @@ export struct SettingsPage {
   @StorageLink(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY) mpvDetailEnhancerQuality: number = MPV_DETAIL_ENHANCER_QUALITY_DEFAULT
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
+  @StorageLink(PREFS_KEY_ANTI_PEEP_ENABLED) antiPeepEnabled: boolean = ANTI_PEEP_ENABLED_DEFAULT
   @State snifferTimeout: number = 15
   @State rules: RuleSource[] = []
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
@@ -156,6 +174,7 @@ export struct SettingsPage {
 
   @State colorMode: number = -1
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @State showPlayerEngineMenu: boolean = false
   @State showMpvHwdecMenu: boolean = false
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = true
@@ -826,6 +845,29 @@ export struct SettingsPage {
 
         this.ItemDivider()
 
+        Row() {
+          this.SettingIcon($r('sys.symbol.layer'))
+          this.SettingTitle('浮层材质厚度')
+          this.Api26MaterialStylePicker()
+        }
+        .width('100%')
+        .height(56)
+        .padding({ left: 16, right: 16 })
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.lock'),
+          '防窥模式',
+          '检测到他人注视时显示系统防窥蒙层',
+          this.antiPeepEnabled,
+          (isOn: boolean) => {
+            this.setAntiPeepEnabled(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
         this.ToggleItem(
           $r('sys.symbol.arrow_down_right_and_arrow_up_left'),
           '滑动隐藏底栏',
@@ -976,7 +1018,7 @@ export struct SettingsPage {
   }
 
   @Builder
-  SettingTitle(title: string, desc: string): void {
+  SettingTitle(title: string, desc: string = ''): void {
     Column() {
       Text(title)
         .fontSize(16)
@@ -985,13 +1027,15 @@ export struct SettingsPage {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
-      Text(desc)
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .margin({ top: 2 })
+      if (desc.length > 0) {
+        Text(desc)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .margin({ top: 2 })
+      }
     }
     .layoutWeight(1)
     .alignItems(HorizontalAlign.Start)
@@ -1351,6 +1395,76 @@ export struct SettingsPage {
   }
 
   @Builder
+  Api26MaterialStylePicker(): void {
+    if (isImmersiveMaterialSupported()) {
+      Row() {
+        Text(getApi26MaterialStyleLabel(this.api26MaterialStyle))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
+
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 8 })
+      }
+      .width(112)
+      .height(38)
+      .padding({ left: 10, right: 8 })
+      .borderRadius(12)
+      .bindMenu(this.Api26MaterialStyleMenuContent, {
+        placement: Placement.Bottom,
+        showInSubWindow: false
+      })
+    } else {
+      Row() {
+        Text('仅支持API26')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+      }
+      .width(112)
+      .height(38)
+      .padding({ left: 10, right: 8 })
+      .borderRadius(12)
+      .onClick(() => {
+        promptAction.showToast({ message: '仅支持API26机型' })
+      })
+    }
+  }
+
+  @Builder
+  Api26MaterialStyleMenuContent(): void {
+    Menu() {
+      this.SettingsMenuOption('超薄', this.api26MaterialStyle === API26_MATERIAL_STYLE_ULTRA_THIN, () => {
+        this.setApi26MaterialStyle(API26_MATERIAL_STYLE_ULTRA_THIN)
+      })
+      this.SettingsMenuOption('薄', this.api26MaterialStyle === API26_MATERIAL_STYLE_THIN, () => {
+        this.setApi26MaterialStyle(API26_MATERIAL_STYLE_THIN)
+      })
+      this.SettingsMenuOption('标准', this.api26MaterialStyle === API26_MATERIAL_STYLE_REGULAR, () => {
+        this.setApi26MaterialStyle(API26_MATERIAL_STYLE_REGULAR)
+      })
+      this.SettingsMenuOption('厚', this.api26MaterialStyle === API26_MATERIAL_STYLE_THICK, () => {
+        this.setApi26MaterialStyle(API26_MATERIAL_STYLE_THICK)
+      })
+      this.SettingsMenuOption('超厚', this.api26MaterialStyle === API26_MATERIAL_STYLE_ULTRA_THICK, () => {
+        this.setApi26MaterialStyle(API26_MATERIAL_STYLE_ULTRA_THICK)
+      })
+    }
+    .width(160)
+    .fontColor($r('app.color.text_primary'))
+    .radius(20)
+  }
+
+  @Builder
   DetailEnhancerPicker(): void {
     Row() {
       Text(this.getDetailEnhancerLabel(this.mpvDetailEnhancerQuality))
@@ -1594,6 +1708,15 @@ export struct SettingsPage {
       this.colorMode = this.normalizeColorMode(savedColorMode)
       this.hdsMaterialLevel = await prefs.getString(PREFS_KEY_HDS_MATERIAL_LEVEL, HDS_MATERIAL_LEVEL_DEFAULT)
       AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, this.hdsMaterialLevel)
+      this.api26MaterialStyle = normalizeApi26MaterialStyle(
+        await prefs.getString(PREFS_KEY_API26_MATERIAL_STYLE, API26_MATERIAL_STYLE_DEFAULT)
+      )
+      AppStorage.setOrCreate(PREFS_KEY_API26_MATERIAL_STYLE, this.api26MaterialStyle)
+      this.antiPeepEnabled = await prefs.getBoolean(
+        PREFS_KEY_ANTI_PEEP_ENABLED,
+        ANTI_PEEP_ENABLED_DEFAULT
+      )
+      AppStorage.setOrCreate(PREFS_KEY_ANTI_PEEP_ENABLED, this.antiPeepEnabled)
 
       this.refreshUpdatableCount(token)
     } catch (err) {
@@ -1814,6 +1937,44 @@ export struct SettingsPage {
       await prefs.setString(PREFS_KEY_HDS_MATERIAL_LEVEL, level)
     } catch (err) {
       logger.error('Set hds material level failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setApi26MaterialStyle(style: string): Promise<void> {
+    if (!isImmersiveMaterialSupported()) {
+      promptAction.showToast({ message: '仅支持API26机型' })
+      return
+    }
+    this.api26MaterialStyle = normalizeApi26MaterialStyle(style)
+    AppStorage.setOrCreate(PREFS_KEY_API26_MATERIAL_STYLE, this.api26MaterialStyle)
+    try {
+      const prefs = PreferencesStore.getInstance()
+      await prefs.setString(PREFS_KEY_API26_MATERIAL_STYLE, this.api26MaterialStyle)
+    } catch (err) {
+      logger.error('Set API26 material style failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setAntiPeepEnabled(enabled: boolean): Promise<void> {
+    const service = AntiPeepService.getInstance()
+    if (enabled) {
+      const context = getContext(this) as common.UIAbilityContext
+      const enabledSuccessfully = await service.enable(context)
+      if (!enabledSuccessfully) {
+        this.antiPeepEnabled = false
+        AppStorage.setOrCreate(PREFS_KEY_ANTI_PEEP_ENABLED, false)
+        return
+      }
+    } else {
+      service.setEnabled(false)
+    }
+
+    this.antiPeepEnabled = enabled
+    AppStorage.setOrCreate(PREFS_KEY_ANTI_PEEP_ENABLED, enabled)
+    try {
+      await PreferencesStore.getInstance().setBoolean(PREFS_KEY_ANTI_PEEP_ENABLED, enabled)
+    } catch (err) {
+      logger.error('Set anti-peep enabled failed: %{public}s', JSON.stringify(err))
     }
   }
 

@@ -1,3 +1,5 @@
+import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+
 @Component
 export struct SpeedPicker {
   @Prop currentSpeed: number = 1.0;
@@ -20,6 +22,7 @@ export struct SpeedPicker {
             offsetY: speed === this.currentSpeed ? 4 : 2
           })
           .fontColor(speed === this.currentSpeed ? $r('app.color.text_on_primary') : $r('app.color.text_primary'))
+          .systemMaterial(createConfiguredImmersiveMaterial())
           .onClick(() => {
             if (this.onSpeedSelected) {
               this.onSpeedSelected(speed);

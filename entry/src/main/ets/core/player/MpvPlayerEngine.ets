@@ -12,6 +12,7 @@ const MPV_EVENT_START_FILE = 6
 const MPV_EVENT_FILE_LOADED = 8
 const MPV_EVENT_END_FILE = 7
 const MPV_EVENT_PROPERTY_CHANGE = 22
+const VIDEO_SIZE_POLL_DELAYS_MS: number[] = [80, 160, 320, 640, 1000, 1500, 2000]
 
 interface MpvNapiInterface {
   nativeCreate(): number
@@ -106,6 +107,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
   private ctxId: number = -1
   private readonly prepareTimeoutMs: number = 15000
   private prepareTimeoutTimer: number = -1
+  private videoSizePollTimer: number = -1
+  private videoSizePollAttempt: number = 0
   private isAwaitingFileLoaded: boolean = false
   private hwdecMode: string = 'auto'
   private hlsAdFilterEnabled: boolean = true
@@ -200,6 +203,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
       options.referer.length, options.userAgent.length, this.describeOptionHeaderNames(options.headers))
     logger.info('mpv prepare start, urlLength=%{public}d, surfaceId=%{public}s', options.url.length, this.surfaceId)
     this.clearPrepareTimeout()
+    this.clearVideoSizePoll()
     this.isReleasing = false
     this.resetState()
     this.state.stateName = 'creating'
@@ -441,6 +445,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
     logger.warn('CrashDiag mpv release begin: id=%{public}d ctxId=%{public}d initialized=%{public}s releasing=%{public}s',
       this.diagId, this.ctxId, String(this.isInitialized), String(this.isReleasing))
     this.clearPrepareTimeout()
+    this.clearVideoSizePoll()
     if (this.isReleasing) {
       logger.warn('CrashDiag mpv release skipped: id=%{public}d reason=already-releasing', this.diagId)
       return
@@ -511,7 +516,8 @@ export class MpvPlayerEngine implements IPlayerEngine {
         this.clearPrepareTimeout()
         this.state.stateName = 'playing'
         this.state.playing = true
-        this.fetchVideoSize()
+        this.clearVideoSizePoll()
+        this.scheduleVideoSizePoll()
         this.notifyStateChange()
         logger.info('CrashDiag mpv event: id=%{public}d urlHash=%{public}s event=file-loaded elapsed=%{public}dms ' +
           'loadfileElapsed=%{public}dms snapshot=%{public}s',
@@ -522,6 +528,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
       case MPV_EVENT_END_FILE:
         this.clearPrepareTimeout()
+        this.clearVideoSizePoll()
         logger.info('CrashDiag mpv event: id=%{public}d urlHash=%{public}s event=end-file elapsed=%{public}dms ' +
           'error=%{public}d reason=%{public}d snapshot=%{public}s',
           this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), event.errorCode, event.reason,
@@ -768,27 +775,118 @@ export class MpvPlayerEngine implements IPlayerEngine {
     }
   }
 
-  private fetchVideoSize(): void {
+  private fetchVideoSize(): boolean {
     if (this.ctxId < 0 || napi === null) {
-      return
+      return false
     }
     try {
-      const dwStr = napi.nativeGetProperty(this.ctxId, 'dwidth')
-      const dhStr = napi.nativeGetProperty(this.ctxId, 'dheight')
-      if (dwStr !== null && dhStr !== null) {
-        const dw = parseInt(dwStr, 10)
-        const dh = parseInt(dhStr, 10)
-        if (!isNaN(dw) && !isNaN(dh) && dw > 0 && dh > 0) {
-          this.state.videoWidth = dw
-          this.state.videoHeight = dh
-          logger.info('mpv video size: %{public}dx%{public}d', dw, dh)
-        } else {
-          logger.warn('mpv video size invalid: dwidth=%{public}s, dheight=%{public}s', dwStr, dhStr)
-        }
+      const displayW = this.parsePositiveMpvNumber(this.readMpvProperty('dwidth'))
+      const displayH = this.parsePositiveMpvNumber(this.readMpvProperty('dheight'))
+      if (displayW > 0 && displayH > 0) {
+        return this.applyVideoSize(displayW, displayH, 'dwidth/dheight')
+      }
+
+      const videoW = this.parsePositiveMpvNumber(this.readMpvProperty('video-params/w'))
+      const videoH = this.parsePositiveMpvNumber(this.readMpvProperty('video-params/h'))
+      if (videoW > 0 && videoH > 0) {
+        return this.applyVideoSize(videoW, videoH, 'video-params')
+      }
+
+      const outputW = this.parsePositiveMpvNumber(this.readMpvProperty('video-out-params/w'))
+      const outputH = this.parsePositiveMpvNumber(this.readMpvProperty('video-out-params/h'))
+      if (outputW > 0 && outputH > 0) {
+        return this.applyVideoSize(outputW, outputH, 'video-out-params')
+      }
+
+      const aspectValue = this.parsePositiveMpvNumber(this.readMpvProperty('video-params/aspect'))
+      if (aspectValue <= 0) {
+        logger.info('mpv video size not ready: display=%{public}s, video=%{public}s, output=%{public}s, aspect=%{public}s',
+          this.describeMpvPair(displayW, displayH), this.describeMpvPair(videoW, videoH),
+          this.describeMpvPair(outputW, outputH), String(aspectValue))
+      } else {
+        const aspectW = Math.max(1, Math.round(aspectValue * 1000))
+        return this.applyVideoSize(aspectW, 1000, 'video-params/aspect')
       }
     } catch (err) {
       logger.warn('mpv fetchVideoSize failed: %{public}s', String(err))
     }
+    return false
+  }
+
+  private readMpvProperty(name: string): string | null {
+    if (this.ctxId < 0 || napi === null) {
+      return null
+    }
+    try {
+      return napi.nativeGetProperty(this.ctxId, name)
+    } catch (_err) {
+      return null
+    }
+  }
+
+  private parsePositiveMpvNumber(value: string | null): number {
+    if (value === null || value.length === 0) {
+      return 0
+    }
+    const parsed = parseFloat(value)
+    return !isNaN(parsed) && parsed > 0 ? parsed : 0
+  }
+
+  private describeMpvPair(width: number, height: number): string {
+    if (width <= 0 || height <= 0) {
+      return '<unavailable>'
+    }
+    return String(Math.round(width)) + 'x' + String(Math.round(height))
+  }
+
+  private applyVideoSize(width: number, height: number, source: string): boolean {
+    const nextWidth = Math.max(1, Math.round(width))
+    const nextHeight = Math.max(1, Math.round(height))
+    const changed = this.state.videoWidth !== nextWidth || this.state.videoHeight !== nextHeight
+    this.state.videoWidth = nextWidth
+    this.state.videoHeight = nextHeight
+    logger.warn('CrashDiag mpv video size: source=%{public}s size=%{public}dx%{public}d ' +
+      'aspect=%{public}s changed=%{public}s', source, nextWidth, nextHeight,
+      (nextWidth / nextHeight).toFixed(4), String(changed))
+    return true
+  }
+
+  private scheduleVideoSizePoll(): void {
+    this.clearVideoSizePoll()
+    this.videoSizePollAttempt = 0
+    this.scheduleNextVideoSizePoll(0)
+  }
+
+  private scheduleNextVideoSizePoll(delayMs: number): void {
+    if (this.isReleasing || !this.isInitialized || this.ctxId < 0 || napi === null) {
+      return
+    }
+    this.videoSizePollTimer = setTimeout(() => {
+      this.videoSizePollTimer = -1
+      if (this.isReleasing || !this.isInitialized || this.ctxId < 0 || napi === null) {
+        return
+      }
+      if (this.fetchVideoSize()) {
+        this.notifyStateChange()
+        return
+      }
+      if (this.videoSizePollAttempt >= VIDEO_SIZE_POLL_DELAYS_MS.length) {
+        logger.warn('CrashDiag mpv video size unavailable after retries, keeping fallback layout: %{public}s',
+          this.readMpvPlaybackSnapshot())
+        return
+      }
+      const nextDelay = VIDEO_SIZE_POLL_DELAYS_MS[this.videoSizePollAttempt]
+      this.videoSizePollAttempt++
+      this.scheduleNextVideoSizePoll(nextDelay)
+    }, delayMs)
+  }
+
+  private clearVideoSizePoll(): void {
+    if (this.videoSizePollTimer >= 0) {
+      clearTimeout(this.videoSizePollTimer)
+      this.videoSizePollTimer = -1
+    }
+    this.videoSizePollAttempt = 0
   }
 
   private observeKeyProperties(): void {
@@ -856,6 +954,7 @@ export class MpvPlayerEngine implements IPlayerEngine {
 
   private failPlayback(errorMsg: string): void {
     this.clearPrepareTimeout()
+    this.clearVideoSizePoll()
     logger.error('mpv playback failed: id=%{public}d urlHash=%{public}s elapsed=%{public}dms ' +
       'error=%{public}s snapshot=%{public}s',
       this.diagId, this.activeUrlFingerprint, this.elapsedSincePrepare(), errorMsg,

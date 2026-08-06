@@ -1,3 +1,5 @@
+import { createThickImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+
 @Component
 export struct ErrorRetry {
   @Prop message: string = '加载失败';
@@ -18,6 +20,7 @@ export struct ErrorRetry {
         .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
         .border({ width: 0.5, color: $r('app.color.border_specular') })
         .shadow({ radius: 14, color: $r('app.color.shadow_button_primary'), offsetY: 4 })
+        .systemMaterial(createThickImmersiveMaterial())
         .onClick(() => {
           if (this.onRetry) {
             this.onRetry();

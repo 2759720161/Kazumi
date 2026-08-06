@@ -1,4 +1,5 @@
 import { DanmakuSettingsPanelContent } from './DanmakuSettingsPanel'
+import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
 
 @Component
 export struct DanmakuSettingsSidePanel {
@@ -49,6 +50,7 @@ export struct DanmakuSettingsSidePanel {
       .backgroundColor($r('app.color.page_background'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .border({ width: { left: 0.5 }, color: $r('app.color.divider_color') })
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .translate({ x: this.showPanel ? this.panelOffsetX : '100%' })
       .animation({ duration: 300, curve: Curve.EaseInOut })
     }

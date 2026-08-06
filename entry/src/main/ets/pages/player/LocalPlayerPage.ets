@@ -23,6 +23,9 @@ import { KeyCode } from '@ohos.multimodalInput.keyCode'
 import { common } from '@kit.AbilityKit'
 import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
 import {
+  createConfiguredImmersiveMaterial,
+} from '../../utils/ImmersiveMaterial'
+import {
   PLAYER_AUTO_FULLSCREEN_DEFAULT,
   PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
@@ -1250,6 +1253,7 @@ export struct LocalPlayerPage {
       .borderRadius(16)
       .backgroundColor($r('app.color.category_menu_surface'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
       .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
@@ -1380,6 +1384,7 @@ export struct LocalPlayerPage {
       .padding({ left: 18, right: 18, top: 12, bottom: this.bottomSafeHeight + 18 })
       .borderRadius({ topLeft: 18, topRight: 18 })
       .backgroundColor($r('app.color.card_background'))
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: -6 })
     }
     .width('100%')
@@ -1470,6 +1475,7 @@ export struct LocalPlayerPage {
       .borderRadius({ topLeft: 18, topRight: 18 })
       .clip(true)
       .backgroundColor($r('app.color.page_background'))
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: -6 })
     }
     .width('100%')

@@ -22,6 +22,7 @@ import { DefaultRuleSourceInitializer } from '../../utils/DefaultRuleSourceIniti
 import { SettingsChangeSignal } from '../../store/SettingsChangeSignal'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
+import { createThickImmersiveMaterial } from '../../utils/ImmersiveMaterial'
 import { promptAction, curves } from '@kit.ArkUI'
 
 const logger = new Logger('RuleShopPage')
@@ -870,6 +871,7 @@ export struct RuleShopPageContent {
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+      .systemMaterial(createThickImmersiveMaterial())
       .margin({ top: getTopSpacerHeight(this.topSafeHeight) - 10, right: 12 })
     }
     .width('100%')

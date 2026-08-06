@@ -1,3 +1,5 @@
+import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+
 @Component
 export struct SniffErrorOverlay {
   @Prop status: string = 'error'
@@ -48,6 +50,7 @@ export struct SniffErrorOverlay {
             .borderRadius(21)
             .border({ width: 0.5, color: $r('app.color.border_specular') })
             .shadow({ radius: 14, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
+            .systemMaterial(createConfiguredImmersiveMaterial())
             .margin({ right: 12 })
 
           Button('返回选择')
@@ -63,6 +66,7 @@ export struct SniffErrorOverlay {
             .fontColor($r('app.color.text_on_primary'))
             .borderRadius(21)
             .border({ width: 0.5, color: '#33FFFFFF' })
+            .systemMaterial(createConfiguredImmersiveMaterial())
         }
         .justifyContent(FlexAlign.Center)
       }

@@ -42,6 +42,9 @@ import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
 import { webview } from '@kit.ArkWeb'
 import { getBottomSpacerHeight, getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
 import {
+  createConfiguredImmersiveMaterial,
+} from '../../utils/ImmersiveMaterial'
+import {
   PLAYER_AUTO_FULLSCREEN_DEFAULT,
   PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
   PREFS_KEY_PLAYER_AUTO_FULLSCREEN
@@ -1205,6 +1208,7 @@ export struct PlayerPage {
       .borderRadius(16)
       .backgroundColor($r('app.color.category_menu_surface'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
       .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
@@ -1301,6 +1305,7 @@ export struct PlayerPage {
       .height('100%')
       .backgroundColor($r('app.color.player_side_panel_surface'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .borderRadius({ topLeft: 32, bottomLeft: 32 })
       .border({ width: { left: 0.5 }, color: $r('app.color.divider_blue') })
       .shadow({ radius: 32, color: $r('app.color.shadow_surface'), offsetX: -12 })
@@ -2013,6 +2018,7 @@ export struct PlayerPage {
       .height('100%')
       .backgroundColor($r('app.color.player_side_panel_surface'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .borderRadius({ topLeft: 32, bottomLeft: 32 })
       .border({ width: { left: 0.5 }, color: $r('app.color.divider_blue') })
       .shadow({ radius: 32, color: $r('app.color.shadow_surface'), offsetX: -12 })
@@ -2685,12 +2691,6 @@ export struct PlayerPage {
     if (this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < road.episodes.length - 1) {
       const item = this.toEpisodePanelItems(road)[this.currentEpisodeIndex + 1]
       return item === undefined ? null : item
-    }
-    for (let i = this.selectedRoadIndex + 1; i < this.roads.length; i++) {
-      if (this.roads[i].episodes.length > 0) {
-        const item = this.toEpisodePanelItems(this.roads[i])[0]
-        return item === undefined ? null : item
-      }
     }
     return null
   }
@@ -3824,28 +3824,15 @@ export struct PlayerPage {
 
   private hasNextEpisode(): boolean {
     if (this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
-      if (this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < this.roads[this.selectedRoadIndex].episodes.length - 1) {
-        return true
-      }
-      for (let i = this.selectedRoadIndex + 1; i < this.roads.length; i++) {
-        if (this.roads[i].episodes.length > 0) {
-          return true
-        }
-      }
+      return this.currentEpisodeIndex >= 0 &&
+        this.currentEpisodeIndex < this.roads[this.selectedRoadIndex].episodes.length - 1
     }
     return false
   }
 
   private hasPreviousEpisode(): boolean {
     if (this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
-      if (this.currentEpisodeIndex > 0) {
-        return true
-      }
-      for (let i = this.selectedRoadIndex - 1; i >= 0; i--) {
-        if (this.roads[i].episodes.length > 0) {
-          return true
-        }
-      }
+      return this.currentEpisodeIndex > 0
     }
     return false
   }
@@ -3855,14 +3842,6 @@ export struct PlayerPage {
       if (this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < this.roads[this.selectedRoadIndex].episodes.length - 1) {
         this.visibleRoadIndex = this.selectedRoadIndex
         this.onEpisodeSelected(this.currentEpisodeIndex + 1)
-        return
-      }
-      for (let i = this.selectedRoadIndex + 1; i < this.roads.length; i++) {
-        if (this.roads[i].episodes.length > 0) {
-          this.visibleRoadIndex = i
-          this.onEpisodeSelected(0)
-          return
-        }
       }
     }
   }
@@ -3872,14 +3851,6 @@ export struct PlayerPage {
       if (this.currentEpisodeIndex > 0) {
         this.visibleRoadIndex = this.selectedRoadIndex
         this.onEpisodeSelected(this.currentEpisodeIndex - 1)
-        return
-      }
-      for (let i = this.selectedRoadIndex - 1; i >= 0; i--) {
-        if (this.roads[i].episodes.length > 0) {
-          this.visibleRoadIndex = i
-          this.onEpisodeSelected(this.roads[i].episodes.length - 1)
-          return
-        }
       }
     }
   }

@@ -1,4 +1,5 @@
 import { VideoAspectMode, VideoAspectModeHelper } from '../../core/player/IPlayerEngine'
+import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
 
 class AspectModeItem {
   mode: VideoAspectMode = VideoAspectMode.contain
@@ -66,5 +67,6 @@ export struct AspectModePanel {
     .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
     .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
     .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+    .systemMaterial(createConfiguredImmersiveMaterial())
   }
 }

@@ -190,9 +190,11 @@ export struct PlayerSurface {
         .width(this.xComponentWidth > 0 ? this.xComponentWidth : '100%')
         .height(this.xComponentHeight > 0 ? this.xComponentHeight : '100%')
         .position({ x: this.xComponentOffsetX, y: this.xComponentOffsetY })
+        .opacity(this.videoWidth > 0 && this.videoHeight > 0 ? 1 : 0)
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(Color.Black)
     .clip(true)
     .onAreaChange((_oldArea: Area, newArea: Area) => {
       const w = Number(newArea.width)
@@ -221,12 +223,24 @@ export struct PlayerSurface {
       return
     }
 
-    let videoW = this.videoWidth
-    let videoH = this.videoHeight
-    if (videoW <= 0 || videoH <= 0) {
-      videoW = 16
-      videoH = 9
+    if (this.videoWidth <= 0 || this.videoHeight <= 0) {
+      const targetW = this.parentWidth
+      const targetH = this.parentHeight
+      const changed = targetW !== this.xComponentWidth || targetH !== this.xComponentHeight ||
+        this.xComponentOffsetX !== 0 || this.xComponentOffsetY !== 0
+      this.xComponentWidth = targetW
+      this.xComponentHeight = targetH
+      this.xComponentOffsetX = 0
+      this.xComponentOffsetY = 0
+      if (changed) {
+        logger.warn('CrashDiag PlayerSurface aspect layout waiting for video size: parent=%{public}dx%{public}d',
+          Math.round(targetW), Math.round(targetH))
+      }
+      return
     }
+
+    const videoW = this.videoWidth
+    const videoH = this.videoHeight
 
     const parentW = this.parentWidth
     const parentH = this.parentHeight
@@ -265,7 +279,7 @@ export struct PlayerSurface {
     this.xComponentOffsetY = targetY
 
     if (changed) {
-      logger.info('PlayerSurface aspect layout: mode=%{public}s, params=boxFit=%{public}s,parent=%{public}dx%{public}d,video=%{public}dx%{public}d,surface=%{public}dx%{public}d,offset=%{public}d,%{public}d',
+      logger.warn('CrashDiag PlayerSurface aspect layout: mode=%{public}s, params=boxFit=%{public}s,parent=%{public}dx%{public}d,video=%{public}dx%{public}d,surface=%{public}dx%{public}d,offset=%{public}d,%{public}d',
         this.getAspectModeName(this.aspectMode), this.getBoxFitName(this.aspectMode),
         Math.round(parentW), Math.round(parentH), Math.round(videoW), Math.round(videoH),
         Math.round(targetW), Math.round(targetH), Math.round(targetX), Math.round(targetY))

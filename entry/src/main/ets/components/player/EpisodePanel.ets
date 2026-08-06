@@ -1,3 +1,5 @@
+import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+
 @Component
 export struct EpisodePanel {
   @Prop isVisible: boolean = false;
@@ -65,6 +67,7 @@ export struct EpisodePanel {
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .borderRadius({ topLeft: 22, topRight: 22 })
       .shadow({ radius: 26, color: $r('app.color.overlay_topbar_bg'), offsetY: -8 })
+      .systemMaterial(createConfiguredImmersiveMaterial())
       .align(Alignment.Bottom)
     }
   }

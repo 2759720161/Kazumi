@@ -11,6 +11,11 @@ import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
 import { UserDownloadFolder } from '../services/UserDownloadFolder';
 import {
+  ANTI_PEEP_ENABLED_DEFAULT,
+  AntiPeepService,
+  PREFS_KEY_ANTI_PEEP_ENABLED
+} from '../services/AntiPeepService';
+import {
   BOTTOM_TAB_ANIMATION_HIDDEN_KEY,
   BOTTOM_TAB_ANIMATION_TOKEN_KEY,
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
@@ -37,6 +42,10 @@ import {
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../utils/HdsPageStyle';
 import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE
+} from '../utils/ImmersiveMaterial';
+import {
   MPV_DETAIL_ENHANCER_ENABLED_DEFAULT,
   MPV_DETAIL_ENHANCER_QUALITY_DEFAULT,
   PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
@@ -58,6 +67,7 @@ export default class EntryAbility extends UIAbility {
   private displayDensity: number = 3.0;
   private pendingContinuationPayload: string = '';
   private storesInitialized: boolean = false;
+  private readonly antiPeepService: AntiPeepService = AntiPeepService.getInstance();
 
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -78,6 +88,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('bottomTabAutoHide', BOTTOM_TAB_AUTO_HIDE_DEFAULT);
     AppStorage.setOrCreate('bottomTabShowAnimation', BOTTOM_TAB_SHOW_ANIMATION_DEFAULT);
     AppStorage.setOrCreate('playerAutoFullscreen', PLAYER_AUTO_FULLSCREEN_DEFAULT);
+    AppStorage.setOrCreate(PREFS_KEY_ANTI_PEEP_ENABLED, ANTI_PEEP_ENABLED_DEFAULT);
     AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, HDS_MATERIAL_LEVEL_DEFAULT);
     AppStorage.setOrCreate('bottomTabOffset', 0);
     AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
@@ -229,17 +240,20 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    this.antiPeepService.stop();
     logger.info('Ability onWindowStageDestroy');
   }
 
   onForeground(): void {
     logger.info('Ability onForeground');
     AppStorage.setOrCreate('appInForeground', true);
+    this.antiPeepService.start(this.context);
   }
 
   onBackground(): void {
     logger.info('Ability onBackground');
     AppStorage.setOrCreate('appInForeground', false);
+    this.antiPeepService.stop();
   }
 
   private async initStores(): Promise<void> {
@@ -274,11 +288,25 @@ export default class EntryAbility extends UIAbility {
         PLAYER_AUTO_PIP_DEFAULT
       );
       AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, playerAutoPiP);
+      const antiPeepEnabled = await PreferencesStore.getInstance().getBoolean(
+        PREFS_KEY_ANTI_PEEP_ENABLED,
+        ANTI_PEEP_ENABLED_DEFAULT
+      );
+      AppStorage.setOrCreate(PREFS_KEY_ANTI_PEEP_ENABLED, antiPeepEnabled);
+      this.antiPeepService.setEnabled(antiPeepEnabled);
+      if (antiPeepEnabled && AppStorage.get<boolean>('appInForeground') === true) {
+        this.antiPeepService.start(this.context);
+      }
       const hdsMaterialLevel = await PreferencesStore.getInstance().getString(
         PREFS_KEY_HDS_MATERIAL_LEVEL,
         HDS_MATERIAL_LEVEL_DEFAULT
       );
       AppStorage.setOrCreate(PREFS_KEY_HDS_MATERIAL_LEVEL, hdsMaterialLevel);
+      const api26MaterialStyle = await PreferencesStore.getInstance().getString(
+        PREFS_KEY_API26_MATERIAL_STYLE,
+        API26_MATERIAL_STYLE_DEFAULT
+      );
+      AppStorage.setOrCreate(PREFS_KEY_API26_MATERIAL_STYLE, api26MaterialStyle);
       AppStorage.setOrCreate('bottomTabOffset', 0);
       AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_TOKEN_KEY, 0);
       AppStorage.setOrCreate(BOTTOM_TAB_ANIMATION_HIDDEN_KEY, false);

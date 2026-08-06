@@ -1,3 +1,5 @@
+import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+
 @Component
 export struct ControlOverlay {
   @Prop isPlaying: boolean = false;
@@ -73,6 +75,7 @@ export struct ControlOverlay {
             .backgroundColor($r('app.color.border_specular'))
             .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
             .border({ width: 0.5, color: $r('app.color.surface_button_bg') })
+            .systemMaterial(createConfiguredImmersiveMaterial())
             .onClick(() => {
               if (this.onPlayPause) {
                 this.onPlayPause();
@@ -87,6 +90,7 @@ export struct ControlOverlay {
             .backgroundColor($r('app.color.surface_button_bg'))
             .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
             .border({ width: 0.5, color: $r('app.color.border_light') })
+            .systemMaterial(createConfiguredImmersiveMaterial())
             .margin({ left: 12 })
             .onClick(() => {
               if (this.onSpeedChange) {
@@ -111,6 +115,7 @@ export struct ControlOverlay {
             .backgroundColor(this.hasEpisodes ? $r('app.color.border_specular') : $r('app.color.border_faint'))
             .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
             .border({ width: 0.5, color: $r('app.color.border_specular') })
+            .systemMaterial(createConfiguredImmersiveMaterial())
             .onClick(() => {
               if (this.hasEpisodes && this.onEpisodePanel) {
                 this.onEpisodePanel();
@@ -125,6 +130,7 @@ export struct ControlOverlay {
               .backgroundColor($r('app.color.border_specular'))
               .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
               .border({ width: 0.5, color: $r('app.color.border_specular') })
+              .systemMaterial(createConfiguredImmersiveMaterial())
               .onClick(() => {
                 if (this.onFullscreen) {
                   this.onFullscreen();

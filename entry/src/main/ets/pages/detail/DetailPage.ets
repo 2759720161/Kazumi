@@ -55,9 +55,8 @@ class InitialEpisodeSelection {
   }
 }
 
-@Entry
 @Component
-export struct DetailPage {
+export struct DetailPageContent {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
@@ -93,6 +92,8 @@ export struct DetailPage {
   @State tagThemeBorder: string = ''
   @State sectionThemeKey: string = ''
   @State currentCoverImage: string = ''
+  @State sharedCoverId: string = ''
+  @State transitionCover: string = ''
 
 
   private animeUrl: string = ''
@@ -106,7 +107,7 @@ export struct DetailPage {
 
 
   aboutToAppear(): void {
-    const params = router.getParams() as Record<string, Object>
+    const params: Record<string, Object> = router.getParams() as Record<string, Object>
     if (params !== null) {
       if (params['animeName'] !== undefined) this.animeName = params['animeName'] as string
       if (params['animeCover'] !== undefined) this.animeCover = BangumiConfig.normalizeImageUrl(params['animeCover'] as string)
@@ -126,6 +127,8 @@ export struct DetailPage {
       if (params['sourceName'] !== undefined) this.sourceName = params['sourceName'] as string
       if (params['sourceId'] !== undefined) this.ruleSourceId = params['sourceId'] as number
       if (params['bangumiId'] !== undefined) this.bangumiId = params['bangumiId'] as number
+      if (params['sharedCoverId'] !== undefined) this.sharedCoverId = params['sharedCoverId'] as string
+      if (params['transitionCover'] !== undefined) this.transitionCover = BangumiConfig.normalizeImageUrl(params['transitionCover'] as string)
       if (params['autoOpenSourceSheet'] !== undefined) this.autoOpenSourceSheet = params['autoOpenSourceSheet'] as boolean
     }
     this.markContinuationState()
@@ -217,7 +220,6 @@ export struct DetailPage {
         }
       })
 
-
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -228,12 +230,12 @@ export struct DetailPage {
   private PhoneDetailContent() {
     Scroll(this.contentScroller) {
       Stack({ alignContent: Alignment.TopStart }) {
-        DetailHeroBackground({
+          DetailHeroBackground({
           cover: this.getCoverImageSrc(),
           coverFallback: this.animeCoverFallback,
           bangumiCover: this.animeBangumiCover,
           topSafeHeight: getEffectiveTopSafeHeight(this.topSafeHeight)
-        })
+          })
 
         Column() {
           Blank()
@@ -274,17 +276,19 @@ export struct DetailPage {
           .width('100%')
           .hitTestBehavior(HitTestMode.None)
 
-        Image(this.getCoverImageSrc())
+        Image(this.getTransitionCoverSrc())
           .draggable(false)
           .width('100%')
           .aspectRatio(118 / 168)
-          .objectFit(this.getCoverImageSrc().length > 0 ? ImageFit.Cover : ImageFit.Contain)
+          .objectFit(this.getTransitionCoverSrc().length > 0 ? ImageFit.Cover : ImageFit.Contain)
           .borderRadius(12)
+          .clip(true)
           .alt($r('app.media.ic_placeholder'))
           .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
           .onError(() => {
             this.tryNextCoverImage()
           })
+          .sharedTransition(this.getSharedCoverIdForRender(), { duration: 420, curve: Curve.FastOutSlowIn })
       }
       .width('36%')
       .height('100%')
@@ -377,6 +381,8 @@ export struct DetailPage {
         cover: this.getCoverImageSrc(),
         coverFallback: this.animeCoverFallback,
         bangumiCover: this.animeBangumiCover,
+        sharedCover: this.getTransitionCoverSrc(),
+        sharedCoverId: this.getSharedCoverIdForRender(),
         ratingScore: this.animeRatingScore,
         rank: this.animeRank,
         votes: this.animeVotes,
@@ -1041,6 +1047,17 @@ export struct DetailPage {
     return this.currentCoverImage.length > 0 ? this.currentCoverImage : ''
   }
 
+  private getTransitionCoverSrc(): string {
+    if (this.transitionCover.length > 0) {
+      return this.transitionCover
+    }
+    return this.getCoverImageSrc()
+  }
+
+  private getSharedCoverIdForRender(): string {
+    return this.sharedCoverId
+  }
+
   private tryNextCoverImage(): void {
     const urls = this.buildCoverUrls()
     const currentIndex = urls.indexOf(this.currentCoverImage)
@@ -1120,4 +1137,16 @@ export struct DetailPage {
     return fixed.endsWith('.0') ? fixed.substring(0, fixed.length - 2) : fixed
   }
 
+}
+
+@Entry
+@Component
+struct DetailPage {
+  build() {
+    Column() {
+      DetailPageContent()
+    }
+    .width('100%')
+    .height('100%')
+  }
 }

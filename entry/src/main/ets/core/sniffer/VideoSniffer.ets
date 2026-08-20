@@ -412,7 +412,7 @@ export class VideoSniffer {
     if (this.onResult) {
       this.onResult(result)
     }
-    if (result.type !== 'm3u8' && result.type !== 'mp4' && result.type !== 'flv' &&
+    if (result.type !== 'm3u8' && result.type !== 'mpd' && result.type !== 'mp4' && result.type !== 'flv' &&
       result.type !== 'ts' && result.type !== 'range_video') {
       return
     }

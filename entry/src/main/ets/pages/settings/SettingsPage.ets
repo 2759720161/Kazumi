@@ -4,8 +4,6 @@ import { PreferencesStore } from '../../store/PreferencesStore'
 import { SecurityPolicy } from '../../network/SecurityPolicy'
 import { RuleCatalogService } from '../../services/RuleCatalogService'
 import { common, ConfigurationConstant } from '@kit.AbilityKit'
-import { commentManager } from '@kit.AppGalleryKit'
-import { BusinessError } from '@kit.BasicServicesKit'
 import { Logger } from '../../utils/Logger'
 import { promptAction, router } from '@kit.ArkUI'
 import { RULE_SOURCE_VERSION_KEY } from '../../store/SettingsChangeSignal'
@@ -84,6 +82,7 @@ import {
 const logger = new Logger('SettingsPage')
 const SETTINGS_DESTINATION_RULE_SHOP: string = 'settings_rule_shop'
 const SETTINGS_DESTINATION_DANMAKU: string = 'settings_danmaku'
+const SETTINGS_DESTINATION_DOWNLOAD: string = 'settings_download'
 const SETTINGS_DESTINATION_HISTORY: string = 'settings_history'
 const SETTINGS_DESTINATION_WEBDAV: string = 'settings_webdav'
 const SETTINGS_DESTINATION_PLAYER: string = 'settings_player'
@@ -339,6 +338,17 @@ export struct SettingsPage {
           SETTINGS_DESTINATION_DANMAKU,
           () => {
             this.openSettingsRouteDestination(SETTINGS_DESTINATION_DANMAKU, 'pages/settings/DanmakuSettingsPage')
+          }
+        )
+
+        this.ItemDivider()
+        this.SettingsRouteItem(
+          $r('sys.symbol.arrowshape_down_to_line_fill'),
+          '下载管理',
+          '查看和管理视频下载任务',
+          SETTINGS_DESTINATION_DOWNLOAD,
+          () => {
+            this.openSettingsRouteDestination(SETTINGS_DESTINATION_DOWNLOAD, 'pages/download/DownloadPage')
           }
         )
 
@@ -914,8 +924,8 @@ export struct SettingsPage {
 
           this.ToggleItem(
             $r('sys.symbol.eye_slash'),
-            '隐藏本地页面',
-            '隐藏底部悬浮页签中的本地页',
+            '隐藏下载页面',
+            '隐藏底部悬浮页签中的下载页',
             this.hideLocalPage,
             (isOn: boolean) => {
               this.setHideLocalPage(isOn)
@@ -942,8 +952,6 @@ export struct SettingsPage {
       }
       Column() {
         this.VersionInfoItem()
-        this.ItemDivider()
-        this.AppReviewItem()
         this.ItemDivider()
         this.QqGroupItem()
         this.ItemDivider()
@@ -1109,19 +1117,6 @@ export struct SettingsPage {
     .height(64)
     .padding({ left: 16, right: 16 })
     .borderRadius(12)
-  }
-
-  @Builder
-  AppReviewItem(): void {
-    this.NavigationItem(
-      $r('sys.symbol.star_fill'),
-      '给个好评',
-      '在应用市场评分与评论',
-      '',
-      () => {
-        this.requestAppReview()
-      }
-    )
   }
 
   @Builder
@@ -1551,6 +1546,11 @@ export struct SettingsPage {
   }
 
   private openSettingsRouteDestination(destination: string, pageUrl: string): void {
+    // 下载页是完整的独立页面，分栏布局下也直接打开，避免重复维护下载任务状态。
+    if (destination === SETTINGS_DESTINATION_DOWNLOAD) {
+      router.pushUrl({ url: pageUrl })
+      return
+    }
     if (this.shouldUseSettingsSplitMode()) {
       this.openSettingsDestination(destination)
       return
@@ -1598,6 +1598,9 @@ export struct SettingsPage {
     }
     if (destination === SETTINGS_DESTINATION_DANMAKU) {
       return '弹幕设置'
+    }
+    if (destination === SETTINGS_DESTINATION_DOWNLOAD) {
+      return '下载管理'
     }
     if (destination === SETTINGS_DESTINATION_HISTORY) {
       return '历史记录'
@@ -1765,46 +1768,6 @@ export struct SettingsPage {
   private openSponsorDialog(): void {
     logger.info('Open sponsor dialog')
     this.sponsorDialogController?.open()
-  }
-
-  private async requestAppReview(): Promise<void> {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext
-    try {
-      await commentManager.showCommentDialog(context)
-      logger.info('App review dialog opened')
-    } catch (err) {
-      const error = err as BusinessError
-      logger.error('Open app review dialog failed: %{public}d %{public}s', error.code, error.message)
-      if (error.code === 1021500006) {
-        promptAction.showToast({ message: '请先登录华为账号' })
-        return
-      }
-      if (error.code === 1021500007) {
-        promptAction.showToast({ message: '当前版本已经评价过了' })
-        return
-      }
-      if (error.code === 1021500008) {
-        promptAction.showToast({ message: '已达到应用评价次数上限' })
-        return
-      }
-      if (error.code === 1021500009) {
-        promptAction.showToast({ message: '距离上次评价未满一年' })
-        return
-      }
-      await this.openAppGalleryReviewPage(context)
-    }
-  }
-
-  private async openAppGalleryReviewPage(context: common.UIAbilityContext): Promise<void> {
-    const bundleName = context.applicationInfo.name
-    const link = 'https://appgallery.huawei.com/app/detail?id=' + bundleName + '&action=write-review'
-    try {
-      await context.openLink(link, { appLinkingOnly: false })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      logger.error('Open AppGallery review page failed: %{public}s', message)
-      promptAction.showToast({ message: '暂时无法打开应用评价' })
-    }
   }
 
   private async setPlayerEngine(engine: string): Promise<void> {

@@ -1,5 +1,20 @@
 import { ApiChapterConfig, ApiSearchConfig, RuleMode } from './ApiRuleConfig'
 
+export class RuleInstallOrigin {
+  static readonly LEGACY: string = 'legacy'
+  static readonly LOCAL: string = 'local'
+  static readonly IMPORTED: string = 'imported'
+  static readonly REPOSITORY: string = 'repository'
+
+  static normalize(value: string): string {
+    if (value === RuleInstallOrigin.LOCAL || value === RuleInstallOrigin.IMPORTED ||
+      value === RuleInstallOrigin.REPOSITORY || value === RuleInstallOrigin.LEGACY) {
+      return value
+    }
+    return RuleInstallOrigin.LEGACY
+  }
+}
+
 export class AntiCrawlerConfig {
   enabled: boolean = false;
   captchaType: number = 1;
@@ -79,6 +94,7 @@ export class RuleSource {
   sortOrder: number = 0;
   createdAt: number = 0;
   updatedAt: number = 0;
+  installOrigin: string = RuleInstallOrigin.LOCAL;
   searchMode: string = RuleMode.XPATH;
   chapterMode: string = RuleMode.XPATH;
   searchApiConfig: ApiSearchConfig = new ApiSearchConfig();

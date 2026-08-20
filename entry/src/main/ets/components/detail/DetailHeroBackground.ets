@@ -1,3 +1,5 @@
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
+
 @Component
 export struct DetailHeroBackground {
   @Prop @Watch('onCoverChanged') cover: string = ''
@@ -16,16 +18,13 @@ export struct DetailHeroBackground {
   build() {
     Stack() {
       if (this.currentCover.length > 0) {
-        Image(this.currentCover)
-          .draggable(false)
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Cover)
-          .blur(14)
-          .opacity(0.72)
-          .onError(() => {
-            this.tryNextCover()
-          })
+        CachedRemoteImage({
+          source: this.currentCover,
+          sources: this.buildCoverUrls(),
+          blurRadius: 14,
+          imageOpacity: 0.72,
+          cornerRadius: 0
+        })
       }
 
       Column()
@@ -83,6 +82,20 @@ export struct DetailHeroBackground {
       this.currentCover = this.coverFallback
     } else {
       this.currentCover = ''
+    }
+  }
+
+  private buildCoverUrls(): string[] {
+    const urls: string[] = []
+    this.pushCoverUrl(urls, this.bangumiCover)
+    this.pushCoverUrl(urls, this.cover)
+    this.pushCoverUrl(urls, this.coverFallback)
+    return urls
+  }
+
+  private pushCoverUrl(urls: string[], url: string): void {
+    if (url.length > 0 && urls.indexOf(url) < 0) {
+      urls.push(url)
     }
   }
 }

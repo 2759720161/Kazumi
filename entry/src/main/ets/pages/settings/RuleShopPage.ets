@@ -15,7 +15,7 @@ import {
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
 import { RuleCatalogItem } from '../../models/RuleCatalogItem'
-import { RuleSource } from '../../models/RuleSource'
+import { RuleInstallOrigin, RuleSource } from '../../models/RuleSource'
 import { RuleSourceStore } from '../../store/RuleSourceStore'
 import { RuleCatalogService } from '../../services/RuleCatalogService'
 import { DefaultRuleSourceInitializer } from '../../utils/DefaultRuleSourceInitializer'
@@ -23,10 +23,13 @@ import { SettingsChangeSignal } from '../../store/SettingsChangeSignal'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
 import { createThickImmersiveMaterial } from '../../utils/ImmersiveMaterial'
-import { promptAction, curves } from '@kit.ArkUI'
+import { promptAction, curves, router } from '@kit.ArkUI'
+import { pasteboard } from '@kit.BasicServicesKit'
+import { RuleShareCodec } from '../../utils/RuleShareCodec'
 
 const logger = new Logger('RuleShopPage')
 const PREF_RULE_REPOSITORY_URL = 'rule_repository_url'
+const PREF_RULE_SHOP_SORT_BY_TIME = 'rule_shop_sort_by_time'
 
 @Entry
 @Component
@@ -55,12 +58,15 @@ export struct RuleShopPageContent {
   @State togglingName: string = ''
   @State deletingName: string = ''
   @State showActionMenu: boolean = false
+  @State showSortMenu: boolean = false
   @State showLinkImportDialog: boolean = false
+  @State showClipboardImportDialog: boolean = false
   @State showDeleteDialog: boolean = false
   @State deleteTargetName: string = ''
   @State importUrl: string = ''
-  @State operationMessage: string = ''
   @State isLinkImporting: boolean = false
+  @State isClipboardImporting: boolean = false
+  @State clipboardImportMessage: string = ''
   @State canRefreshRepository: boolean = false
   @State repositoryUrl: string = ''
   @State enableMenuRuleName: string = ''
@@ -71,7 +77,7 @@ export struct RuleShopPageContent {
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
 
   aboutToAppear(): void {
-    this.loadCatalog()
+    this.initializePage()
   }
 
   build() {
@@ -83,8 +89,6 @@ export struct RuleShopPageContent {
               .height(getTopSpacerHeight(this.topSafeHeight))
               .width('100%')
 
-            this.SortToggle()
-            this.OperationMessageSection()
             this.CatalogList()
 
             if (!this.loading && this.catalogItems.length === 0 && this.errorMessage.length === 0) {
@@ -132,6 +136,10 @@ export struct RuleShopPageContent {
         this.LinkImportDialogOverlay()
       }
 
+      if (this.showClipboardImportDialog) {
+        this.ClipboardImportDialogOverlay()
+      }
+
       if (this.showDeleteDialog) {
         this.DeleteRuleDialogOverlay()
       }
@@ -141,91 +149,11 @@ export struct RuleShopPageContent {
   }
 
   @Builder
-  OperationMessageSection(): void {
-    if (this.operationMessage.length > 0) {
-      Row() {
-        SymbolGlyph($r('sys.symbol.info_circle'))
-          .fontSize(18)
-          .fontColor([$r('app.color.accent_blue')])
-          .margin({ right: 8 })
-
-        Text(this.operationMessage)
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-      }
-        .width('100%')
-        .constraintSize({ minHeight: 44 })
-        .padding({ left: 14, right: 14, top: 8, bottom: 8 })
-        .borderRadius(12)
-        .backgroundColor($r('app.color.card_background'))
-        .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-        .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-        .margin({ bottom: 8 })
-    }
-  }
-
-  @Builder
-  SortToggle(): void {
-    Row() {
-      Row() {
-        Text('按更新时间')
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.sortByTime ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
-          .textAlign(TextAlign.Center)
-          .layoutWeight(1)
-          .height(34)
-          .borderRadius(10)
-          .backgroundColor(this.sortByTime ? $r('app.color.button_primary_bg') : Color.Transparent)
-          .onClick(() => {
-            this.sortByTime = true
-          })
-
-        Text('按名称')
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(!this.sortByTime ? $r('app.color.text_on_primary') : $r('app.color.text_secondary'))
-          .textAlign(TextAlign.Center)
-          .layoutWeight(1)
-          .height(34)
-          .borderRadius(10)
-          .backgroundColor(!this.sortByTime ? $r('app.color.button_primary_bg') : Color.Transparent)
-          .onClick(() => {
-            this.sortByTime = false
-          })
-      }
-      .width(184)
-      .height(38)
-      .padding(2)
-      .borderRadius(12)
-      .backgroundColor($r('app.color.page_background'))
-
-      Blank()
-
-      Text(this.sortByTime ? '最新优先' : '名称排序')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
-    }
-    .width('100%')
-    .height(56)
-    .padding({ left: 16, right: 16 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-    .margin({ bottom: 8 })
-  }
-
-  @Builder
   CatalogList(): void {
     if (this.catalogItems.length > 0) {
       Column() {
-        ForEach(this.getSortedItems(), (item: RuleCatalogItem) => {
-          this.CatalogItemRow(item)
+        ForEach(this.getSortedItems(), (item: RuleCatalogItem, index: number) => {
+          this.CatalogItemRow(item, index)
         }, (item: RuleCatalogItem) => this.buildCatalogItemKey(item))
       }
       .width('100%')
@@ -233,7 +161,7 @@ export struct RuleShopPageContent {
   }
 
   @Builder
-  CatalogItemRow(item: RuleCatalogItem): void {
+  CatalogItemRow(item: RuleCatalogItem, index: number): void {
     Column() {
       Row() {
         Column() {
@@ -285,28 +213,29 @@ export struct RuleShopPageContent {
     .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     .margin({ bottom: 8 })
     .animation({ duration: 280, curve: curves.springMotion() })
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: curves.springMotion() }))
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY
+        .combine(TransitionEffect.translate({ y: 28 }))
+        .animation({
+          delay: Math.min(index, 8) * 45,
+          curve: curves.springMotion(0.5, 0.7)
+        }),
+      TransitionEffect.OPACITY.animation({ duration: 140, curve: Curve.EaseOut })
+    ))
   }
 
   @Builder
   RuleStatusBadge(item: RuleCatalogItem): void {
-    Text(RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent' ? '仓库已移除' :
-      RuleCatalogService.getRuleStatus(item, this.localRules) === 'installed' ?
-      (this.isRuleEnabled(item.name) ? '已启用' : '已安装') :
-      (RuleCatalogService.getRuleStatus(item, this.localRules) === 'update' ? '可更新' : '未安装'))
-      .fontSize(11)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent' ?
-        $r('app.color.status_warning') :
-        RuleCatalogService.getRuleStatus(item, this.localRules) === 'install' ?
-          $r('app.color.text_secondary') : $r('app.color.accent_blue'))
-      .backgroundColor(RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent' ?
-        $r('app.color.page_background') :
-        RuleCatalogService.getRuleStatus(item, this.localRules) === 'install' ?
-          $r('app.color.page_background') : $r('app.color.episode_item_selected_bg'))
-      .borderRadius(9)
-      .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-      .margin({ left: 8 })
+    if (RuleCatalogService.getRuleStatus(item, this.localRules) === 'nonexistent') {
+      Text('仓库已移除')
+        .fontSize(11)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.status_warning'))
+        .backgroundColor($r('app.color.page_background'))
+        .borderRadius(9)
+        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+        .margin({ left: 8 })
+    }
   }
 
   @Builder
@@ -384,7 +313,7 @@ export struct RuleShopPageContent {
       Text(this.isRuleEnabled(name) ? '启用' : '关闭')
         .fontSize(15)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.isRuleEnabled(name) ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .textAlign(TextAlign.End)
@@ -426,11 +355,34 @@ export struct RuleShopPageContent {
     Menu() {
       this.RuleEnableMenuItem('启用', true)
       this.RuleEnableMenuItem('关闭', false)
+      this.RuleShareMenuItem()
       this.RuleDeleteMenuItem()
     }
     .width(132)
     .fontColor($r('app.color.text_primary'))
     .radius(20)
+  }
+
+  @Builder
+  RuleShareMenuItem(): void {
+    MenuItem() {
+      Row() {
+        Text('分享')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height(48)
+      .padding({ left: 14, right: 14 })
+      .borderRadius(14)
+    }
+    .onClick(() => {
+      const ruleName = this.enableMenuRuleName
+      this.enableMenuRuleName = ''
+      this.shareRule(ruleName)
+    })
   }
 
   @Builder
@@ -529,14 +481,11 @@ export struct RuleShopPageContent {
         .fontColor($r('app.color.text_secondary'))
     }
     .width('100%')
-    .constraintSize({ minHeight: 180 })
-    .padding({ top: 36, bottom: 36 })
+    .layoutWeight(1)
+    .constraintSize({ minHeight: 240 })
+    .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-    .margin({ bottom: 8 })
+    .backgroundColor(Color.Transparent)
   }
 
   @Builder
@@ -621,15 +570,15 @@ export struct RuleShopPageContent {
     this.loading = true
     try {
       this.localRules = await this.ruleSourceStore.getAll()
-      this.catalogItems = this.mergeCatalogItems([], this.localRules)
       const repositoryUrl = await this.getSavedRepositoryUrl()
       this.repositoryUrl = repositoryUrl
       this.canRefreshRepository = repositoryUrl.length > 0
       if (repositoryUrl.length === 0) {
+        this.catalogItems = this.mergeCatalogItems([], this.localRules)
         this.loading = false
         return
       }
-      this.refreshCatalogInBackground(repositoryUrl)
+      await this.refreshCatalogInBackground(repositoryUrl)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.errorMessage = `加载失败: ${msg}`
@@ -648,7 +597,10 @@ export struct RuleShopPageContent {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (this.catalogItems.length === 0) {
-        this.errorMessage = `更新仓库失败: ${msg}`
+        this.catalogItems = this.mergeCatalogItems([], this.localRules)
+        if (this.catalogItems.length === 0) {
+          this.errorMessage = `更新仓库失败: ${msg}`
+        }
       }
       logger.error('Refresh catalog failed: %{public}s', msg)
     } finally {
@@ -679,10 +631,10 @@ export struct RuleShopPageContent {
     item.name = rule.name
     item.version = rule.version
     item.useNativePlayer = rule.useNativePlayer
-    item.author = '本地已安装'
+    item.author = rule.installOrigin === RuleInstallOrigin.REPOSITORY ? '仓库规则' : '本地规则'
     item.lastUpdate = rule.updatedAt > 0 ? rule.updatedAt : rule.createdAt
     item.antiCrawlerEnabled = rule.antiCrawlerConfig.enabled
-    item.repositoryMissing = repositorySynced
+    item.repositoryMissing = repositorySynced && rule.installOrigin === RuleInstallOrigin.REPOSITORY
     return item
   }
 
@@ -748,11 +700,11 @@ export struct RuleShopPageContent {
   private async setRuleEnabledByName(name: string, enabled: boolean): Promise<void> {
     const rule = this.findLocalRule(name)
     if (rule === null) {
-      this.operationMessage = '规则源不存在'
+      promptAction.showToast({ message: '规则源不存在' })
       return
     }
     if (rule.enabled === enabled) {
-      this.operationMessage = `${rule.name} 已处于${enabled ? '启用' : '关闭'}状态`
+      promptAction.showToast({ message: `${rule.name} 已处于${enabled ? '启用' : '关闭'}状态` })
       return
     }
     this.togglingName = rule.name
@@ -760,10 +712,10 @@ export struct RuleShopPageContent {
       await this.ruleSourceStore.setEnabled(rule.id, enabled)
       SettingsChangeSignal.notifyRuleSourceChanged()
       this.localRules = await this.ruleSourceStore.getAll()
-      this.operationMessage = `${rule.name} 已${enabled ? '启用' : '关闭'}`
+      promptAction.showToast({ message: `${rule.name} 已${enabled ? '启用' : '关闭'}` })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.operationMessage = `切换失败: ${msg}`
+      promptAction.showToast({ message: `切换失败: ${msg}` })
       logger.error('Toggle rule failed: %{public}s', msg)
     } finally {
       this.togglingName = ''
@@ -777,7 +729,7 @@ export struct RuleShopPageContent {
   private requestDeleteRule(name: string): void {
     const rule = this.findLocalRule(name)
     if (rule === null) {
-      this.operationMessage = '规则源不存在'
+      promptAction.showToast({ message: '规则源不存在' })
       return
     }
     this.deleteTargetName = rule.name
@@ -789,7 +741,7 @@ export struct RuleShopPageContent {
     if (rule === null) {
       this.showDeleteDialog = false
       this.deleteTargetName = ''
-      this.operationMessage = '规则源不存在'
+      promptAction.showToast({ message: '规则源不存在' })
       return
     }
     this.deletingName = rule.name
@@ -797,11 +749,10 @@ export struct RuleShopPageContent {
       await this.ruleSourceStore.deleteById(rule.id)
       SettingsChangeSignal.notifyRuleSourceChanged()
       await this.refreshCatalogAfterRuleMutation()
-      this.operationMessage = `${rule.name} 已删除`
       promptAction.showToast({ message: `规则 ${rule.name} 已删除` })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.operationMessage = `删除失败: ${msg}`
+      promptAction.showToast({ message: `删除失败: ${msg}` })
       logger.error('Delete rule failed: %{public}s', msg)
     } finally {
       this.deletingName = ''
@@ -854,8 +805,15 @@ export struct RuleShopPageContent {
         })
 
       Column() {
+        this.ActionMenuItem('新建规则', () => {
+          this.showActionMenu = false
+          router.pushUrl({ url: 'pages/settings/RuleEditorPage' })
+        })
         this.ActionMenuItem('链接导入', () => {
           this.openLinkImportDialog('')
+        })
+        this.ActionMenuItem('从剪贴板导入', () => {
+          this.openClipboardImportDialog()
         })
         if (this.canRefreshRepository) {
           this.ActionMenuItem('刷新仓库', () => {
@@ -878,6 +836,71 @@ export struct RuleShopPageContent {
     .height('100%')
     .zIndex(20)
     .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
+  }
+
+  @Builder
+  ClipboardImportDialogOverlay(): void {
+    Column() {
+      Column() {
+        Text('从剪贴板导入')
+          .fontSize(22)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+          .margin({ bottom: 10 })
+
+        Text('仅接受由 Kazumi 分享生成的规则链接。导入同名规则时会更新内容，并保留原有启用状态和排序。')
+          .fontSize(14)
+          .fontColor($r('app.color.text_secondary'))
+          .lineHeight(21)
+          .width('100%')
+          .margin({ bottom: 16 })
+
+        if (this.clipboardImportMessage.length > 0) {
+          Text(this.clipboardImportMessage)
+            .fontSize(13)
+            .fontColor($r('app.color.status_error'))
+            .width('100%')
+            .margin({ bottom: 12 })
+        }
+
+        PasteButton()
+          .width('100%')
+          .height(44)
+          .enabled(!this.isClipboardImporting)
+          .onClick((_event: ClickEvent, result: PasteButtonOnClickResult) => {
+            if (result === PasteButtonOnClickResult.SUCCESS) {
+              this.importFromClipboard()
+            } else {
+              this.clipboardImportMessage = '未获得剪贴板临时读取权限'
+            }
+          })
+
+        Button('取消')
+          .fontSize(14)
+          .height(38)
+          .borderRadius(19)
+          .backgroundColor($r('app.color.button_ghost_bg'))
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .margin({ top: 12 })
+          .enabled(!this.isClipboardImporting)
+          .onClick(() => {
+            this.showClipboardImportDialog = false
+          })
+      }
+      .width('86%')
+      .padding({ left: 20, right: 20, top: 24, bottom: 20 })
+      .borderRadius(24)
+      .backgroundColor($r('app.color.card_background'))
+      .shadow({ radius: 24, color: $r('app.color.shadow_surface'), offsetY: 8 })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .backgroundColor($r('app.color.overlay_modal_bg'))
+    .zIndex(35)
   }
 
   @Builder
@@ -1042,31 +1065,81 @@ export struct RuleShopPageContent {
     this.showLinkImportDialog = true
   }
 
+  private openClipboardImportDialog(): void {
+    this.showActionMenu = false
+    this.clipboardImportMessage = ''
+    this.showClipboardImportDialog = true
+  }
+
+  private async shareRule(name: string): Promise<void> {
+    const rule = this.findLocalRule(name)
+    if (rule === null) {
+      promptAction.showToast({ message: '规则源不存在，无法分享' })
+      return
+    }
+    try {
+      const shareText = RuleShareCodec.encodeRuleJson(JSON.stringify(rule.toJSON()))
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, shareText)
+      await pasteboard.getSystemPasteboard().setData(data)
+      promptAction.showToast({ message: '规则分享链接已复制，可从剪贴板导入' })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      promptAction.showToast({ message: `分享失败: ${msg}` })
+      logger.error('Share rule failed: %{public}s', msg)
+    }
+  }
+
+  private async importFromClipboard(): Promise<void> {
+    if (this.isClipboardImporting) {
+      return
+    }
+    this.isClipboardImporting = true
+    this.clipboardImportMessage = '正在读取并校验规则...'
+    try {
+      const pasteData = await pasteboard.getSystemPasteboard().getData()
+      const shareText = pasteData.getPrimaryText().trim()
+      const jsonText = RuleShareCodec.decodeRuleJson(shareText)
+      const parsed: Object = JSON.parse(jsonText)
+      if (Array.isArray(parsed) || parsed === null || typeof parsed !== 'object') {
+        throw new Error('剪贴板内容不是单条 Kazumi 规则')
+      }
+      const count = await DefaultRuleSourceInitializer.importFromJson(jsonText)
+      SettingsChangeSignal.notifyRuleSourceChanged()
+      await this.refreshCatalogAfterRuleMutation()
+      this.showClipboardImportDialog = false
+      promptAction.showToast({ message: '规则导入成功' })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.clipboardImportMessage = `导入失败: ${msg}`
+      logger.error('Import rule from clipboard failed: %{public}s', msg)
+    } finally {
+      this.isClipboardImporting = false
+    }
+  }
+
   private async importFromLink(): Promise<void> {
     const url = this.normalizeRepositoryLink(this.importUrl.trim())
     if (url.length === 0) {
-      this.operationMessage = '请输入规则链接'
+      promptAction.showToast({ message: '请输入规则链接' })
       return
     }
     this.isLinkImporting = true
-    this.operationMessage = '正在从链接导入...'
     try {
       if (this.isRepositoryIndexUrl(url)) {
-        this.operationMessage = '正在加载规则仓库...'
         const remoteItems = await this.connectRepository(url)
-        this.operationMessage = `仓库已连接，共 ${remoteItems.length} 条规则，正在后台安装`
+        promptAction.showToast({ message: `仓库已连接，共 ${remoteItems.length} 条规则` })
         this.showLinkImportDialog = false
         this.installRepositoryRulesInBackground(url, remoteItems)
       } else {
         const count = await DefaultRuleSourceInitializer.importFromUrl(url)
         SettingsChangeSignal.notifyRuleSourceChanged()
         await this.refreshLocalRulesAfterImport()
-        this.operationMessage = `已导入 ${count} 条规则`
+        promptAction.showToast({ message: `已导入 ${count} 条规则` })
         this.showLinkImportDialog = false
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.operationMessage = `链接导入失败: ${msg}`
+      promptAction.showToast({ message: `链接导入失败: ${msg}` })
       logger.error('Import from link failed: %{public}s', msg)
     } finally {
       this.isLinkImporting = false
@@ -1093,7 +1166,7 @@ export struct RuleShopPageContent {
     this.backgroundInstallTotal = this.countInstallableRules(remoteItems)
     if (this.backgroundInstallTotal === 0) {
       this.backgroundInstalling = false
-      this.operationMessage = '仓库规则已是最新'
+      promptAction.showToast({ message: '仓库规则已是最新' })
       return
     }
 
@@ -1110,7 +1183,6 @@ export struct RuleShopPageContent {
           this.backgroundInstallDone++
           this.localRules = await this.ruleSourceStore.getAll()
           this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
-          this.operationMessage = `后台安装规则 ${this.backgroundInstallDone}/${this.backgroundInstallTotal}`
         } else {
           failed++
         }
@@ -1118,12 +1190,12 @@ export struct RuleShopPageContent {
       this.localRules = await this.ruleSourceStore.getAll()
       this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
       SettingsChangeSignal.notifyRuleSourceChanged()
-      this.operationMessage = failed > 0 ?
+      promptAction.showToast({ message: failed > 0 ?
         `后台安装完成，失败 ${failed} 条` :
-        `已安装 ${this.backgroundInstallDone} 条规则`
+        `已安装 ${this.backgroundInstallDone} 条规则` })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.operationMessage = `后台安装中断: ${msg}`
+      promptAction.showToast({ message: `后台安装中断: ${msg}` })
       logger.error('Background install failed: %{public}s', msg)
     } finally {
       this.backgroundInstalling = false
@@ -1253,6 +1325,70 @@ export struct RuleShopPageContent {
     return (await prefs.getString(PREF_RULE_REPOSITORY_URL, '')).trim()
   }
 
+  @Builder
+  RepositorySortMenuAnchor(): void {
+    Row() {
+      Blank()
+
+      Row()
+        .width(40)
+        .height(40)
+        .opacity(0)
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showSortMenu, this.RepositorySortMenu, {
+        placement: Placement.BottomRight,
+        showInSubWindow: false,
+        aboutToDisappear: () => {
+          this.showSortMenu = false
+        }
+        })
+    }
+    .width('100%')
+    .height(56)
+    .padding({ right: 64 })
+    .alignItems(VerticalAlign.Center)
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
+  RepositorySortMenu(): void {
+    Menu() {
+      MenuItem({
+        content: '时间',
+        labelInfo: this.sortByTime ? '√' : ''
+      })
+        .selected(this.sortByTime)
+        .onClick(() => {
+          this.selectSortMode(true)
+        })
+
+      MenuItem({
+        content: '名称',
+        labelInfo: !this.sortByTime ? '√' : ''
+      })
+        .selected(!this.sortByTime)
+        .onClick(() => {
+          this.selectSortMode(false)
+        })
+    }
+    .width(144)
+  }
+
+  private async initializePage(): Promise<void> {
+    this.sortByTime = await PreferencesStore.getInstance().getBoolean(PREF_RULE_SHOP_SORT_BY_TIME, true)
+    await this.loadCatalog()
+  }
+
+  private selectSortMode(sortByTime: boolean): void {
+    if (this.sortByTime === sortByTime) {
+      return
+    }
+    this.sortByTime = sortByTime
+    PreferencesStore.getInstance().setBoolean(PREF_RULE_SHOP_SORT_BY_TIME, sortByTime).catch((err: Error) => {
+      logger.warn('Persist rule shop sort mode failed: %{public}s', err.message)
+    })
+  }
+
   private buildRepositoryMoreIcon(): HdsNavigationIconOptions {
     return {
       icon: this.showActionMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
@@ -1263,9 +1399,22 @@ export struct RuleShopPageContent {
     }
   }
 
+  private buildRepositorySortIcon(): HdsNavigationIconOptions {
+    return {
+      icon: $r('sys.symbol.more'),
+      label: '排序',
+      action: () => {
+        this.showSortMenu = true
+      }
+    }
+  }
+
   private buildRepositoryMenu(): HdsNavigationMenuContentOptions {
     return {
-      value: [{ content: this.buildRepositoryMoreIcon() }]
+      value: [
+        { content: this.buildRepositorySortIcon() },
+        { content: this.buildRepositoryMoreIcon() }
+      ]
     }
   }
 
@@ -1279,7 +1428,8 @@ export struct RuleShopPageContent {
   private buildRepositoryTitleBarContent(): TitleBarContentOptions {
     return {
       title: this.buildRepositoryTitle(),
-      menu: this.buildRepositoryMenu()
+      menu: this.buildRepositoryMenu(),
+      stackBuilder: (): void => this.RepositorySortMenuAnchor()
     }
   }
 

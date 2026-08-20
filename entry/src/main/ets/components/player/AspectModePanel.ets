@@ -1,5 +1,4 @@
 import { VideoAspectMode, VideoAspectModeHelper } from '../../core/player/IPlayerEngine'
-import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
 
 class AspectModeItem {
   mode: VideoAspectMode = VideoAspectMode.contain
@@ -50,9 +49,7 @@ export struct AspectModePanel {
         .height(44)
         .padding({ left: 16, right: 16 })
         .borderRadius(8)
-        .backgroundColor(this.currentMode === item.mode
-          ? $r('app.color.category_menu_item_selected')
-          : Color.Transparent)
+        .backgroundColor(Color.Transparent)
         .onClick(() => {
           if (this.onSelectMode) {
             this.onSelectMode(item.mode)
@@ -63,10 +60,10 @@ export struct AspectModePanel {
     .width(160)
     .padding({ top: 8, bottom: 8 })
     .borderRadius(16)
-    .backgroundColor($r('app.color.category_menu_surface'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+    .clip(true)
+    .backgroundColor($r('app.color.speed_menu_surface'))
+    .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
     .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
     .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
-    .systemMaterial(createConfiguredImmersiveMaterial())
   }
 }

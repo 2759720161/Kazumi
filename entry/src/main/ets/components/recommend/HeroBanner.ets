@@ -1,6 +1,7 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
 import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
-import { router } from '@kit.ArkUI'
+import { navigateToDetail } from '../../utils/DetailNavigation'
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
 
 @Component
 export struct HeroBanner {
@@ -50,23 +51,25 @@ export struct HeroBanner {
     Stack({ alignContent: Alignment.Top }) {
       if (item.getHeroBackdrop().length > 0) {
         if (this.screenWidthVp >= 600) {
-          Image(item.getHeroBackdrop())
-            .draggable(false)
+          CachedRemoteImage({
+            source: item.getHeroBackdrop(),
+            sources: this.getCoverCandidates(item),
+            cornerRadius: 0
+          })
             .width('100%')
             .aspectRatio(16 / 9)
-            .objectFit(ImageFit.Cover)
             .blur(14)
             .opacity(0.72)
-            .onError(() => {})
         } else {
-          Image(item.getHeroBackdrop())
-            .draggable(false)
+          CachedRemoteImage({
+            source: item.getHeroBackdrop(),
+            sources: this.getCoverCandidates(item),
+            cornerRadius: 0
+          })
             .width('100%')
             .height('100%')
-            .objectFit(ImageFit.Cover)
             .blur(14)
             .opacity(0.72)
-            .onError(() => {})
         }
       }
 
@@ -165,14 +168,15 @@ export struct HeroBanner {
         .alignItems(HorizontalAlign.Start)
 
         Column() {
-          Image(item.getGridCover().length > 0 ? item.getGridCover() : $r('app.media.ic_placeholder'))
-            .draggable(false)
+          CachedRemoteImage({
+            source: item.getGridCover(),
+            sources: this.getCoverCandidates(item),
+            sharedId: this.getSharedCoverId(item)
+          })
             .width('100%')
             .height('100%')
-            .objectFit(ImageFit.Cover)
             .borderRadius(12)
             .shadow({ radius: 20, color: '#4D000000', offsetY: 8 })
-            .alt($r('app.media.ic_placeholder'))
         }
         .width(this.getPosterWidth())
         .height(this.getPosterHeight())
@@ -231,9 +235,22 @@ export struct HeroBanner {
   }
 
   private navigateToDetail(item: RecommendCardModel): void {
-    router.pushUrl({
-      url: 'pages/detail/DetailPage',
-      params: buildRecommendDetailParams(item)
-    })
+    navigateToDetail(buildRecommendDetailParams(item, this.getSharedCoverId(item)))
+  }
+
+  private getCoverCandidates(item: RecommendCardModel): string[] {
+    return [
+      item.coverLarge,
+      item.coverCommon,
+      item.coverMedium,
+      item.bangumiCover,
+      item.cover,
+      item.coverFallback
+    ]
+  }
+
+  private getSharedCoverId(item: RecommendCardModel): string {
+    const subjectId = item.bangumiId > 0 ? item.bangumiId : item.id
+    return 'hero-cover-' + subjectId.toString()
   }
 }

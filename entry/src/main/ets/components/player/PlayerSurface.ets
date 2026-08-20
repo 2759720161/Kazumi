@@ -114,6 +114,7 @@ export struct PlayerSurface {
   onStateChange?: (state: PlayerState) => void;
   onEngineReady?: (engine: IPlayerEngine) => void;
   onSurfaceReady?: (controller: XComponentController) => void;
+  onVideoLayoutChange?: (width: number, height: number, offsetX: number, offsetY: number) => void;
 
   aboutToDisappear(): void {
     const pageActive = AppStorage.get<boolean>('playerPageActive') ?? false
@@ -232,6 +233,9 @@ export struct PlayerSurface {
       this.xComponentHeight = targetH
       this.xComponentOffsetX = 0
       this.xComponentOffsetY = 0
+      if (this.onVideoLayoutChange) {
+        this.onVideoLayoutChange(targetW, targetH, 0, 0)
+      }
       if (changed) {
         logger.warn('CrashDiag PlayerSurface aspect layout waiting for video size: parent=%{public}dx%{public}d',
           Math.round(targetW), Math.round(targetH))
@@ -277,6 +281,9 @@ export struct PlayerSurface {
     this.xComponentHeight = targetH
     this.xComponentOffsetX = targetX
     this.xComponentOffsetY = targetY
+    if (this.onVideoLayoutChange) {
+      this.onVideoLayoutChange(targetW, targetH, targetX, targetY)
+    }
 
     if (changed) {
       logger.warn('CrashDiag PlayerSurface aspect layout: mode=%{public}s, params=boxFit=%{public}s,parent=%{public}dx%{public}d,video=%{public}dx%{public}d,surface=%{public}dx%{public}d,offset=%{public}d,%{public}d',
@@ -448,6 +455,10 @@ export struct PlayerSurface {
     options.proxy = this.playbackOptions.proxy;
     options.isLocalFile = this.playbackOptions.isLocalFile;
     options.localFileSize = this.playbackOptions.localFileSize;
+    options.drmScheme = this.playbackOptions.drmScheme;
+    options.drmPluginName = this.playbackOptions.drmPluginName;
+    options.drmOfflineKeyId = this.playbackOptions.drmOfflineKeyId;
+    options.drmMimeType = this.playbackOptions.drmMimeType;
     let headerKeys = Object.keys(this.playbackOptions.headers)
     for (let i = 0; i < headerKeys.length; i++) {
       let key = headerKeys[i]

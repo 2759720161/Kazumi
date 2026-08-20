@@ -1,5 +1,4 @@
 import { DanmakuSettingsPanelContent } from './DanmakuSettingsPanel'
-import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
 
 @Component
 export struct DanmakuSettingsSidePanel {
@@ -12,14 +11,12 @@ export struct DanmakuSettingsSidePanel {
   onPauseAutoHide: () => void = () => {}
   onResumeAutoHide: () => void = () => {}
 
-  @State private panelOffsetX: number = 0
-
   build() {
-    Stack({ alignContent: Alignment.End }) {
+    Stack({ alignContent: Alignment.Center }) {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#80000000')
+        .backgroundColor('#66000000')
         .opacity(this.showPanel ? 1 : 0)
         .hitTestBehavior(this.showPanel ? HitTestMode.Default : HitTestMode.None)
         .onClick(() => {
@@ -30,6 +27,8 @@ export struct DanmakuSettingsSidePanel {
         DanmakuSettingsPanelContent({
           isDanmakuEnabled: this.isDanmakuEnabled,
           isFullScreen: this.isFullScreen,
+          showHeader: true,
+          useGlassBackground: true,
           settingsVersion: this.settingsVersion,
           onSetDanmakuEnabled: (enabled: boolean) => {
             this.onSetDanmakuEnabled(enabled)
@@ -45,17 +44,18 @@ export struct DanmakuSettingsSidePanel {
           }
         })
       }
-      .width('40%')
-      .height('100%')
-      .backgroundColor($r('app.color.page_background'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: { left: 0.5 }, color: $r('app.color.divider_color') })
-      .systemMaterial(createConfiguredImmersiveMaterial())
-      .translate({ x: this.showPanel ? this.panelOffsetX : '100%' })
-      .animation({ duration: 300, curve: Curve.EaseInOut })
+      .width(this.isFullScreen ? '62%' : '88%')
+      .height(this.isFullScreen ? 326 : 358)
+      .borderRadius(16)
+      .clip(true)
+      .backgroundColor($r('app.color.speed_menu_surface'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+      .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
+      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
     }
     .width('100%')
     .height('100%')
-    .hitTestBehavior(this.showPanel ? HitTestMode.Default : HitTestMode.None)
+    .zIndex(28)
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
   }
 }

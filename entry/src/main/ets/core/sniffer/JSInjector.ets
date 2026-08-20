@@ -1,5 +1,5 @@
 export class JSInjector {
-  private static SCRIPT_HASH: string = 'BUILTIN_SNIFFER_V3'
+  private static SCRIPT_HASH: string = 'BUILTIN_SNIFFER_V4'
 
   static getSnifferScript(useLegacyParser: boolean): string {
     if (useLegacyParser) {
@@ -632,9 +632,21 @@ export class JSInjector {
         var promise = videos[i].play && videos[i].play();
         if (promise && promise.catch) promise.catch(function() {});
       }
-      var controls = document.querySelectorAll('.mui-player, .mui-player-video, .mui-player-play, .play, button');
+      var controls = document.querySelectorAll(
+        '.mui-player-play, .dplayer-play-icon, .dplayer-play-btn, ' +
+        '.art-control-playAndPause, .plyr__control[data-plyr="play"], ' +
+        '.vjs-big-play-button, .jw-icon-playback, .play, [aria-label="Play"]'
+      );
       for (var c = 0; c < controls.length && c < 8; c++) {
-        if (controls[c].click) controls[c].click();
+        var control = controls[c];
+        var type = (control.getAttribute && control.getAttribute('type') || '').toLowerCase();
+        var idAndClass = ((control.id || '') + ' ' + (control.className || '')).toLowerCase();
+        var insideForm = control.closest && control.closest('form');
+        var isSearchControl = idAndClass.indexOf('search') !== -1 ||
+          idAndClass.indexOf('submit') !== -1;
+        if (!insideForm && type !== 'submit' && type !== 'reset' && !isSearchControl && control.click) {
+          control.click();
+        }
       }
     } catch(e) {}
   }
@@ -1063,9 +1075,21 @@ export class JSInjector {
     }
   } catch(e) {}
   try {
-    var controls = document.querySelectorAll('.mui-player, .mui-player-video, .mui-player-play, .play, button');
+    var controls = document.querySelectorAll(
+      '.mui-player-play, .dplayer-play-icon, .dplayer-play-btn, ' +
+      '.art-control-playAndPause, .plyr__control[data-plyr="play"], ' +
+      '.vjs-big-play-button, .jw-icon-playback, .play, [aria-label="Play"]'
+    );
     for (var ci = 0; ci < controls.length && ci < 8; ci++) {
-      if (controls[ci].click) controls[ci].click();
+      var control = controls[ci];
+      var type = (control.getAttribute && control.getAttribute('type') || '').toLowerCase();
+      var idAndClass = ((control.id || '') + ' ' + (control.className || '')).toLowerCase();
+      var insideForm = control.closest && control.closest('form');
+      var isSearchControl = idAndClass.indexOf('search') !== -1 ||
+        idAndClass.indexOf('submit') !== -1;
+      if (!insideForm && type !== 'submit' && type !== 'reset' && !isSearchControl && control.click) {
+        control.click();
+      }
     }
   } catch(e) {}
   if (results.length === 0 && window.performance && window.performance.getEntriesByType) {

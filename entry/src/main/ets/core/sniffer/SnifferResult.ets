@@ -2,7 +2,7 @@ import { CapturedRequestContext } from './CapturedRequestContext'
 import { SniffRuleEvaluator } from './SniffRuleEvaluator'
 
 const TYPE_BASE_SCORES: Record<string, number> = {
-  'm3u8': 80, 'mp4': 70, 'flv': 50, 'ts': 30, 'range_video': 45, 'blob': 15, 'unknown': 10
+  'm3u8': 80, 'mpd': 78, 'mp4': 70, 'flv': 50, 'ts': 30, 'range_video': 45, 'blob': 15, 'unknown': 10
 }
 
 const SOURCE_SCORE_DELTAS: Record<string, number> = {
@@ -42,6 +42,7 @@ export class SnifferResult {
     if (lowerUrl.indexOf('.m3u8') !== -1 || lowerUrl.indexOf('m3u8') !== -1) {
       return 'm3u8'
     }
+    if (lowerUrl.indexOf('.mpd') !== -1) return 'mpd'
     if (lowerUrl.indexOf('.mp4') !== -1 || lowerUrl.indexOf('mp4') !== -1) {
       return 'mp4'
     }
@@ -126,7 +127,8 @@ export class SnifferResult {
       }
     }
 
-    if (type === 'm3u8' || type === 'mp4' || type === 'flv' || type === 'ts' || type === 'range_video') {
+    if (type === 'm3u8' || type === 'mpd' || type === 'mp4' || type === 'flv' || type === 'ts' ||
+      type === 'range_video') {
       if (!ruleEvaluator.isWeakWrapperUrl(url)) {
         score += 10
       }

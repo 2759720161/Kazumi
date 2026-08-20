@@ -519,14 +519,13 @@ export class DanmakuManager {
   }
 
   async reloadSettings(): Promise<void> {
-    const previousSettings = this.currentSettings
     this.currentSettings = await DanmakuStyleSettings.load()
     if (this.renderer !== null) {
       this.renderer.setStyle(this.currentSettings)
     }
     if (this.timeSync !== null) {
       this.timeSync.setSettings(this.currentSettings)
-      if (this.currentRawDanmaku.length > 0 && previousSettings.deduplication !== this.currentSettings.deduplication) {
+      if (this.currentRawDanmaku.length > 0) {
         this.applyCurrentDanmakuData()
       } else {
         this.timeSync.applySettingsToActiveDanmaku()
@@ -611,13 +610,21 @@ export class DanmakuManager {
       if (this.trackAllocator !== null) {
         this.trackAllocator.reset()
       }
+      const sourceEnabledItems = this.currentRawDanmaku.filter((item: DanmakuItem): boolean => {
+        return this.currentSettings.isSourceEnabled(item.source)
+      })
       const playbackItems = this.currentSettings.deduplication
-        ? DanmakuDeduplicator.mergeDuplicateDanmakus(this.currentRawDanmaku)
-        : this.currentRawDanmaku
-      if (this.currentSettings.deduplication && playbackItems.length !== this.currentRawDanmaku.length) {
-        logger.info('弹幕去重完成: %{public}d -> %{public}d', this.currentRawDanmaku.length, playbackItems.length)
+        ? DanmakuDeduplicator.mergeDuplicateDanmakus(sourceEnabledItems)
+        : sourceEnabledItems
+      if (sourceEnabledItems.length !== this.currentRawDanmaku.length) {
+        logger.info('弹幕来源过滤: %{public}d -> %{public}d',
+          this.currentRawDanmaku.length, sourceEnabledItems.length)
+      }
+      if (this.currentSettings.deduplication && playbackItems.length !== sourceEnabledItems.length) {
+        logger.info('弹幕去重完成: %{public}d -> %{public}d', sourceEnabledItems.length, playbackItems.length)
       }
       this.timeSync.setDanmakuData(playbackItems)
+      this.timeSync.refreshAfterSettingsChanged()
     }
   }
 

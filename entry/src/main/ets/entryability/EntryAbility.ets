@@ -10,6 +10,7 @@ import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
 import { UserDownloadFolder } from '../services/UserDownloadFolder';
+import { VideoDownloadManager } from '../services/VideoDownloadManager';
 import {
   ANTI_PEEP_ENABLED_DEFAULT,
   AntiPeepService,
@@ -62,6 +63,7 @@ import {
 const logger = new Logger('EntryAbility');
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady';
 const APP_RDB_READY_KEY: string = 'appRdbReady';
+const DOWNLOAD_NAVIGATION_TOKEN_KEY: string = 'downloadNavigationToken';
 
 export default class EntryAbility extends UIAbility {
   private displayDensity: number = 3.0;
@@ -77,6 +79,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.set<boolean>(APP_PREFERENCES_READY_KEY, false);
     AppStorage.setOrCreate(APP_RDB_READY_KEY, false);
     AppStorage.set<boolean>(APP_RDB_READY_KEY, false);
+    AppStorage.setOrCreate(DOWNLOAD_NAVIGATION_TOKEN_KEY, 0);
     AppStorage.setOrCreate('topSafeHeight', 0);
     AppStorage.setOrCreate('bottomSafeHeight', 0);
     AppStorage.setOrCreate('keyboardAvoidHeight', 0);
@@ -103,6 +106,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, MPV_DETAIL_ENHANCER_QUALITY_DEFAULT);
     SettingsChangeSignal.initDanmakuVersion();
     this.captureContinuationPayload(want);
+    this.handleDownloadWant(want);
 
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
@@ -120,6 +124,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    VideoDownloadManager.getInstance().flushPersistence()
     logger.info('Ability onDestroy');
   }
 
@@ -136,6 +141,7 @@ export default class EntryAbility extends UIAbility {
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     logger.info('Ability onNewWant launchReason: %{public}d', launchParam.launchReason ?? -1);
     this.captureContinuationPayload(want);
+    this.handleDownloadWant(want);
     if (this.pendingContinuationPayload.length > 0) {
       ContinuationState.publishRestorePayload(this.pendingContinuationPayload);
       this.pendingContinuationPayload = '';
@@ -252,6 +258,7 @@ export default class EntryAbility extends UIAbility {
 
   onBackground(): void {
     logger.info('Ability onBackground');
+    VideoDownloadManager.getInstance().flushPersistence()
     AppStorage.setOrCreate('appInForeground', false);
     this.antiPeepService.stop();
   }
@@ -379,6 +386,7 @@ export default class EntryAbility extends UIAbility {
 
     try {
       await UserDownloadFolder.ensureOwnFolder(this.context);
+      await VideoDownloadManager.getInstance().initialize(this.context);
       logger.info('UserDownloadFolder initialized');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -408,6 +416,43 @@ export default class EntryAbility extends UIAbility {
     if (typeof payload === 'string' && payload.length > 0) {
       this.pendingContinuationPayload = payload;
       logger.info('Captured continuation payload');
+    }
+  }
+
+  private handleDownloadWant(want: Want): void {
+    const params = want.parameters;
+    if (params === undefined || params === null) {
+      return;
+    }
+    const actionValue = params['downloadAction'];
+    if (typeof actionValue !== 'string' || actionValue.length === 0) {
+      return;
+    }
+    if (actionValue === 'open') {
+      const currentToken = AppStorage.get<number>(DOWNLOAD_NAVIGATION_TOKEN_KEY) ?? 0;
+      AppStorage.setOrCreate(DOWNLOAD_NAVIGATION_TOKEN_KEY, currentToken + 1);
+      AppStorage.set<number>(DOWNLOAD_NAVIGATION_TOKEN_KEY, currentToken + 1);
+      return;
+    }
+    const taskIdValue = params['downloadTaskId'];
+    if (typeof taskIdValue !== 'string' || taskIdValue.length === 0) {
+      return;
+    }
+    this.executeDownloadAction(taskIdValue, actionValue).catch((err: Object): void => {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn('Notification download action failed: %{public}s', message);
+    });
+  }
+
+  private async executeDownloadAction(taskId: string, action: string): Promise<void> {
+    const manager = VideoDownloadManager.getInstance();
+    await manager.initialize(this.context);
+    if (action === 'pause') {
+      await manager.pause(taskId);
+    } else if (action === 'resume') {
+      await manager.resume(taskId);
+    } else if (action === 'cancel') {
+      await manager.cancel(taskId);
     }
   }
 

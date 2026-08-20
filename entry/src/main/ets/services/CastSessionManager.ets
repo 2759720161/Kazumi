@@ -1,6 +1,7 @@
 import { avSession } from '@kit.AVSessionKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
+import { media } from '@kit.MediaKit'
 import { Logger } from '../utils/Logger'
 import { PlaybackSessionSnapshot, PlaybackSessionStore } from './PlaybackSessionStore'
 
@@ -18,6 +19,7 @@ export class CastMediaInfo {
   positionMs: number = 0
   hasNext: boolean = false
   hasPrevious: boolean = false
+  fdSrc: media.AVFileDescriptor | undefined = undefined
 }
 
 export class CastEventCallbacks {
@@ -43,6 +45,7 @@ export class CastSessionManager {
   private callbacks: CastEventCallbacks = new CastEventCallbacks()
   private isInitialized: boolean = false
   private isCasting: boolean = false
+  private localCastEnabled: boolean = false
   private lastStartedAssetId: string = ''
   private lastStartedSubtitle: string = ''
   private playbackStore: PlaybackSessionStore = PlaybackSessionStore.getInstance()
@@ -63,6 +66,15 @@ export class CastSessionManager {
 
   setCallbacks(callbacks: CastEventCallbacks): void {
     this.callbacks = callbacks
+  }
+
+  /**
+   * Local playback is normally not castable because its URI belongs to the
+   * app's sandbox. LocalPlayerPage enables this only after it has started the
+   * temporary LAN file server.
+   */
+  setLocalCastEnabled(enabled: boolean): void {
+    this.localCastEnabled = enabled
   }
 
   async ensureVideoSession(context: common.UIAbilityContext): Promise<void> {
@@ -117,7 +129,13 @@ export class CastSessionManager {
     if (this.session === null || snapshot.url.length === 0) {
       return
     }
-    if (snapshot.isLocalFile) {
+    if (snapshot.isLocalFile && !this.localCastEnabled) {
+      this.setCastSupported(false)
+      return
+    }
+
+    if (snapshot.isLocalFile && (this.currentMedia.url.length === 0 ||
+      this.currentMedia.fdSrc === undefined)) {
       this.setCastSupported(false)
       return
     }
@@ -130,7 +148,9 @@ export class CastSessionManager {
       snapshot.hasNext !== this.currentMedia.hasNext ||
       snapshot.hasPrevious !== this.currentMedia.hasPrevious
 
-    this.currentMedia.url = snapshot.url
+    if (!snapshot.isLocalFile) {
+      this.currentMedia.url = snapshot.url
+    }
     this.currentMedia.title = snapshot.title
     this.currentMedia.subtitle = snapshot.subtitle
     this.currentMedia.cover = snapshot.cover
@@ -459,19 +479,24 @@ export class CastSessionManager {
       return
     }
 
+    const description: avSession.AVMediaDescription = {
+      assetId: this.currentMedia.url,
+      title: this.currentMedia.title.length > 0 ? this.currentMedia.title : '正在播放',
+      subtitle: this.currentMedia.subtitle,
+      mediaType: 'VIDEO',
+      duration: this.currentMedia.durationMs,
+      startPosition: startPositionMs,
+      albumCoverUri: this.currentMedia.cover,
+      appName: '小番薯'
+    }
+    if (this.currentMedia.fdSrc !== undefined) {
+      description.fdSrc = this.currentMedia.fdSrc
+    } else {
+      description.mediaUri = this.currentMedia.url
+    }
     const playItem: avSession.AVQueueItem = {
       itemId: 0,
-      description: {
-        assetId: this.currentMedia.url,
-        title: this.currentMedia.title.length > 0 ? this.currentMedia.title : '正在播放',
-        subtitle: this.currentMedia.subtitle,
-        mediaUri: this.currentMedia.url,
-        mediaType: 'VIDEO',
-        duration: this.currentMedia.durationMs,
-        startPosition: startPositionMs,
-        albumCoverUri: this.currentMedia.cover,
-        appName: '小番薯'
-      }
+      description: description
     }
 
     try {
@@ -571,6 +596,7 @@ export class CastSessionManager {
       this.lastStartedAssetId = ''
       this.lastStartedSubtitle = ''
       this.isSyncingFromPlaybackStore = false
+      this.localCastEnabled = false
       this.isDestroyingSession = false
     }
   }

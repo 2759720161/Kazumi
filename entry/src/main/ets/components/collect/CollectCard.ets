@@ -1,8 +1,6 @@
 import { CollectedBangumi } from '../../models/CollectedBangumi'
-import { router } from '@kit.ArkUI'
-import { Logger } from '../../utils/Logger'
-
-const logger = new Logger('CollectCard')
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
+import { DetailNavigationParams, navigateToDetail } from '../../utils/DetailNavigation'
 
 @Component
 export struct CollectCard {
@@ -14,16 +12,14 @@ export struct CollectCard {
   build() {
     Column({ space: 8 }) {
       Stack({ alignContent: Alignment.TopStart }) {
-        Image(this.getCoverSource())
-          .draggable(false)
+        CachedRemoteImage({
+          source: this.getCoverUrl(),
+          sources: this.getCoverUrls(),
+          sharedId: this.getSharedCoverId()
+        })
           .width('100%')
           .height('100%')
-          .objectFit(this.collectedBangumi.getBestCover().length > 0 ? ImageFit.Cover : ImageFit.Contain)
           .borderRadius(12)
-          .alt($r('app.media.ic_placeholder'))
-          .onError(() => {
-            logger.warn('Cover load failed: %{public}s', this.collectedBangumi.animeName)
-          })
 
         if (this.isEditMode) {
           this.StatusButton()
@@ -57,20 +53,19 @@ export struct CollectCard {
       if (this.isEditMode) {
         this.requestRemove()
       } else {
-        router.pushUrl({
-          url: 'pages/detail/DetailPage',
-          params: {
-            animeName: this.collectedBangumi.animeName,
-            animeCover: this.collectedBangumi.animeCover,
-            animeCoverFallback: this.collectedBangumi.coverFallback,
-            animeBangumiCover: this.collectedBangumi.bangumiCover,
-            animeDesc: this.collectedBangumi.animeDesc,
-            animeUrl: this.collectedBangumi.animeUrl,
-            sourceName: this.collectedBangumi.sourceName,
-            sourceId: this.collectedBangumi.sourceId,
-            bangumiId: this.collectedBangumi.bangumiId
-          }
-        })
+        const params = new DetailNavigationParams()
+        params.animeName = this.collectedBangumi.animeName
+        params.animeCover = this.collectedBangumi.animeCover
+        params.animeCoverFallback = this.collectedBangumi.coverFallback
+        params.animeBangumiCover = this.collectedBangumi.bangumiCover
+        params.animeDesc = this.collectedBangumi.animeDesc
+        params.animeUrl = this.collectedBangumi.animeUrl
+        params.sourceName = this.collectedBangumi.sourceName
+        params.sourceId = this.collectedBangumi.sourceId
+        params.bangumiId = this.collectedBangumi.bangumiId
+        params.sharedCoverId = this.getSharedCoverId()
+        params.transitionCover = this.getTransitionCover()
+        navigateToDetail(params)
       }
     })
     .onTouch((event: TouchEvent) => {
@@ -127,12 +122,37 @@ export struct CollectCard {
     .position({ x: 0, y: 0 })
   }
 
-  private getCoverSource(): ResourceStr {
-    const cover = this.collectedBangumi.getBestCover()
-    return cover.length > 0 ? cover : $r('app.media.ic_placeholder')
+  private getCoverUrl(): string {
+    return this.collectedBangumi.getBestCover()
+  }
+
+  private getCoverUrls(): string[] {
+    const urls: string[] = []
+    this.pushCoverUrl(urls, this.collectedBangumi.bangumiCover)
+    this.pushCoverUrl(urls, this.collectedBangumi.animeCover)
+    this.pushCoverUrl(urls, this.collectedBangumi.coverFallback)
+    return urls
+  }
+
+  private pushCoverUrl(urls: string[], url: string): void {
+    if (url.length > 0 && urls.indexOf(url) < 0) {
+      urls.push(url)
+    }
   }
 
   private requestRemove(): void {
     this.onRemove?.()
+  }
+
+  private getSharedCoverId(): string {
+    if (this.getTransitionCover().length === 0) {
+      return ''
+    }
+    const subjectId = this.collectedBangumi.bangumiId > 0 ? this.collectedBangumi.bangumiId : this.collectedBangumi.id
+    return 'collect-cover-' + subjectId.toString()
+  }
+
+  private getTransitionCover(): string {
+    return this.collectedBangumi.getBestCover()
   }
 }

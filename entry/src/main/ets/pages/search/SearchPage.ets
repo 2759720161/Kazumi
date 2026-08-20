@@ -5,6 +5,7 @@ import { SearchHistoryStore } from '../../store/SearchHistoryStore'
 import { SearchHistory } from '../../models/SearchHistory'
 import { Logger } from '../../utils/Logger'
 import { router, curves } from '@kit.ArkUI'
+import { DetailNavigationParams, navigateToDetail } from '../../utils/DetailNavigation'
 import { deviceInfo } from '@kit.BasicServicesKit'
 import {
   HdsNavigation,
@@ -557,6 +558,7 @@ export struct SearchPage {
       coverFallback: item.coverFallback,
       bangumiCover: item.bangumiCover,
       sourceName: item.sourceName,
+      sharedCoverId: this.getSharedCoverId(item),
       onCardClick: () => {
         this.openDetail(item)
       }
@@ -765,33 +767,37 @@ export struct SearchPage {
   }
 
   private openDetail(item: AnimeItem): void {
-    router.pushUrl({
-      url: 'pages/detail/DetailPage',
-      params: {
-        animeName: item.name,
-        animeCover: item.cover,
-        animeCoverFallback: item.coverFallback,
-        animeBangumiCover: item.bangumiCover,
-        animeDesc: item.desc,
-        animeOriginalName: item.originalName,
-        animeAirDate: item.airDate,
-        animeRatingScore: item.ratingScore,
-        animeRank: item.rank,
-        animeTags: JSON.stringify(item.tags),
-        animeVotes: item.votes,
-        animeVotesCount: JSON.stringify(item.votesCount),
-        animeAirWeekday: item.airWeekday,
-        animeEps: item.eps,
-        animeUrl: item.url,
-        sourceName: item.sourceName,
-        sourceId: item.sourceId,
-        bangumiId: item.bangumiId
-      }
-    })
+    const params = new DetailNavigationParams()
+    params.animeName = item.name
+    params.animeCover = item.cover
+    params.animeCoverFallback = item.coverFallback
+    params.animeBangumiCover = item.bangumiCover
+    params.animeDesc = item.desc
+    params.animeOriginalName = item.originalName
+    params.animeAirDate = item.airDate
+    params.animeRatingScore = item.ratingScore
+    params.animeRank = item.rank
+    params.animeTags = JSON.stringify(item.tags)
+    params.animeVotes = item.votes
+    params.animeVotesCount = JSON.stringify(item.votesCount)
+    params.animeAirWeekday = item.airWeekday
+    params.animeEps = item.eps
+    params.animeUrl = item.url
+    params.sourceName = item.sourceName
+    params.sourceId = item.sourceId
+    params.bangumiId = item.bangumiId
+    params.sharedCoverId = this.getSharedCoverId(item)
+    params.transitionCover = item.getGridCover()
+    navigateToDetail(params)
   }
 
   private getSearchTopSpacerHeight(): number {
     return getTopSpacerHeight(this.topSafeHeight) + this.getSearchTopControlsHeight()
+  }
+
+  private getSharedCoverId(item: AnimeItem): string {
+    const subjectId = item.bangumiId > 0 ? item.bangumiId.toString() : item.name
+    return 'search-cover-' + subjectId
   }
 
   private getBottomSpacerHeight(): number {
@@ -992,7 +998,7 @@ struct SearchSegmentTabItem {
       Text(this.label)
         .fontSize(14)
         .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.isSelected() ? $r('app.color.text_primary') : Color.White)
+        .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Clip })
         .textAlign(TextAlign.Center)

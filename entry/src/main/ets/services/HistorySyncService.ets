@@ -478,6 +478,7 @@ export class HistorySyncService {
   private async enrichMissingBangumiCovers(records: HistoryRecord[]): Promise<void> {
     for (let i = 0; i < records.length; i++) {
       const record = records[i]
+      this.normalizeHistoryRecordCover(record)
       if ((record.animeCover.length > 0 && record.animeName.length > 0) || record.bangumiId <= 0) {
         continue
       }
@@ -773,11 +774,34 @@ export class HistorySyncService {
     if (value === undefined || value === null) {
       return ''
     }
-    const raw = String(value)
-    if (raw.length === 0) {
+    if (typeof value === 'object') {
+      const objectValue = value as Record<string, Object>
+      const keys: string[] = ['url', 'large', 'common', 'medium', 'grid', 'small']
+      for (let i = 0; i < keys.length; i++) {
+        const nested = this.normalizeUpstreamCoverValue(objectValue[keys[i]])
+        if (nested.length > 0) {
+          return nested
+        }
+      }
       return ''
     }
-    return BangumiConfig.normalizeImageUrl(raw)
+    const raw = String(value).trim()
+    return raw.length > 0 ? BangumiConfig.normalizeImageUrl(raw) : ''
+  }
+
+  private normalizeHistoryRecordCover(record: HistoryRecord): void {
+    const raw = record.animeCover.trim()
+    if (raw.length === 0 || raw.startsWith('file://') || raw.startsWith('/')) {
+      return
+    }
+    const normalized = BangumiConfig.normalizeImageUrl(raw)
+    if (normalized.length > 0) {
+      record.animeCover = normalized
+    } else {
+      // Old sync payloads may contain a serialized image object or an invalid
+      // host. Treat it as missing so the subject-image fallback can repair it.
+      record.animeCover = ''
+    }
   }
 
   private async writeUpstreamHistoryPayload(client: WebDavClient, payload: HistorySyncPayload): Promise<void> {
@@ -1017,7 +1041,9 @@ export class HistorySyncService {
       if (recordsObj instanceof Array) {
         const records = recordsObj as Record<string, Object>[]
         for (let i = 0; i < records.length; i++) {
-          payload.records.push(HistoryRecord.fromJSON(records[i]))
+          const record = HistoryRecord.fromJSON(records[i])
+          this.normalizeHistoryRecordCover(record)
+          payload.records.push(record)
         }
       }
       const deletedObj = parsed['deleted']

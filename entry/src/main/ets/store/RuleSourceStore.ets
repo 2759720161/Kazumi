@@ -1,7 +1,7 @@
 import { relationalStore } from '@kit.ArkData';
 import { RdbManager } from './RdbManager';
 import { RdbConstants } from '../constants/RdbConstants';
-import { RuleSource, AntiCrawlerConfig } from '../models/RuleSource';
+import { RuleSource, AntiCrawlerConfig, RuleInstallOrigin } from '../models/RuleSource';
 import { Logger } from '../utils/Logger';
 
 const logger = new Logger('RuleSourceStore');
@@ -71,6 +71,7 @@ export class RuleSourceStore {
       multi_sources: rule.multiSources ? 1 : 0,
       enabled: rule.enabled ? 1 : 0,
       sort_order: rule.sortOrder,
+      install_origin: RuleInstallOrigin.normalize(rule.installOrigin),
       raw_json: JSON.stringify(rule.toJSON()),
       created_at: now,
       updated_at: now
@@ -104,6 +105,7 @@ export class RuleSourceStore {
       multi_sources: rule.multiSources ? 1 : 0,
       enabled: rule.enabled ? 1 : 0,
       sort_order: rule.sortOrder,
+      install_origin: RuleInstallOrigin.normalize(rule.installOrigin),
       raw_json: JSON.stringify(rule.toJSON()),
       updated_at: Date.now()
     };
@@ -127,6 +129,15 @@ export class RuleSourceStore {
     const values: relationalStore.ValuesBucket = {
       enabled: enabled ? 1 : 0,
       updated_at: Date.now()
+    };
+    return await this.rdbManager.update(RdbConstants.TABLE_RULE_SOURCE, values, predicates);
+  }
+
+  async setInstallOrigin(id: number, installOrigin: string): Promise<number> {
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_RULE_SOURCE);
+    predicates.equalTo(RdbConstants.COL_ID, id);
+    const values: relationalStore.ValuesBucket = {
+      install_origin: RuleInstallOrigin.normalize(installOrigin)
     };
     return await this.rdbManager.update(RdbConstants.TABLE_RULE_SOURCE, values, predicates);
   }
@@ -176,6 +187,8 @@ export class RuleSourceStore {
           rule.sortOrder = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_SORT_ORDER));
           rule.createdAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_CREATED_AT));
           rule.updatedAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_UPDATED_AT));
+          rule.installOrigin = RuleInstallOrigin.normalize(
+            resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_INSTALL_ORIGIN)));
 
           try {
             const rawJson = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_RAW_JSON));

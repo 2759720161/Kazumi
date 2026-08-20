@@ -188,7 +188,7 @@ export class SnifferTestSuite {
     this.assert('RuleEvaluator-protocol-mp4', cap.supported, 'supported=' + cap.supported)
 
     cap = this.ruleEvaluator.evaluateProtocolCapability('.mpd')
-    this.assert('RuleEvaluator-protocol-dash', !cap.supported, 'supported=' + cap.supported + ' msg=' + cap.message)
+    this.assert('RuleEvaluator-protocol-dash', cap.supported, 'supported=' + cap.supported + ' msg=' + cap.message)
 
     cap = this.ruleEvaluator.evaluateProtocolCapability('rtmp://')
     this.assert('RuleEvaluator-protocol-rtmp', !cap.supported, 'supported=' + cap.supported)

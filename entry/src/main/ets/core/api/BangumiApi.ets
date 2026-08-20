@@ -605,8 +605,8 @@ export class BangumiApi {
     webSearchFailedAt = Date.now();
   }
 
-  static async getTrendsList(offset: number): Promise<AnimeItem[]> {
-    const mirrorItems = await BangumiApi.fetchMirrorPopular('', offset);
+  static async getTrendsList(offset: number, limit: number = 24): Promise<AnimeItem[]> {
+    const mirrorItems = await BangumiApi.fetchMirrorPopular('', offset, limit);
     if (mirrorItems.length > 0) {
       return mirrorItems;
     }
@@ -619,7 +619,7 @@ export class BangumiApi {
 
     for (let d = 0; d < domains.length; d++) {
       const domain = domains[d];
-      const url = `${domain}/p1/trending/subjects?type=2&limit=24&offset=${offset}`;
+      const url = `${domain}/p1/trending/subjects?type=2&limit=${limit}&offset=${offset}`;
       const request = http.createHttp();
       try {
         logger.info('Trends request: %{public}s offset=%{public}d', domain, offset);
@@ -690,9 +690,9 @@ export class BangumiApi {
     return await BangumiApi.searchByTagFallback(tag, offset);
   }
 
-  private static async fetchMirrorPopular(tag: string, offset: number): Promise<AnimeItem[]> {
+  private static async fetchMirrorPopular(tag: string, offset: number, limit: number = 24): Promise<AnimeItem[]> {
     const items: AnimeItem[] = [];
-    let url = `${BangumiConfig.KAZUMI_POPULAR_URL}?limit=24&offset=${offset}`;
+    let url = `${BangumiConfig.KAZUMI_POPULAR_URL}?limit=${limit}&offset=${offset}`;
     if (tag.length > 0) {
       url = url + '&tag=' + encodeURIComponent(tag);
     }
@@ -1757,7 +1757,7 @@ export class BangumiApi {
       }
     }
 
-    const fallbackItems = await BangumiApi.fetchMirrorPopular('', offset)
+    const fallbackItems = await BangumiApi.fetchMirrorPopular('', offset, limit)
     if (fallbackItems.length > 0) {
       const scoredItems: AnimeItem[] = []
       for (let i = 0; i < fallbackItems.length; i++) {

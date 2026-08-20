@@ -14,6 +14,8 @@ import {
 import { promptAction, router, SymbolGlyphModifier, window } from '@kit.ArkUI'
 import { common } from '@kit.AbilityKit'
 import { Logger } from '../utils/Logger'
+import { PreferencesStore } from '../store/PreferencesStore'
+import { QixiAudioService } from '../services/QixiAudioService'
 import {
   BOTTOM_TAB_ANIMATION_HIDDEN_KEY,
   BOTTOM_TAB_ANIMATION_TOKEN_KEY,
@@ -35,6 +37,8 @@ import {
 
 const logger = new Logger('Index')
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady'
+const DOWNLOAD_NAVIGATION_TOKEN_KEY: string = 'downloadNavigationToken'
+const QIXI_AUDIO_PROMPT_HANDLED_KEY: string = 'qixiAudioPromptHandled_1_0_8'
 
 @Entry
 @Component
@@ -57,7 +61,11 @@ struct Index {
   @StorageLink(CONTINUATION_RESTORE_PAYLOAD_KEY) continuationRestorePayload: string = ''
   @StorageLink(CONTINUATION_RESTORE_TOKEN_KEY) @Watch('onContinuationRestoreTokenChanged')
   continuationRestoreToken: number = 0
-  @StorageLink(APP_PREFERENCES_READY_KEY) appPreferencesReady: boolean = false
+  @StorageLink(APP_PREFERENCES_READY_KEY) @Watch('onAppPreferencesReadyChanged')
+  appPreferencesReady: boolean = false
+  @StorageLink(DOWNLOAD_NAVIGATION_TOKEN_KEY) @Watch('onDownloadNavigationTokenChanged')
+  downloadNavigationToken: number = 0
+  @State private showQixiAudioDialog: boolean = false
   @State private hdsImmersiveMaterialSupported: boolean = true
   private tabsController: HdsTabsController = new HdsTabsController()
   private bottomTabControllerHidden: boolean = false
@@ -67,12 +75,79 @@ struct Index {
   private lastBackPressTime: number = 0
   private handledContinuationRestoreToken: number = -1
   private pendingMainTabIndex: number = -1
+  private handledDownloadNavigationToken: number = 0
+  private qixiAudioPromptChecked: boolean = false
+  private qixiAudioPromptHandling: boolean = false
+  private readonly qixiAudioService: QixiAudioService = QixiAudioService.getInstance()
 
   aboutToAppear(): void {
     this.refreshHdsMaterialSupport()
     this.normalizeCurrentTab()
     ContinuationState.markIndex(this.currentTab)
     this.restoreContinuationIfNeeded()
+    this.openDownloadPageIfNeeded()
+    this.checkQixiAudioPrompt()
+  }
+
+  private onAppPreferencesReadyChanged(): void {
+    this.checkQixiAudioPrompt()
+  }
+
+  private async checkQixiAudioPrompt(): Promise<void> {
+    if (!this.appPreferencesReady || this.qixiAudioPromptChecked || !this.isQixiAudioPromptAvailable()) {
+      return
+    }
+    this.qixiAudioPromptChecked = true
+    const handled = await PreferencesStore.getInstance().getBoolean(QIXI_AUDIO_PROMPT_HANDLED_KEY, false)
+    if (!handled) {
+      this.showQixiAudioDialog = true
+    }
+  }
+
+  private isQixiAudioPromptAvailable(): boolean {
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    const currentDay = now.getDate()
+    if (currentYear !== 2026) {
+      return currentYear > 2026
+    }
+    if (currentMonth !== 8) {
+      return currentMonth > 8
+    }
+    return currentDay >= 19
+  }
+
+  private async handleQixiAudioPrompt(playAudio: boolean): Promise<void> {
+    if (this.qixiAudioPromptHandling) {
+      return
+    }
+    this.qixiAudioPromptHandling = true
+    this.showQixiAudioDialog = false
+    await PreferencesStore.getInstance().setBoolean(QIXI_AUDIO_PROMPT_HANDLED_KEY, true)
+    if (!playAudio) {
+      return
+    }
+    try {
+      await this.qixiAudioService.play(getContext(this) as common.UIAbilityContext)
+    } catch (_err) {
+      promptAction.showToast({ message: '音频播放失败' })
+    }
+  }
+
+  private onDownloadNavigationTokenChanged(): void {
+    this.openDownloadPageIfNeeded()
+  }
+
+  private openDownloadPageIfNeeded(): void {
+    if (this.downloadNavigationToken <= 0 ||
+      this.downloadNavigationToken === this.handledDownloadNavigationToken) {
+      return
+    }
+    this.handledDownloadNavigationToken = this.downloadNavigationToken
+    router.pushUrl({ url: 'pages/download/DownloadPage' }).catch((err: Object): void => {
+      logger.warn('Open download page failed: %{public}s', err instanceof Error ? err.message : String(err))
+    })
   }
 
   private onScreenSizeChanged(): void {
@@ -111,40 +186,103 @@ struct Index {
     }
   }
 
-  build() {
+  @Builder
+  private QixiAudioDialog(): void {
     Column() {
+      Column() {
+        Text('七夕神秘小音频')
+          .fontSize(22)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+          .width('100%')
+        Text('注：取消后无法通过应用内再次打开播放')
+          .fontSize(15)
+          .fontColor($r('app.color.text_secondary'))
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ top: 14 })
+        Row() {
+          Text('取消')
+            .fontSize(17)
+            .fontColor($r('app.color.text_secondary'))
+            .textAlign(TextAlign.Center)
+            .layoutWeight(1)
+            .height(52)
+            .onClick(() => {
+              this.handleQixiAudioPrompt(false)
+            })
+          Divider()
+            .vertical(true)
+            .height(24)
+            .color($r('app.color.card_specular_border'))
+          Text('播放')
+            .fontSize(17)
+            .fontColor($r('app.color.tab_icon_selected'))
+            .fontWeight(FontWeight.Medium)
+            .textAlign(TextAlign.Center)
+            .layoutWeight(1)
+            .height(52)
+            .onClick(() => {
+              this.handleQixiAudioPrompt(true)
+            })
+        }
+        .width('100%')
+        .margin({ top: 22 })
+      }
+      .width('100%')
+      .padding({ left: 30, right: 30, top: 30, bottom: 20 })
+      .borderRadius(34)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(0x66000000)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 20, right: 20, bottom: 28 })
+    .onClick(() => {
+      // Keep the prompt open until the user explicitly chooses Cancel or Play.
+    })
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column() {
       HdsTabs({
         controller: this.tabsController,
         index: this.currentTab
       }) {
-        if (this.advancedOptionsUnlocked) {
-          TabContent() {
-            HomePage()
+          if (this.advancedOptionsUnlocked) {
+            TabContent() {
+              HomePage()
+            }
+            .tabBar(this.bottomTabStyle($r('sys.symbol.house'), $r('sys.symbol.house_fill'), '首页'))
+
+            TabContent() {
+              TimelinePage()
+            }
+            .tabBar(this.bottomTabStyle($r('sys.symbol.calendar'), $r('sys.symbol.calendar'), '时间表'))
+
+            TabContent() {
+              FavoritePage()
+            }
+            .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '收藏'))
           }
-          .tabBar(this.bottomTabStyle($r('sys.symbol.house'), $r('sys.symbol.house_fill'), '首页'))
+
+          if (!this.hideLocalPage) {
+            TabContent() {
+              LocalPage({ isActive: this.currentTab === this.getLocalTabIndex() })
+            }
+            .tabBar(this.bottomTabStyle($r('sys.symbol.arrow_down_circle'),
+              $r('sys.symbol.arrowshape_down_to_line_fill'), '下载'))
+          }
 
           TabContent() {
-            TimelinePage()
+            SettingsPage()
           }
-          .tabBar(this.bottomTabStyle($r('sys.symbol.calendar'), $r('sys.symbol.calendar'), '时间表'))
-
-          TabContent() {
-            FavoritePage()
-          }
-          .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '收藏'))
-        }
-
-        if (!this.hideLocalPage) {
-          TabContent() {
-            LocalPage({ isActive: this.currentTab === this.getLocalTabIndex() })
-          }
-          .tabBar(this.bottomTabStyle($r('sys.symbol.folder'), $r('sys.symbol.folder_fill'), '本地'))
-        }
-
-        TabContent() {
-          SettingsPage()
-        }
-        .tabBar(this.bottomTabStyle($r('sys.symbol.person'), $r('sys.symbol.person_fill'), '我的'))
+          .tabBar(this.bottomTabStyle($r('sys.symbol.person'), $r('sys.symbol.person_fill'), '我的'))
       }
       .barOverlap(true)
       .vertical(false)
@@ -152,27 +290,34 @@ struct Index {
       .barPosition(BarPosition.End)
       .barHeight(this.getHdsTabBarHeight())
       .barFloatingStyle(this.buildHdsTabFloatingStyle())
+      .animationDuration(300)
       .width('100%')
       .height('100%')
       .onChange((index: number) => {
-        if (this.pendingMainTabIndex >= 0 && index !== this.pendingMainTabIndex) {
-          logger.info('Ignore stale main tab index during rebuild: %{public}d', index)
-          return
-        }
-        if (index === this.pendingMainTabIndex) {
-          this.pendingMainTabIndex = -1
-        }
-        logger.info('Main tab changed: %{public}d', index)
-        this.currentTab = index
-        ContinuationState.markIndex(index)
-        this.bottomTabOffset = 0
-        this.applyBottomTabVisibilityAnimation(false)
+          if (this.pendingMainTabIndex >= 0 && index !== this.pendingMainTabIndex) {
+            logger.info('Ignore stale main tab index during rebuild: %{public}d', index)
+            return
+          }
+          if (index === this.pendingMainTabIndex) {
+            this.pendingMainTabIndex = -1
+          }
+          logger.info('Main tab changed: %{public}d', index)
+          this.currentTab = index
+          ContinuationState.markIndex(index)
+          this.bottomTabOffset = 0
+          this.applyBottomTabVisibilityAnimation(false)
       })
+    }
+      .width('100%')
+      .height(LayoutPolicy.matchParent)
+      .backgroundColor($r('app.color.page_background'))
 
+      if (this.showQixiAudioDialog) {
+        this.QixiAudioDialog()
+      }
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
-    .background($r('app.color.page_background'))
   }
 
   private isWideHdsTabsLayout(): boolean {
@@ -184,6 +329,13 @@ struct Index {
       return this.hideLocalPage ? 3 : 4
     }
     return this.hideLocalPage ? 0 : 1
+  }
+
+  private getLocalTabIndex(): number {
+    if (this.hideLocalPage) {
+      return -1
+    }
+    return this.advancedOptionsUnlocked ? 3 : 0
   }
 
   private getHdsTabBarHeight(): number {
@@ -354,13 +506,6 @@ struct Index {
       normal: new SymbolGlyphModifier(normal),
       selected: new SymbolGlyphModifier(selected)
     }, text)
-  }
-
-  private getLocalTabIndex(): number {
-    if (this.hideLocalPage) {
-      return -1
-    }
-    return this.advancedOptionsUnlocked ? 3 : 0
   }
 
   private normalizeCurrentTab(): void {

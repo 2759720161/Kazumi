@@ -32,6 +32,12 @@ export class SniffRuleEvaluator {
         priority: 10, enabled: true, sourceTag: 'builtin'
       },
       {
+        name: '7sefun_yun92cj_error_wrapper', category: 'weak_candidate', ruleType: 'url_pattern',
+        patterns: ['yun.92cj.com/404.php?'],
+        action: 'delay', actionParams: { 'delayMs': String(NetworkPolicy.WEAK_CANDIDATE_DELAY_MS) },
+        priority: 30, enabled: true, sourceTag: 'builtin'
+      },
+      {
         name: 'moedot_wrapper', category: 'weak_candidate', ruleType: 'domain_match',
         patterns: ['player.moedot.net/player/'],
         action: 'delay', actionParams: { 'delayMs': String(NetworkPolicy.WEAK_CANDIDATE_DELAY_MS) },
@@ -107,7 +113,7 @@ export class SniffRuleEvaluator {
       {
         name: 'protocol_dash', category: 'protocol', ruleType: 'extension_match',
         patterns: ['.mpd'],
-        action: 'mark_unsupported', actionParams: { 'message': 'DASH not natively supported' },
+        action: 'mark_supported', actionParams: {},
         priority: 0, enabled: true, sourceTag: 'builtin'
       },
       {

@@ -1,5 +1,5 @@
 import { RuleCatalogItem } from '../models/RuleCatalogItem'
-import { RuleSource } from '../models/RuleSource'
+import { RuleInstallOrigin, RuleSource } from '../models/RuleSource'
 import { RuleSourceStore } from '../store/RuleSourceStore'
 import { DefaultRuleSourceInitializer } from '../utils/DefaultRuleSourceInitializer'
 import { AppConstants } from '../constants/AppConstants'
@@ -45,8 +45,38 @@ export class RuleCatalogService {
     if (list.length > 0 && items.length === 0) {
       throw new Error('Rule catalog index contains no valid Kazumi rules')
     }
+    await RuleCatalogService.adoptLegacyRepositoryRules(items)
     logger.info('Fetched catalog with %{public}d items', items.length)
     return items
+  }
+
+  private static async adoptLegacyRepositoryRules(items: RuleCatalogItem[]): Promise<void> {
+    if (items.length === 0) {
+      return
+    }
+    const store = new RuleSourceStore()
+    const localRules = await store.getAll()
+    let adopted = 0
+    for (let i = 0; i < localRules.length; i++) {
+      const rule = localRules[i]
+      if (rule.installOrigin !== RuleInstallOrigin.LEGACY || !RuleCatalogService.containsRule(items, rule.name)) {
+        continue
+      }
+      await store.setInstallOrigin(rule.id, RuleInstallOrigin.REPOSITORY)
+      adopted++
+    }
+    if (adopted > 0) {
+      logger.info('Adopted %{public}d legacy rules as repository-managed', adopted)
+    }
+  }
+
+  private static containsRule(items: RuleCatalogItem[], name: string): boolean {
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].name === name) {
+        return true
+      }
+    }
+    return false
   }
 
   static getRuleStatus(item: RuleCatalogItem, localRules: RuleSource[]): string {
@@ -80,6 +110,7 @@ export class RuleCatalogService {
 
     const parsed: Object = JSON.parse(ruleBody)
     const rule = RuleSource.fromJSON(parsed as Record<string, Object>)
+    rule.installOrigin = RuleInstallOrigin.REPOSITORY
 
     const apiNum = parseInt(rule.api, 10)
     if (!isNaN(apiNum) && apiNum > AppConstants.SUPPORTED_API_LEVEL) {

@@ -22,6 +22,12 @@ export class RecommendViewModel {
   seasonLabel: string = ''
 
   private historyStore: HistoryStore = new HistoryStore()
+  private trendingNextOffset: number = HOME_SECTION_PAGE_SIZE
+  private seasonalNextOffset: number = HOME_SECTION_PAGE_SIZE
+  private highScoreNextOffset: number = HOME_SECTION_PAGE_SIZE
+  private trendingRemainingFinished: boolean = false
+  private seasonalRemainingFinished: boolean = false
+  private highScoreRemainingFinished: boolean = false
 
   async load(): Promise<void> {
     if (this.isLoading) {
@@ -94,19 +100,23 @@ export class RecommendViewModel {
       async (offset: number): Promise<AnimeItem[]> => BangumiApi.getTrendsList(offset),
       onProgress,
       shouldContinue,
-      'trending'
+      'trending',
+      HOME_SECTION_PAGE_SIZE
     )
   }
 
   async loadRemainingHighScore(onProgress?: (items: RecommendCardModel[]) => void,
-    shouldContinue?: () => boolean): Promise<void> {
+    shouldContinue?: () => boolean,
+    maxItems: number = 0): Promise<void> {
     await this.loadRemainingSection(
       this.highScoreList,
       async (offset: number): Promise<AnimeItem[]> =>
         BangumiApi.searchHighScoreSubjects(HOME_SECTION_PAGE_SIZE, offset),
       onProgress,
       shouldContinue,
-      'highScore'
+      'highScore',
+      HOME_SECTION_PAGE_SIZE,
+      maxItems
     )
   }
 
@@ -119,7 +129,8 @@ export class RecommendViewModel {
         BangumiApi.searchSeasonalSubjects(range.start, range.end, HOME_SECTION_PAGE_SIZE, offset),
       onProgress,
       shouldContinue,
-      'seasonal'
+      'seasonal',
+      HOME_SECTION_PAGE_SIZE
     )
   }
 
@@ -162,7 +173,12 @@ export class RecommendViewModel {
   }
 
   private async loadTrending(): Promise<void> {
-    const results = await BangumiApi.getTrendsList(0)
+    this.trendingNextOffset = HOME_SECTION_PAGE_SIZE
+    this.trendingRemainingFinished = false
+    const results = await BangumiApi.getTrendsList(0, HOME_SECTION_PAGE_SIZE)
+    // The server may return fewer items than requested. The next offset must
+    // follow the actual response length, otherwise the missing tail is skipped.
+    this.trendingNextOffset = results.length
     const models: RecommendCardModel[] = []
     for (let i = 0; i < results.length; i++) {
       models.push(RecommendCardModel.fromAnimeItem(results[i]))
@@ -171,8 +187,11 @@ export class RecommendViewModel {
   }
 
   private async loadSeasonal(): Promise<void> {
+    this.seasonalNextOffset = HOME_SECTION_PAGE_SIZE
+    this.seasonalRemainingFinished = false
     const range = BangumiApi.getCurrentSeasonRange()
-    const results = await BangumiApi.searchSeasonalSubjects(range.start, range.end, 24, 0)
+    const results = await BangumiApi.searchSeasonalSubjects(range.start, range.end, HOME_SECTION_PAGE_SIZE, 0)
+    this.seasonalNextOffset = results.length
     const models: RecommendCardModel[] = []
     for (let i = 0; i < results.length; i++) {
       models.push(RecommendCardModel.fromAnimeItem(results[i]))
@@ -181,7 +200,10 @@ export class RecommendViewModel {
   }
 
   private async loadHighScore(): Promise<void> {
-    const results = await BangumiApi.searchHighScoreSubjects(24, 0)
+    this.highScoreNextOffset = HOME_SECTION_PAGE_SIZE
+    this.highScoreRemainingFinished = false
+    const results = await BangumiApi.searchHighScoreSubjects(HOME_SECTION_PAGE_SIZE, 0)
+    this.highScoreNextOffset = results.length
     const models: RecommendCardModel[] = []
     for (let i = 0; i < results.length; i++) {
       models.push(RecommendCardModel.fromAnimeItem(results[i]))
@@ -302,36 +324,117 @@ export class RecommendViewModel {
     loader: (offset: number) => Promise<AnimeItem[]>,
     onProgress?: (items: RecommendCardModel[]) => void,
     shouldContinue?: () => boolean,
-    sectionName: string = 'section'): Promise<void> {
-    let offset = HOME_SECTION_PAGE_SIZE
+    sectionName: string = 'section',
+    initialOffset: number = HOME_SECTION_PAGE_SIZE,
+    maxItems: number = 0): Promise<void> {
+    if (this.isRemainingFinished(sectionName)) {
+      return
+    }
+
+    if (maxItems > 0 && target.length >= maxItems) {
+      return
+    }
+
+    let offset = this.getRemainingOffset(sectionName, initialOffset)
+    let pageCount = 0
     try {
+      // Keep loading metadata until the source is exhausted. The old implementation
+      // used this loop, which prevents the horizontal rail from depending on a second
+      // edge gesture after every page. Images remain lazy-loaded by the card component.
       while (!shouldContinue || shouldContinue()) {
         const results = await loader(offset)
         if (shouldContinue && !shouldContinue()) {
           return
         }
-        const addedCount = this.appendUniqueModels(target, results)
+
+        const addedCount = this.appendUniqueModels(target, results, maxItems)
         if (addedCount > 0 && onProgress) {
           onProgress(this.copyList(target))
         }
-        if (results.length < HOME_SECTION_PAGE_SIZE || addedCount === 0) {
+
+        pageCount++
+        logger.info('loadRemainingSection: section=%{public}s offset=%{public}d added=%{public}d count=%{public}d',
+          sectionName, offset, addedCount, target.length)
+
+        if (results.length === 0 || addedCount === 0) {
+          this.markRemainingFinished(sectionName)
           break
         }
-        offset += HOME_SECTION_PAGE_SIZE
+
+        // The automatic prefetch limit is only a temporary budget. Once the
+        // user reaches the rail end, the next call can continue paging.
+        if (maxItems > 0 && target.length >= maxItems) {
+          break
+        }
+
+        // Use the actual response size. Some mirror endpoints return fewer items
+        // than requested while still having more data at the next offset.
+        offset += results.length
+        this.setRemainingOffset(sectionName, offset)
       }
-      logger.info('loadRemainingSection: section=%{public}s count=%{public}d', sectionName, target.length)
+      logger.info('loadRemainingSection complete: section=%{public}s pages=%{public}d count=%{public}d',
+        sectionName, pageCount, target.length)
     } catch (err) {
       logger.warn('loadRemainingSection failed for %{public}s', sectionName)
     }
   }
 
-  private appendUniqueModels(target: RecommendCardModel[], items: AnimeItem[]): number {
+  private getRemainingOffset(sectionName: string, initialOffset: number): number {
+    if (sectionName === 'trending') {
+      return this.trendingNextOffset
+    }
+    if (sectionName === 'seasonal') {
+      return this.seasonalNextOffset
+    }
+    if (sectionName === 'highScore') {
+      return this.highScoreNextOffset
+    }
+    return initialOffset
+  }
+
+  private setRemainingOffset(sectionName: string, nextOffset: number): void {
+    if (sectionName === 'trending') {
+      this.trendingNextOffset = nextOffset
+    } else if (sectionName === 'seasonal') {
+      this.seasonalNextOffset = nextOffset
+    } else if (sectionName === 'highScore') {
+      this.highScoreNextOffset = nextOffset
+    }
+  }
+
+  private isRemainingFinished(sectionName: string): boolean {
+    if (sectionName === 'trending') {
+      return this.trendingRemainingFinished
+    }
+    if (sectionName === 'seasonal') {
+      return this.seasonalRemainingFinished
+    }
+    if (sectionName === 'highScore') {
+      return this.highScoreRemainingFinished
+    }
+    return false
+  }
+
+  private markRemainingFinished(sectionName: string): void {
+    if (sectionName === 'trending') {
+      this.trendingRemainingFinished = true
+    } else if (sectionName === 'seasonal') {
+      this.seasonalRemainingFinished = true
+    } else if (sectionName === 'highScore') {
+      this.highScoreRemainingFinished = true
+    }
+  }
+
+  private appendUniqueModels(target: RecommendCardModel[], items: AnimeItem[], maxItems: number = 0): number {
     const seenKeys: Set<string> = new Set()
     for (let i = 0; i < target.length; i++) {
       seenKeys.add(this.getRecommendModelKey(target[i]))
     }
     let addedCount = 0
     for (let i = 0; i < items.length; i++) {
+      if (maxItems > 0 && target.length >= maxItems) {
+        break
+      }
       const model = RecommendCardModel.fromAnimeItem(items[i])
       const key = this.getRecommendModelKey(model)
       if (seenKeys.has(key)) {

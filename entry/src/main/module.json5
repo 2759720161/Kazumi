@@ -33,6 +33,9 @@
         "startWindowBackground": "$color:start_window_background",
         "orientation": "unspecified",
         "preferMultiWindowOrientation": "landscape_auto",
+        "backgroundModes": [
+          "dataTransfer"
+        ],
         "exported": true,
         "skills": [
           {
@@ -63,6 +66,9 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
+      },
+      {
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
       },
       {
         "name": "ohos.permission.ACCESS_NOTIFICATION_POLICY"

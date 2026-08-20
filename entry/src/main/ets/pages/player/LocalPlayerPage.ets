@@ -21,7 +21,10 @@ import { PlaybackSessionActions, PlaybackSessionStore } from '../../services/Pla
 import { router, window, PiPWindow, promptAction } from '@kit.ArkUI'
 import { KeyCode } from '@ohos.multimodalInput.keyCode'
 import { common } from '@kit.AbilityKit'
-import { getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
+import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
+import { CastEventCallbacks, CastMediaInfo, CastSessionManager } from '../../services/CastSessionManager'
+import { fileIo } from '@kit.CoreFileKit'
+import { media } from '@kit.MediaKit'
 import {
   createConfiguredImmersiveMaterial,
 } from '../../utils/ImmersiveMaterial'
@@ -64,24 +67,32 @@ export struct LocalPlayerPage {
   @State isPiPActive: boolean = false
   @State private videoWidth: number = 0
   @State private videoHeight: number = 0
+  @State private danmakuCanvasWidth: number = 0
+  @State private danmakuCanvasHeight: number = 0
+  @State private danmakuCanvasOffsetX: number = 0
+  @State private danmakuCanvasOffsetY: number = 0
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
+  @State playbackQueue: LocalVideoRecord[] = []
+  @State currentQueueIndex: number = -1
   @State screenBrightness: number = 0.5
   @State volume: number = 1.0
   private playerEngine: IPlayerEngine | null = null
   private xComponentController: XComponentController | null = null
+  private pendingQueueTargetUri: string = ''
+  private pendingQueueStartPositionMs: number = 0
+  private queueSwitchSawPreparing: boolean = false
   @State hasEngine: boolean = false
   private danmakuManager: DanmakuManager | null = null
   @State isDanmakuEnabled: boolean = true
-  @State showMoreMenu: boolean = false
-  @State localCompactMode: boolean = false
   @State showHud: boolean = false
   @State hudText: string = ''
   @State playbackErrorText: string = ''
   @State danmakuFileName: string = ''
   @State currentAspectMode: VideoAspectMode = VideoAspectMode.contain
   @State showAspectModePanel: boolean = false
+  @State showSpeedMenu: boolean = false
   @State showDanmakuSettingsPanel: boolean = false
   @State showDanmakuSettingsSheet: boolean = false
   @State showDanmakuManageSheet: boolean = false
@@ -106,8 +117,14 @@ export struct LocalPlayerPage {
   private historySeekMs: number = -1
   private lastKnownPositionMs: number = 0
   private videoFileSize: number = 0
+  private drmScheme: string = ''
+  private drmPluginName: string = ''
+  private drmOfflineKeyId: string = ''
   private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
   private fullscreenRestoreOrientation: window.Orientation = window.Orientation.UNSPECIFIED
+  private playerLayoutSyncTimer: number = -1
+  private fullscreenTransitionTimer: number = -1
+  private readonly FULLSCREEN_ROTATION_SETTLE_MS: number = 180
   private readonly AUTO_FULLSCREEN_SETTLE_MS: number = 900
   private autoFullscreenActive: boolean = false
   private autoFullscreenEnterMs: number = 0
@@ -117,6 +134,9 @@ export struct LocalPlayerPage {
   private isPageAlive: boolean = false
   private pipManager: PiPManager = PiPManager.getInstance()
   private playbackSessionStore: PlaybackSessionStore = PlaybackSessionStore.getInstance()
+  private castSessionManager: CastSessionManager = CastSessionManager.getInstance()
+  private localCastSourceFile: fileIo.File | null = null
+  private localCastSourceFileSize: number = 0
   private keepPlaybackForPiP: boolean = false
   private isRestoringFromPiP: boolean = false
   private isLeavingWithPiP: boolean = false
@@ -125,8 +145,8 @@ export struct LocalPlayerPage {
   private lastPlaybackSessionPlaying: boolean = false
   private lastPlaybackSessionPositionMs: number = -1
   private lastPlaybackSessionDurationMs: number = -1
+  private completionHandledForUrl: string = ''
   @State isAnimatingFullscreen: boolean = false
-  @State nonVideoOpacity: number = 1
   @State suppressControlAnimation: boolean = false
   @State hideBottomControlsForFullscreenTransition: boolean = false
 
@@ -156,6 +176,11 @@ export struct LocalPlayerPage {
       const danmakuOffsetMs = params['danmakuOffsetMs']
       const danmakuFormat = params['danmakuFormat']
       const danmakuCount = params['danmakuCount']
+      const drmScheme = params['drmScheme']
+      const drmPluginName = params['drmPluginName']
+      const drmOfflineKeyId = params['drmOfflineKeyId']
+      const playlistJson = params['playlistJson']
+      const queueIndex = params['queueIndex']
 
       if (typeof videoUri === 'string') this.videoUri = videoUri
       if (typeof videoFileName === 'string') this.videoFileName = videoFileName
@@ -171,13 +196,26 @@ export struct LocalPlayerPage {
       if (typeof danmakuOffsetMs === 'number') this.danmakuOffsetMs = danmakuOffsetMs
       if (typeof danmakuFormat === 'string') this.danmakuLoadedFormat = danmakuFormat
       if (typeof danmakuCount === 'number') this.danmakuLoadedCount = danmakuCount
+      if (typeof drmScheme === 'string') this.drmScheme = drmScheme
+      if (typeof drmPluginName === 'string') this.drmPluginName = drmPluginName
+      if (typeof drmOfflineKeyId === 'string') this.drmOfflineKeyId = drmOfflineKeyId
+      if (typeof playlistJson === 'string') {
+        this.playbackQueue = this.decodePlaybackQueue(playlistJson)
+      }
+      if (typeof queueIndex === 'number' && queueIndex >= 0 && queueIndex < this.playbackQueue.length) {
+        this.currentQueueIndex = queueIndex
+      }
     }
 
     if (this.videoUri.length > 0) {
+      this.ensurePlaybackQueueForCurrentVideo()
       const options = new PlaybackOptions()
       options.url = this.videoUri
       options.isLocalFile = true
       options.localFileSize = this.videoFileSize
+      options.drmScheme = this.drmScheme
+      options.drmPluginName = this.drmPluginName
+      options.drmOfflineKeyId = this.drmOfflineKeyId
       if (this.historySeekMs > 0) {
         options.startPositionMs = this.historySeekMs
         this.historySeekMs = -1
@@ -185,6 +223,8 @@ export struct LocalPlayerPage {
       }
       this.playbackOptions = options
       this.syncPlaybackSessionMedia()
+      this.initializeLocalCastSession()
+      this.enterFullscreenOnOpen()
     }
 
     this.startAutoHideTimer()
@@ -210,22 +250,25 @@ export struct LocalPlayerPage {
   aboutToDisappear(): void {
     AppStorage.setOrCreate('playerPageActive', false)
     this.setKeepScreenOn(false)
+    this.clearPlayerAspectSyncTimer()
+    this.clearFullscreenTransitionTimer()
     if (this.shouldKeepPlaybackForPiP()) {
       this.pauseAutoHideTimer()
       this.clearHudTimer()
       if (this.videoUri.length > 0) {
-        this.saveLocalHistory()
+        this.saveLocalHistory(false)
       }
       logger.info('LocalPlayerPage aboutToDisappear skipped release for PiP')
       return
     }
+    void this.stopLocalCastSession()
     releaseRetainedPlayerSession()
     this.playbackSessionStore.reset('local-player')
     this.isPageAlive = false
     this.pauseAutoHideTimer()
     this.clearHudTimer()
     if (this.videoUri.length > 0) {
-      this.saveLocalHistory()
+      this.saveLocalHistory(true)
     }
     this.stopPlaybackBeforeLeaving()
     if (this.danmakuManager !== null) {
@@ -257,7 +300,7 @@ export struct LocalPlayerPage {
       return
     }
     if (this.videoUri.length > 0) {
-      this.saveLocalHistory()
+      this.saveLocalHistory(true)
     }
     if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
       logger.info('LocalPlayerPage pause playback for app background')
@@ -366,6 +409,11 @@ export struct LocalPlayerPage {
     params['danmakuOffsetMs'] = this.danmakuOffsetMs
     params['danmakuFormat'] = this.danmakuLoadedFormat
     params['danmakuCount'] = this.danmakuLoadedCount
+    params['drmScheme'] = this.drmScheme
+    params['drmPluginName'] = this.drmPluginName
+    params['drmOfflineKeyId'] = this.drmOfflineKeyId
+    params['playlistJson'] = JSON.stringify(this.playbackQueue)
+    params['queueIndex'] = this.currentQueueIndex
     return params
   }
 
@@ -379,12 +427,179 @@ export struct LocalPlayerPage {
     cloned.streamMetadata = this.playbackOptions.streamMetadata
     cloned.isLocalFile = true
     cloned.localFileSize = this.playbackOptions.localFileSize
+    cloned.drmScheme = this.playbackOptions.drmScheme
+    cloned.drmPluginName = this.playbackOptions.drmPluginName
+    cloned.drmOfflineKeyId = this.playbackOptions.drmOfflineKeyId
+    cloned.drmMimeType = this.playbackOptions.drmMimeType
     const keys = Object.keys(this.playbackOptions.headers)
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i]
       cloned.headers[key] = this.playbackOptions.headers[key]
     }
     return cloned
+  }
+
+  private decodePlaybackQueue(raw: string): LocalVideoRecord[] {
+    const result: LocalVideoRecord[] = []
+    try {
+      const parsed = JSON.parse(raw) as Object[]
+      for (let i = 0; i < parsed.length; i++) {
+        const data = parsed[i] as Record<string, Object>
+        const item = new LocalVideoRecord()
+        const fileUri = data['fileUri']
+        if (typeof fileUri !== 'string' || fileUri.length === 0) {
+          continue
+        }
+        item.fileUri = fileUri
+        if (typeof data['fileName'] === 'string') item.fileName = data['fileName'] as string
+        if (typeof data['fileSize'] === 'number') item.fileSize = data['fileSize'] as number
+        if (typeof data['coverUri'] === 'string') item.coverUri = data['coverUri'] as string
+        if (typeof data['durationMs'] === 'number') item.durationMs = data['durationMs'] as number
+        if (typeof data['positionMs'] === 'number') item.positionMs = data['positionMs'] as number
+        if (typeof data['lastPlayedAt'] === 'number') item.lastPlayedAt = data['lastPlayedAt'] as number
+        if (typeof data['danmakuFileName'] === 'string') item.danmakuFileName = data['danmakuFileName'] as string
+        if (typeof data['danmakuUri'] === 'string') item.danmakuUri = data['danmakuUri'] as string
+        if (typeof data['danmakuOffsetMs'] === 'number') item.danmakuOffsetMs = data['danmakuOffsetMs'] as number
+        if (typeof data['danmakuFormat'] === 'string') item.danmakuFormat = data['danmakuFormat'] as string
+        if (typeof data['danmakuCount'] === 'number') item.danmakuCount = data['danmakuCount'] as number
+        if (typeof data['drmScheme'] === 'string') item.drmScheme = data['drmScheme'] as string
+        if (typeof data['drmPluginName'] === 'string') item.drmPluginName = data['drmPluginName'] as string
+        if (typeof data['drmOfflineKeyId'] === 'string') item.drmOfflineKeyId = data['drmOfflineKeyId'] as string
+        result.push(item)
+      }
+    } catch (err) {
+      logger.warn('解析播放队列失败: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+    return result
+  }
+
+  private ensurePlaybackQueueForCurrentVideo(): void {
+    if (this.playbackQueue.length === 0) {
+      const item = new LocalVideoRecord()
+      item.fileUri = this.videoUri
+      item.fileName = this.videoFileName
+      item.fileSize = this.videoFileSize
+      item.positionMs = this.historySeekMs > 0 ? this.historySeekMs : 0
+      this.playbackQueue = [item]
+      this.currentQueueIndex = 0
+      return
+    }
+    if (this.currentQueueIndex >= 0 && this.currentQueueIndex < this.playbackQueue.length &&
+      this.playbackQueue[this.currentQueueIndex].fileUri === this.videoUri) {
+      return
+    }
+    for (let i = 0; i < this.playbackQueue.length; i++) {
+      if (this.playbackQueue[i].fileUri === this.videoUri) {
+        this.currentQueueIndex = i
+        return
+      }
+    }
+    const item = new LocalVideoRecord()
+    item.fileUri = this.videoUri
+    item.fileName = this.videoFileName
+    item.fileSize = this.videoFileSize
+    item.positionMs = this.historySeekMs > 0 ? this.historySeekMs : 0
+    this.playbackQueue.push(item)
+    this.currentQueueIndex = this.playbackQueue.length - 1
+  }
+
+  private playPreviousQueueItem(): void {
+    if (this.currentQueueIndex <= 0) {
+      promptAction.showToast({ message: '已经是第一集了' })
+      return
+    }
+    this.playQueueItem(this.currentQueueIndex - 1, false)
+  }
+
+  private playNextQueueItem(autoPlay: boolean): void {
+    const nextIndex = this.currentQueueIndex + 1
+    if (nextIndex >= this.playbackQueue.length) {
+      if (!autoPlay) {
+        promptAction.showToast({ message: '已经是最后一集了' })
+      }
+      return
+    }
+    this.playQueueItem(nextIndex, autoPlay)
+  }
+
+  private async playQueueItem(index: number, autoPlay: boolean): Promise<void> {
+    if (index < 0 || index >= this.playbackQueue.length) {
+      return
+    }
+    const item = this.playbackQueue[index]
+    if (!await LocalFilePicker.ensureReadableUri(item.fileUri)) {
+      this.showHudText('视频暂时不可访问')
+      return
+    }
+
+    this.captureCurrentQueueProgress()
+    const startPositionMs = this.normalizeQueuePosition(item.positionMs, item.durationMs)
+    this.pendingQueueTargetUri = item.fileUri
+    this.pendingQueueStartPositionMs = startPositionMs
+    this.queueSwitchSawPreparing = false
+    this.currentQueueIndex = index
+    this.videoUri = item.fileUri
+    this.videoFileName = item.fileName
+    this.videoFileSize = item.fileSize
+    this.positionMs = 0
+    this.durationMs = 0
+    this.lastKnownPositionMs = startPositionMs
+    this.clearLivePlaybackPosition()
+    this.liveStartPositionMs = startPositionMs
+    this.playbackErrorText = ''
+    this.completionHandledForUrl = ''
+    this.drmScheme = item.drmScheme
+    this.drmPluginName = item.drmPluginName
+    this.drmOfflineKeyId = item.drmOfflineKeyId
+    this.clearDanmakuState()
+    this.danmakuFileName = item.danmakuFileName
+    this.danmakuUri = item.danmakuUri
+    this.danmakuOffsetMs = item.danmakuOffsetMs
+    this.danmakuLoadedFormat = item.danmakuFormat
+    this.danmakuLoadedCount = item.danmakuCount
+    if (this.danmakuFileName.length > 0 && this.danmakuUri.length > 0) {
+      this.restoreDanmakuFromHistory()
+    }
+
+    const options = new PlaybackOptions()
+    options.url = item.fileUri
+    options.isLocalFile = true
+    options.localFileSize = item.fileSize
+    options.startPositionMs = startPositionMs
+    options.drmScheme = item.drmScheme
+    options.drmPluginName = item.drmPluginName
+    options.drmOfflineKeyId = item.drmOfflineKeyId
+    this.playerEngine = null
+    this.hasEngine = false
+    this.playbackOptions = options
+    this.syncPlaybackSessionMedia()
+    void this.initializeLocalCastSession()
+    this.showHudText(autoPlay ? '正在播放下一项' : '已切换视频')
+  }
+
+  private normalizeQueuePosition(positionMs: number, durationMs: number): number {
+    if (positionMs <= 0 || durationMs <= 0) {
+      return Math.max(0, positionMs)
+    }
+    return positionMs >= durationMs * 0.995 || durationMs - positionMs <= 3000 ? 0 : positionMs
+  }
+
+  private captureCurrentQueueProgress(): void {
+    if (this.currentQueueIndex < 0 || this.currentQueueIndex >= this.playbackQueue.length ||
+      this.playbackQueue[this.currentQueueIndex].fileUri !== this.videoUri) {
+      return
+    }
+    const currentItem = this.playbackQueue[this.currentQueueIndex]
+    let currentPositionMs = this.positionMs
+    let currentDurationMs = this.durationMs
+    if (this.playerEngine !== null) {
+      const state = this.playerEngine.getState()
+      if (state.positionMs >= 0) currentPositionMs = state.positionMs
+      if (state.durationMs > 0) currentDurationMs = state.durationMs
+    }
+    currentItem.positionMs = Math.max(0, currentPositionMs)
+    currentItem.durationMs = Math.max(0, currentDurationMs)
+    this.saveLocalHistory()
   }
 
   build() {
@@ -403,26 +618,11 @@ export struct LocalPlayerPage {
   PlayerState(): void {
     Stack() {
       Column() {
-        Column()
-          .width('100%')
-          .height(this.isFullScreen ? 0 : getEffectiveTopSafeHeight(this.topSafeHeight))
-          .opacity(this.nonVideoOpacity)
-          .backgroundColor($r('app.color.page_background_media'))
-
         this.VideoSection()
-
-        Column() {
-          this.LocalInfoSection()
-        }
-          .width('100%')
-          .height(this.isFullScreen ? 0 : undefined)
-          .layoutWeight(this.isFullScreen ? 0 : 1)
-          .opacity(this.nonVideoOpacity)
-          .clip(true)
       }
       .width('100%')
       .height('100%')
-      .backgroundColor(this.isFullScreen ? Color.Black : $r('app.color.page_background_media'))
+      .backgroundColor(Color.Black)
 
       if (this.showDanmakuManageSheet) {
         this.DanmakuManageOverlay()
@@ -467,8 +667,7 @@ export struct LocalPlayerPage {
       this.VideoLayerContent()
     }
     .width('100%')
-    .aspectRatio(this.isFullScreen ? undefined : 16 / 9)
-    .layoutWeight(this.isFullScreen ? 1 : 0)
+    .layoutWeight(1)
     .backgroundColor(Color.Black)
     .clip(true)
     .renderFit(RenderFit.RESIZE_FILL)
@@ -511,6 +710,12 @@ export struct LocalPlayerPage {
           },
           onSurfaceReady: (controller: XComponentController) => {
             this.xComponentController = controller
+          },
+          onVideoLayoutChange: (width: number, height: number, offsetX: number, offsetY: number) => {
+            this.danmakuCanvasWidth = width
+            this.danmakuCanvasHeight = height
+            this.danmakuCanvasOffsetX = offsetX
+            this.danmakuCanvasOffsetY = offsetY
           }
       })
 
@@ -527,8 +732,9 @@ export struct LocalPlayerPage {
           }
         }
       })
-        .width('100%')
-        .height('100%')
+        .width(this.danmakuCanvasWidth > 0 ? this.danmakuCanvasWidth : '100%')
+        .height(this.danmakuCanvasHeight > 0 ? this.danmakuCanvasHeight : '100%')
+        .position({ x: this.danmakuCanvasOffsetX, y: this.danmakuCanvasOffsetY })
         .zIndex(2)
     } else {
       Column() {
@@ -636,18 +842,17 @@ export struct LocalPlayerPage {
       .zIndex(6)
       .hitTestBehavior(HitTestMode.Transparent)
 
-      if (this.showMoreMenu) {
-        this.PlayerMoreMenu()
-      }
-
       if (this.showAspectModePanel) {
         this.AspectModePanelOverlay()
+      }
+      if (this.showSpeedMenu) {
+        this.SpeedMenuOverlay()
       }
     }
     .width('100%')
     .height('100%')
-    .zIndex(6)
-    .hitTestBehavior(this.isControlVisible ? HitTestMode.Transparent : HitTestMode.None)
+      .zIndex(6)
+      .hitTestBehavior(this.isControlVisible ? HitTestMode.Transparent : HitTestMode.None)
   }
 
   @Builder
@@ -670,47 +875,26 @@ export struct LocalPlayerPage {
         }
       })
 
-      if (this.isFullScreen) {
-        Text(this.videoFileName.length > 0 ? this.videoFileName : '本地播放')
-          .fontSize(17)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_on_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-          .margin({ left: 10, right: 10 })
-      } else {
-        Blank()
-          .layoutWeight(1)
-      }
+      Text(this.videoFileName.length > 0 ? this.videoFileName : '本地播放')
+        .fontSize(15)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_on_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+        .margin({ left: 10, right: 10 })
 
-      if (this.isFullScreen) {
-        this.TopSymbolButton($r('sys.symbol.gobackward_15'), '后退 15 秒', () => {
-          this.seekByFifteenSeconds(false)
-        })
+      this.ProjectionToolButton()
+      this.PiPToolButton()
 
-        this.TopSymbolButton($r('sys.symbol.goforward_15'), '前进 15 秒', () => {
-          this.seekByFifteenSeconds(true)
-        })
-      }
-
-      this.TopSymbolButton($r('sys.symbol.doc_text'), '弹幕', () => {
-        this.handleDanmakuPrimaryAction()
-      })
-
-      this.TopSymbolButton(this.showMoreMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
-        this.showMoreMenu ? '收起' : '更多', () => {
-        this.showMoreMenu = !this.showMoreMenu
-        if (this.showMoreMenu) {
-          this.pauseAutoHideTimer()
-        } else {
-          this.startAutoHideTimer()
-        }
+      this.TopSymbolButton($r('sys.symbol.rectangle_4_group_1'), '视频比例', () => {
+        this.showAspectModePanel = true
+        this.pauseAutoHideTimer()
       })
     }
     .width('100%')
-    .height(this.isFullScreen ? this.topSafeHeight + 68 : 64)
-    .padding({ left: 10, right: 14, top: this.isFullScreen ? this.topSafeHeight + 8 : 8, bottom: 8 })
+    .height(this.topSafeHeight + 68)
+    .padding({ left: 10, right: 14, top: this.topSafeHeight + 8, bottom: 8 })
     .linearGradient({
       direction: GradientDirection.Bottom,
       colors: [['#AA000000', 0.0], ['#5C000000', 0.55], ['#00000000', 1.0]]
@@ -747,20 +931,24 @@ export struct LocalPlayerPage {
 
   @Builder
   private LandscapeProgressRow() {
-    Row() {
-      Text(this.formatTime(this.positionMs))
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_on_primary'))
-      this.ProgressSlider()
-      Text(this.formatTime(this.durationMs))
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_on_primary'))
+    Column({ space: 2 }) {
+      this.ProgressUtilityRow()
+      Row() {
+        Text(this.formatTime(this.positionMs))
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_on_primary'))
+        this.ProgressSlider()
+        Text(this.formatTime(this.durationMs))
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_on_primary'))
+      }
+      .width('100%')
+      .height(28)
     }
     .width('100%')
-    .height(28)
-    .padding({ left: 20, right: 20 })
+    .padding({ left: 20, right: 20, bottom: 2 })
   }
 
   @Builder
@@ -805,6 +993,8 @@ export struct LocalPlayerPage {
   @Builder
   private PortraitControlRow() {
     Column() {
+      this.ProgressUtilityRow()
+
       Row() {
         Text(this.formatTime(this.positionMs))
           .fontSize(12)
@@ -820,85 +1010,105 @@ export struct LocalPlayerPage {
       .height(24)
       .padding({ left: 14, right: 14 })
 
-      Row() {
-        if (this.isPlaying) {
-          this.SymbolToolButton($r('sys.symbol.pause_fill'), '暂停', () => {
-            this.togglePlayPause()
-          })
-        } else {
-          this.SymbolToolButton($r('sys.symbol.play_fill'), '播放', () => {
-            this.togglePlayPause()
-          })
-        }
-
-        Blank()
-          .layoutWeight(1)
-
-        this.DanmakuToggleButton()
-
-        this.SpeedToolButton()
-
-        this.PiPToolButton()
-
-        this.SymbolToolButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '全屏', () => {
-          this.toggleFullScreen()
-        })
-      }
-      .width('100%')
-      .height(50)
-      .padding({ left: 10, right: 10, bottom: 8 })
-      .alignItems(VerticalAlign.Center)
+      this.PrimaryPlaybackControls()
     }
     .width('100%')
-    .padding({ bottom: this.bottomSafeHeight > 0 ? this.bottomSafeHeight : 0 })
+    .padding({ bottom: (this.bottomSafeHeight > 0 ? this.bottomSafeHeight : 0) + 16 })
+  }
+
+  @Builder
+  private ProgressUtilityRow(): void {
+    Row() {
+      Blank()
+        .layoutWeight(1)
+      Row({ space: 2 }) {
+        this.UtilityDanmakuToggleButton()
+        this.UtilitySymbolButton($r('sys.symbol.barrage_setting'), '弹幕设置', () => {
+          this.openDanmakuSettings()
+        })
+      }
+    }
+    .width('100%')
+    .height(32)
+    .padding({ left: 2, right: 2 })
   }
 
   @Builder
   private LandscapeControlRow() {
-    Row({ space: 8 }) {
-      if (this.isPlaying) {
-        this.SymbolToolButton($r('sys.symbol.pause_fill'), '暂停', () => {
-          this.togglePlayPause()
-        })
-      } else {
-        this.SymbolToolButton($r('sys.symbol.play_fill'), '播放', () => {
-          this.togglePlayPause()
-        })
-      }
-
-      this.DanmakuToggleButton()
-
-      this.SymbolToolButton($r('sys.symbol.barrage_setting'), '弹幕设置', () => {
-        this.openDanmakuSettings()
-      })
-
-      Blank()
-        .layoutWeight(1)
-
-      this.SpeedToolButton()
-
-      this.PiPToolButton()
-
-      this.SymbolToolButton(this.isFullScreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left') :
-        $r('sys.symbol.arrow_up_left_and_arrow_down_right'), this.isFullScreen ? '退出全屏' : '全屏', () => {
-        this.toggleFullScreen()
-      })
+    Column() {
+      this.PrimaryPlaybackControls()
     }
     .height(this.bottomSafeHeight + 62)
     .width('100%')
     .padding({ left: 20, right: 20, top: 8, bottom: this.bottomSafeHeight + 12 })
-    .alignItems(VerticalAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  private PrimaryPlaybackControls(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Row({ space: 6 }) {
+        this.SeekControlButton(false)
+        this.TopSymbolButton($r('sys.symbol.backward_end_fill'), '上一集', () => {
+          this.playPreviousQueueItem()
+        })
+
+        if (this.isPlaying) {
+          this.TopSymbolButton($r('sys.symbol.pause_fill'), '暂停', () => {
+            this.togglePlayPause()
+          })
+        } else {
+          this.TopSymbolButton($r('sys.symbol.play_fill'), '播放', () => {
+            this.togglePlayPause()
+          })
+        }
+
+        this.TopSymbolButton($r('sys.symbol.forward_end_fill'), '下一集', () => {
+          this.playNextQueueItem(false)
+        })
+        this.SeekControlButton(true)
+      }
+      .height(44)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
+
+      Row() {
+        if (!this.isFullScreen) {
+          this.SpeedToolButton()
+        }
+        Blank()
+          .layoutWeight(1)
+        if (this.isFullScreen) {
+          this.SpeedToolButton()
+        }
+        this.SymbolToolButton(this.isFullScreen ? $r('sys.symbol.arrow_down_right_and_arrow_up_left') :
+          $r('sys.symbol.arrow_up_left_and_arrow_down_right'), this.isFullScreen ? '退出全屏' : '全屏', () => {
+          this.toggleFullScreen()
+        })
+      }
+      .width('100%')
+      .height(44)
+      .justifyContent(FlexAlign.End)
+      .alignItems(VerticalAlign.Center)
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+    .width('100%')
+    .height(50)
+    .padding({ left: 10, right: 10, bottom: 8 })
+  }
+
+  @Builder
+  private SeekControlButton(forward: boolean): void {
+    this.TopSymbolButton(forward ? $r('sys.symbol.goforward_15') : $r('sys.symbol.gobackward_15'),
+      forward ? '前进 15 秒' : '后退 15 秒', () => {
+      this.seekByFifteenSeconds(forward)
+    })
   }
 
   @Builder
   private SpeedToolButton() {
     Row() {
-      Text(this.speedLabel)
-        .fontSize(14)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_on_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      this.CurrentSpeedSymbol()
     }
     .width(44)
     .height(40)
@@ -907,7 +1117,96 @@ export struct LocalPlayerPage {
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .onClick(() => {
-      this.nextSpeed()
+      if (!this.isPlayerControlActionAllowed()) {
+        return
+      }
+      if (this.showSpeedMenu) {
+        this.closeSpeedMenu()
+      } else {
+        this.openSpeedMenu()
+      }
+    })
+  }
+
+  @Builder
+  private CurrentSpeedSymbol(): void {
+    if (this.speed === 0.5) {
+      SymbolGlyph($r('sys.symbol.speed_50percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (this.speed === 0.75) {
+      SymbolGlyph($r('sys.symbol.speed_75percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (this.speed === 1.25) {
+      SymbolGlyph($r('sys.symbol.speed_125percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (this.speed === 1.5) {
+      SymbolGlyph($r('sys.symbol.speed_150percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (this.speed === 2.0) {
+      SymbolGlyph($r('sys.symbol.speed_200percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (this.speed === 3.0) {
+      Text('3×')
+        .fontSize(14)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_on_primary'))
+    } else {
+      SymbolGlyph($r('sys.symbol.speed_100percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    }
+  }
+
+  @Builder
+  private UtilitySymbolButton(symbol: Resource, accessibilityLabel: string, action: () => void): void {
+    Row() {
+      SymbolGlyph(symbol)
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    }
+    .width(36)
+    .height(30)
+    .borderRadius(15)
+    .backgroundColor('#00000000')
+    .border({ width: 0, color: '#00000000' })
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      if (!this.isPlayerControlActionAllowed()) {
+        return
+      }
+      action()
+      this.showControlsWithAutoHide()
+    })
+  }
+
+  @Builder
+  private UtilityDanmakuToggleButton(): void {
+    Row() {
+      SymbolGlyph(this.isDanmakuEnabled ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off'))
+        .fontSize(22)
+        .renderingStrategy(this.isDanmakuEnabled ? SymbolRenderingStrategy.MULTIPLE_COLOR : SymbolRenderingStrategy.SINGLE)
+        .fontColor(this.isDanmakuEnabled ?
+          ['#F2FFFFFF', $r('app.color.accent_blue'), $r('app.color.accent_blue')] :
+          ['#F2FFFFFF'])
+    }
+    .width(36)
+    .height(30)
+    .borderRadius(15)
+    .backgroundColor('#00000000')
+    .border({ width: 0, color: '#00000000' })
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      if (!this.isPlayerControlActionAllowed()) {
+        return
+      }
+      this.toggleDanmaku()
       this.showControlsWithAutoHide()
     })
   }
@@ -933,23 +1232,55 @@ export struct LocalPlayerPage {
   }
 
   @Builder
+  private ProjectionToolButton() {
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph($r('sys.symbol.wireless_projection'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+      // AVCastPicker owns the system device picker. Keep the requested
+      // wireless projection symbol as the visible button surface.
+      AVCastPicker({
+        normalColor: '#00FFFFFF',
+        activeColor: '#00FFFFFF',
+        sessionType: 'video',
+        onStateChange: (state: AVCastPickerState) => {
+          if (state === AVCastPickerState.STATE_APPEARING) {
+            this.pauseAutoHideTimer()
+            this.syncCastMediaInfo()
+          } else if (state === AVCastPickerState.STATE_DISAPPEARING) {
+            this.showControlsWithAutoHide()
+          }
+        }
+      })
+        .width(44)
+        .height(44)
+        .opacity(0.01)
+    }
+    .width(44)
+    .height(44)
+    .borderRadius(22)
+  }
+
+  @Builder
   private PiPToolButton() {
     if (PiPManager.isPiPSupported() && this.hasEngine) {
       Row() {
-        Image($r('app.media.ic_pip'))
-          .draggable(false)
-          .width(22)
-          .height(22)
+        SymbolGlyph($r('sys.symbol.smal_window_playback'))
+          .fontSize(22)
+          .fontColor([$r('app.color.text_on_primary')])
       }
       .width(44)
-      .height(40)
-      .borderRadius(20)
+      .height(44)
+      .borderRadius(22)
       .backgroundColor('#00000000')
       .border({ width: 0, color: '#00000000' })
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .onClick(() => {
-        this.leavePlayerWithPiP()
+        if (!this.isPlayerControlActionAllowed()) {
+          return
+        }
+        this.startPiPFromControl()
         this.showControlsWithAutoHide()
       })
     }
@@ -1064,208 +1395,6 @@ export struct LocalPlayerPage {
   }
 
   @Builder
-  private LocalInfoSection() {
-    Column() {
-      Text(this.videoFileName.length > 0 ? this.videoFileName : '本地播放')
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_title'))
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-
-      Text(this.localCompactMode ? this.buildLocalCompactSummaryText() : this.buildLocalPlaybackSummaryText())
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .margin({ top: 6 })
-
-      if (!this.localCompactMode) {
-        this.LocalDanmakuStatusRow()
-
-        Column({ space: 8 }) {
-          Row({ space: 8 }) {
-            this.LocalActionButton($r('sys.symbol.doc_text'), this.danmakuFileName.length > 0 ? '更换弹幕' : '加载弹幕',
-              this.danmakuFileName.length > 0 ? '已加载 ' + this.danmakuLoadedCount + ' 条' : 'XML / JSON / ASS',
-              this.danmakuFileName.length > 0, () => {
-                this.pickAndLoadLocalDanmaku()
-              })
-
-            this.LocalActionButton($r('sys.symbol.barrage_setting'), '弹幕设置',
-              '显示密度、字号等', false, () => {
-                this.openDanmakuSettings()
-              })
-          }
-          .width('100%')
-
-          Row({ space: 8 }) {
-            this.LocalActionButton($r('sys.symbol.clock'), '时间校准',
-              this.danmakuFileName.length > 0 ? this.formatOffset(this.danmakuOffsetMs) : '先加载弹幕',
-              this.danmakuFileName.length > 0 && this.danmakuOffsetMs !== 0, () => {
-                if (this.danmakuFileName.length > 0) {
-                  this.showDanmakuOffsetPanel = true
-                } else {
-                  this.handleDanmakuPrimaryAction()
-                }
-              })
-
-            this.LocalActionButton($r('sys.symbol.folder'), '更换视频', '重新选择文件', false, () => {
-              this.pickVideoFile()
-            })
-          }
-          .width('100%')
-        }
-        .width('100%')
-        .margin({ top: 12 })
-      }
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: this.bottomSafeHeight + 16 })
-    .backgroundColor($r('app.color.page_background_media'))
-  }
-
-  @Builder
-  private LocalDanmakuStatusRow(): void {
-    Row({ space: 8 }) {
-      SymbolGlyph(this.danmakuFileName.length > 0 ? $r('sys.symbol.barrage_on') : $r('sys.symbol.barrage_off'))
-        .fontSize(17)
-        .fontColor([this.danmakuFileName.length > 0 ? $r('app.color.accent_blue') : $r('sys.color.icon_secondary')])
-      Text(this.buildCurrentDanmakuText())
-        .fontSize(12)
-        .fontColor(this.danmakuFileName.length > 0 ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.button_ghost_bg'))
-    .alignItems(VerticalAlign.Center)
-    .margin({ top: 12 })
-    .onClick(() => {
-      this.handleDanmakuPrimaryAction()
-    })
-  }
-
-  @Builder
-  private LocalActionButton(symbol: Resource, title: string, subtitle: string, highlighted: boolean, action: () => void): void {
-    Row({ space: 10 }) {
-      Stack() {
-        Circle()
-          .width(34)
-          .height(34)
-          .fill(highlighted ? $r('app.color.accent_blue') : $r('app.color.button_ghost_bg'))
-          .opacity(highlighted ? 0.18 : 1)
-        SymbolGlyph(symbol)
-          .fontSize(18)
-          .fontColor([highlighted ? $r('app.color.accent_blue') : $r('sys.color.icon_secondary')])
-      }
-      .width(36)
-      .height(36)
-
-      Column() {
-        Text(title)
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(subtitle)
-          .fontSize(11)
-          .fontColor($r('app.color.text_hint'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 2 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-    }
-    .layoutWeight(1)
-    .height(58)
-    .padding({ left: 10, right: 10 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .alignItems(VerticalAlign.Center)
-    .onClick(() => {
-      action()
-    })
-  }
-
-  @Builder
-  private PlayerMoreMenu() {
-    Stack({ alignContent: Alignment.TopEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor($r('app.color.color_transparent'))
-        .hitTestBehavior(HitTestMode.Default)
-        .onClick(() => {
-          this.showMoreMenu = false
-        })
-
-      Column() {
-        Scroll() {
-          Column() {
-            this.MoreMenuItem(this.isDanmakuEnabled ? '关闭弹幕' : '开启弹幕', () => {
-              this.toggleDanmaku()
-              this.showMoreMenu = false
-            })
-            this.MoreMenuItem('弹幕', () => {
-              this.handleDanmakuPrimaryAction()
-              this.showMoreMenu = false
-            })
-            this.MoreMenuItem('弹幕设置', () => {
-              this.openDanmakuSettings()
-              this.showMoreMenu = false
-            })
-            if (this.danmakuFileName.length > 0) {
-              this.MoreMenuItem('弹幕时间校准', () => {
-                this.showDanmakuOffsetPanel = true
-                this.showMoreMenu = false
-              })
-            }
-            this.MoreMenuItem('视频比例', () => {
-              this.showAspectModePanel = true
-            })
-            this.MoreMenuItem('倍速', () => {
-              this.nextSpeed()
-              this.showMoreMenu = false
-            })
-            this.MoreMenuItem(this.localCompactMode ? '关闭简洁模式' : '开启简洁模式', () => {
-              this.localCompactMode = !this.localCompactMode
-              this.showMoreMenu = false
-            })
-          }
-          .width('100%')
-        }
-        .width('100%')
-        .height(this.getMoreMenuHeight())
-        .scrollable(ScrollDirection.Vertical)
-        .edgeEffect(EdgeEffect.Spring)
-        .hitTestBehavior(HitTestMode.Default)
-      }
-      .width(176)
-      .padding({ top: 8, bottom: 8 })
-      .borderRadius(16)
-      .backgroundColor($r('app.color.category_menu_surface'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .systemMaterial(createConfiguredImmersiveMaterial())
-      .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
-      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
-      .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
-      .hitTestBehavior(HitTestMode.Default)
-    }
-    .width('100%')
-    .height('100%')
-    .zIndex(8)
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
-  }
-
-  @Builder
   private AspectModePanelOverlay() {
     Stack({ alignContent: Alignment.TopEnd }) {
       Column()
@@ -1281,7 +1410,6 @@ export struct LocalPlayerPage {
         onSelectMode: (mode: VideoAspectMode) => {
           this.applyAspectMode(mode)
           this.showAspectModePanel = false
-          this.showMoreMenu = false
         }
       })
         .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
@@ -1293,33 +1421,109 @@ export struct LocalPlayerPage {
   }
 
   @Builder
-  private MoreMenuItem(label: string, action: () => void) {
-    Row() {
-      Text(label)
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
+  private SpeedMenuOverlay() {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.color_transparent'))
+        .hitTestBehavior(HitTestMode.Default)
+        .onClick(() => {
+          this.closeSpeedMenu()
+        })
+
+      Column() {
+        Scroll() {
+          Column() {
+            this.SpeedMenuItem(3.0)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(2.0)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(1.75)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(1.5)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(1.25)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(1.0)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(0.75)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(0.5)
+            this.SpeedMenuDivider()
+            this.SpeedMenuItem(0.25)
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .height(364)
+        .scrollable(ScrollDirection.Vertical)
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Off)
+        .hitTestBehavior(HitTestMode.Default)
+      }
+      .width(104)
+      .padding({ top: 8, bottom: 8 })
+      .borderRadius(16)
+      .backgroundColor($r('app.color.speed_menu_surface'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+      .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
+      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
+      .margin({ right: 12, bottom: this.isFullScreen ? this.bottomSafeHeight + 74 : this.bottomSafeHeight + 66 })
+      .hitTestBehavior(HitTestMode.Default)
     }
     .width('100%')
-    .height(40)
-    .padding({ left: 14, right: 14 })
-    .onClick(() => {
-      action()
-    })
+    .height('100%')
+    .zIndex(10)
+    .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
   }
 
-  private getMoreMenuHeight(): number {
-    if (this.isFullScreen) {
-      return 296
+  @Builder
+  private SpeedMenuItem(value: number) {
+    Row() {
+      Text(this.formatPlaybackSpeed(value))
+        .fontSize(15)
+        .fontWeight(Math.abs(this.speed - value) < 0.01 ? FontWeight.Bold : FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+
+      if (Math.abs(this.speed - value) < 0.01) {
+        SymbolGlyph($r('sys.symbol.checkmark'))
+          .fontSize(18)
+          .fontColor([$r('sys.color.brand')])
+      }
     }
-    return 128
+      .width('100%')
+      .height(40)
+      .padding({ left: 14, right: 14 })
+      .borderRadius(8)
+      .backgroundColor(Color.Transparent)
+      .onClick(() => {
+        this.setPlaybackSpeed(value)
+        this.closeSpeedMenu()
+      })
+  }
+
+  @Builder
+  private SpeedMenuDivider() {
+    Divider()
+      .strokeWidth(0.5)
+      .color($r('app.color.category_menu_divider'))
+      .margin({ left: 14, right: 14 })
+  }
+
+  private openSpeedMenu(): void {
+    this.showSpeedMenu = true
+    this.pauseAutoHideTimer()
+  }
+
+  private closeSpeedMenu(): void {
+    this.showSpeedMenu = false
+    this.showControlsWithAutoHide()
   }
 
   private shouldDisablePlayerGestures(): boolean {
-    return this.showMoreMenu || this.showAspectModePanel || this.showDanmakuSettingsPanel ||
+    return this.showSpeedMenu || this.showAspectModePanel || this.showDanmakuSettingsPanel ||
       this.showDanmakuSettingsSheet || this.showDanmakuManageSheet || this.showDanmakuLoadDialog ||
       this.showDanmakuOffsetPanel
   }
@@ -1645,6 +1849,9 @@ export struct LocalPlayerPage {
         state.stateName, this.liveStartPositionMs)
       return
     }
+    if (this.shouldIgnorePendingQueueSwitchState(state)) {
+      return
+    }
     this.isPlaying = state.playing
     this.syncKeepScreenOnWithPlayback()
     this.positionMs = state.positionMs
@@ -1658,7 +1865,7 @@ export struct LocalPlayerPage {
     this.durationMs = state.durationMs
     this.volume = state.volume
     this.speed = state.speed
-    this.speedLabel = this.speed.toFixed(this.speed % 1 === 0 ? 0 : 2) + 'x'
+    this.speedLabel = this.formatPlaybackSpeed(this.speed)
     if (this.shouldSyncPlaybackSessionState(state)) {
       this.playbackSessionStore.updatePlayerState(state, 'local-player')
     }
@@ -1697,10 +1904,15 @@ export struct LocalPlayerPage {
 
   private togglePlayPause(): void {
     if (this.hasEngine && this.playerEngine !== null) {
-      if (this.isPlaying) {
+      const nextPlaying = !this.isPlaying
+      this.isPlaying = nextPlaying
+      this.syncKeepScreenOnWithPlayback()
+      if (!nextPlaying) {
         this.playerEngine.pause()
+        void this.castSessionManager.sendPause()
       } else {
         this.playerEngine.play()
+        void this.castSessionManager.sendPlay()
       }
     }
   }
@@ -1794,6 +2006,36 @@ export struct LocalPlayerPage {
       state.stateName === 'playing'
   }
 
+  private shouldIgnorePendingQueueSwitchState(state: PlayerState): boolean {
+    if (this.pendingQueueTargetUri.length === 0) {
+      return false
+    }
+    if (this.pendingQueueTargetUri !== this.videoUri) {
+      this.pendingQueueTargetUri = ''
+      this.pendingQueueStartPositionMs = 0
+      this.queueSwitchSawPreparing = false
+      return false
+    }
+    if (state.stateName === 'creating' || state.stateName === 'initialized' ||
+      state.stateName === 'preparing' || state.stateName === 'prepared') {
+      this.queueSwitchSawPreparing = true
+      this.positionMs = this.pendingQueueStartPositionMs
+      this.durationMs = 0
+      return true
+    }
+    if (!this.queueSwitchSawPreparing) {
+      return true
+    }
+    if (state.stateName === 'playing' || state.stateName === 'paused' ||
+      state.stateName === 'completed' || state.stateName === 'error') {
+      this.pendingQueueTargetUri = ''
+      this.pendingQueueStartPositionMs = 0
+      this.queueSwitchSawPreparing = false
+      return false
+    }
+    return true
+  }
+
   private cacheLivePlaybackPosition(positionMs: number): void {
     const targetUrl = this.playbackOptions.url.length > 0 ? this.playbackOptions.url : this.videoUri
     if (targetUrl.length === 0 || positionMs <= 0) {
@@ -1861,6 +2103,7 @@ export struct LocalPlayerPage {
     if (this.hasEngine && this.playerEngine !== null) {
       this.playerEngine.seek(positionMs)
     }
+    void this.castSessionManager.sendSeek(positionMs)
   }
 
   private toggleDanmaku(): void {
@@ -1904,12 +2147,16 @@ export struct LocalPlayerPage {
     return this.isControlVisible && !this.hideBottomControlsForFullscreenTransition
   }
 
+  private isPlayerControlActionAllowed(): boolean {
+    return this.isControlVisible && !this.hideBottomControlsForFullscreenTransition
+  }
+
   private prepareFullscreenControlTransition(): void {
     this.suppressControlAnimation = true
     this.hideBottomControlsForFullscreenTransition = true
     this.isControlVisible = true
-    this.showMoreMenu = false
     this.showAspectModePanel = false
+    this.showSpeedMenu = false
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
     this.pauseAutoHideTimer()
@@ -1919,28 +2166,66 @@ export struct LocalPlayerPage {
     this.isAnimatingFullscreen = false
     this.hideBottomControlsForFullscreenTransition = false
     this.showControlsWithAutoHide()
+    this.schedulePlayerAspectSync()
     setTimeout(() => {
       this.suppressControlAnimation = false
     }, 80)
+  }
+
+  /**
+   * 全屏切换只交给系统窗口旋转完成几何变化，ArkUI 仅负责一次收尾，避免出现两段动画。
+   */
+  private runFullscreenOneShotTransition(fullScreen: boolean, lockLandscape: boolean): void {
+    this.clearFullscreenTransitionTimer()
+    this.isFullScreen = fullScreen
+    this.setFullScreenMode(fullScreen, lockLandscape)
+    logger.info('Fullscreen one-shot rotation started: target=%{public}s', String(fullScreen))
+    this.fullscreenTransitionTimer = setTimeout(() => {
+      this.fullscreenTransitionTimer = -1
+      if (!this.isPageAlive) {
+        return
+      }
+      this.finishFullscreenControlTransition()
+      logger.info('Fullscreen one-shot rotation settled: target=%{public}s', String(fullScreen))
+    }, this.FULLSCREEN_ROTATION_SETTLE_MS)
+  }
+
+  private clearFullscreenTransitionTimer(): void {
+    if (this.fullscreenTransitionTimer >= 0) {
+      clearTimeout(this.fullscreenTransitionTimer)
+      this.fullscreenTransitionTimer = -1
+    }
+  }
+
+  private schedulePlayerAspectSync(): void {
+    if (this.playerLayoutSyncTimer >= 0) {
+      clearTimeout(this.playerLayoutSyncTimer)
+      this.playerLayoutSyncTimer = -1
+    }
+    this.playerLayoutSyncTimer = setTimeout(() => {
+      this.playerLayoutSyncTimer = -1
+      if (!this.isPageAlive || !this.hasEngine || this.playerEngine === null) {
+        return
+      }
+      this.playerEngine.setAspectMode(this.currentAspectMode)
+      logger.info('布局稳定后已同步播放器画面比例: %{public}s', String(this.currentAspectMode))
+    }, 180)
+  }
+
+  private clearPlayerAspectSyncTimer(): void {
+    if (this.playerLayoutSyncTimer >= 0) {
+      clearTimeout(this.playerLayoutSyncTimer)
+      this.playerLayoutSyncTimer = -1
+    }
   }
 
   private getControlAnimationDuration(): number {
     return this.suppressControlAnimation ? 0 : 260
   }
 
-  private nextSpeed(): void {
-    const speeds: number[] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-    let currentIndex = 0
-    for (let i = 0; i < speeds.length; i++) {
-      if (Math.abs(this.speed - speeds[i]) < 0.01) {
-        currentIndex = i
-        break
-      }
-    }
-    const nextIndex = (currentIndex + 1) % speeds.length
-    const newSpeed = speeds[nextIndex]
+  private setPlaybackSpeed(newSpeed: number): void {
     this.speed = newSpeed
-    this.speedLabel = newSpeed % 1 === 0 ? newSpeed.toFixed(0) + 'x' : newSpeed.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + 'x'
+    this.speedLabel = this.formatPlaybackSpeed(newSpeed)
     if (this.hasEngine && this.playerEngine !== null) {
       this.playerEngine.setSpeed(newSpeed)
     }
@@ -1950,6 +2235,10 @@ export struct LocalPlayerPage {
         renderer.setPlaybackSpeed(newSpeed)
       }
     }
+  }
+
+  private formatPlaybackSpeed(value: number): string {
+    return value % 1 === 0 ? value.toFixed(0) + 'x' : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + 'x'
   }
 
   private async startPiP(): Promise<boolean> {
@@ -1963,6 +2252,10 @@ export struct LocalPlayerPage {
     if (this.isFullScreen) {
       this.toggleFullScreen()
       await new Promise<void>((resolve) => setTimeout(resolve, 400))
+      if (this.isFullScreen || this.isAnimatingFullscreen) {
+        logger.warn('PiP: fullscreen exit did not settle before creating PiP')
+        return false
+      }
     }
     this.pauseAutoHideTimer()
     const context = getContext(this) as common.UIAbilityContext
@@ -1985,6 +2278,17 @@ export struct LocalPlayerPage {
     return success
   }
 
+  private async startPiPFromControl(): Promise<void> {
+    if (!this.hasEngine || this.xComponentController === null) {
+      this.showHudText('播放器尚未就绪')
+      return
+    }
+    const success = await this.startPiP()
+    if (!success) {
+      this.showHudText('画中画启动失败')
+    }
+  }
+
   private seekByFifteenSeconds(forward: boolean): void {
     if (!this.hasEngine || this.durationMs <= 0) {
       return
@@ -1993,6 +2297,136 @@ export struct LocalPlayerPage {
     const targetMs = Math.max(0, Math.min(this.positionMs + offsetMs, this.durationMs))
     this.seekTo(targetMs)
     this.showHudText(forward ? '前进 15 秒' : '后退 15 秒')
+  }
+
+  private async initializeLocalCastSession(): Promise<void> {
+    if (this.videoUri.length === 0) {
+      return
+    }
+    try {
+      const path = LocalFilePicker.getFileAccessPath(this.videoUri)
+      const sourceFile = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY)
+      const fileSize = fileIo.statSync(sourceFile.fd).size
+      if (fileSize <= 0) {
+        fileIo.closeSync(sourceFile)
+        this.castSessionManager.setLocalCastEnabled(false)
+        logger.warn('Local cast source file is empty')
+        return
+      }
+      this.closeLocalCastSourceFile()
+      this.localCastSourceFile = sourceFile
+      this.localCastSourceFileSize = fileSize
+      this.castSessionManager.setLocalCastEnabled(true)
+      const context = getContext(this) as common.UIAbilityContext
+      this.castSessionManager.setCallbacks(this.buildCastCallbacks())
+      await this.castSessionManager.ensureVideoSession(context)
+      this.syncCastMediaInfo()
+    } catch (err) {
+      this.closeLocalCastSourceFile()
+      this.castSessionManager.setLocalCastEnabled(false)
+      logger.warn('Initialize local fd cast session failed: %{public}s',
+        err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  private async stopLocalCastSession(): Promise<void> {
+    this.castSessionManager.setLocalCastEnabled(false)
+    await this.castSessionManager.destroyVideoSession()
+    this.closeLocalCastSourceFile()
+  }
+
+  private closeLocalCastSourceFile(): void {
+    if (this.localCastSourceFile === null) {
+      return
+    }
+    try {
+      fileIo.closeSync(this.localCastSourceFile)
+    } catch (_err) {
+    }
+    this.localCastSourceFile = null
+    this.localCastSourceFileSize = 0
+  }
+
+  private buildCastCallbacks(): CastEventCallbacks {
+    const callbacks = new CastEventCallbacks()
+    callbacks.onPlay = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+    }
+    callbacks.onPause = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+      }
+    }
+    callbacks.onSeek = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    callbacks.onFastForward = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    callbacks.onRewind = (positionMs: number) => {
+      this.seekTo(positionMs)
+    }
+    callbacks.onPlayNext = () => {
+      this.playNextQueueItem(false)
+    }
+    callbacks.onPlayPrevious = () => {
+      this.playPreviousQueueItem()
+    }
+    callbacks.onCastDeviceConnected = () => {
+      if (this.hasEngine && this.playerEngine !== null && this.isPlaying) {
+        this.playerEngine.pause()
+        this.isPlaying = false
+      }
+    }
+    callbacks.onCastDeviceDisconnected = () => {
+      if (this.hasEngine && this.playerEngine !== null && !this.isPlaying) {
+        this.playerEngine.play()
+        this.isPlaying = true
+      }
+    }
+    callbacks.onEndOfStream = () => {
+      if (this.currentQueueIndex >= 0 && this.currentQueueIndex < this.playbackQueue.length - 1) {
+        this.playNextQueueItem(true)
+      } else {
+        this.castSessionManager.stopCasting()
+      }
+    }
+    callbacks.onRemotePositionChange = (positionMs: number) => {
+      if (!this.isDraggingProgress) {
+        this.positionMs = positionMs
+      }
+    }
+    return callbacks
+  }
+
+  private syncCastMediaInfo(): void {
+    if (this.localCastSourceFile === null) {
+      this.castSessionManager.setCastSupported(false)
+      return
+    }
+    const info = new CastMediaInfo()
+    info.url = this.videoUri
+    info.title = this.videoFileName.length > 0 ? this.videoFileName : '本地视频'
+    info.subtitle = ''
+    info.cover = ''
+    info.durationMs = this.durationMs
+    info.positionMs = this.positionMs
+    info.hasNext = this.currentQueueIndex >= 0 && this.currentQueueIndex < this.playbackQueue.length - 1
+    info.hasPrevious = this.currentQueueIndex > 0
+    const fdSrc: media.AVFileDescriptor = {
+      fd: this.localCastSourceFile.fd,
+      offset: 0
+    }
+    if (this.localCastSourceFileSize > 0) {
+      fdSrc.length = this.localCastSourceFileSize
+    }
+    info.fdSrc = fdSrc
+    void this.castSessionManager.updateMedia(info)
+    void this.castSessionManager.setCastSupported(true)
   }
 
   private registerPlaybackSessionActions(): void {
@@ -2095,33 +2529,16 @@ export struct LocalPlayerPage {
     this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
 
-    if (!this.isFullScreen) {
-      this.getUIContext().animateTo({
-        duration: 350,
-        curve: Curve.FastOutSlowIn,
-        onFinish: () => {
-          this.setFullScreenMode(true, true)
-          this.finishFullscreenControlTransition()
-        }
-      }, () => {
-        this.isFullScreen = true
-        this.nonVideoOpacity = 0
-      })
-    } else {
-      this.setFullScreenMode(false)
-      setTimeout(() => {
-        this.getUIContext().animateTo({
-          duration: 350,
-          curve: Curve.FastOutSlowIn,
-          onFinish: () => {
-            this.finishFullscreenControlTransition()
-          }
-        }, () => {
-          this.isFullScreen = false
-          this.nonVideoOpacity = 1
-        })
-      }, 80)
+    this.runFullscreenOneShotTransition(!this.isFullScreen, true)
+  }
+
+  /** 本地视频打开后直接进入横屏沉浸式播放。 */
+  private enterFullscreenOnOpen(): void {
+    if (this.videoUri.length === 0 || this.isFullScreen) {
+      return
     }
+    this.isFullScreen = true
+    this.setFullScreenMode(true, true)
   }
 
   private async setFullScreenMode(fullScreen: boolean, lockLandscape: boolean = true): Promise<void> {
@@ -2169,6 +2586,9 @@ export struct LocalPlayerPage {
   }
 
   private applyPlayerAutoFullscreenRuntimeState(): void {
+    if (this.isFullScreen) {
+      return
+    }
     this.setAutoRotationEnabled(this.playerAutoFullscreen)
     if (this.playerAutoFullscreen && this.lastPlayerAreaWidth > 0 && this.lastPlayerAreaHeight > 0) {
       this.handlePlayerAreaChange(this.lastPlayerAreaWidth, this.lastPlayerAreaHeight)
@@ -2185,6 +2605,7 @@ export struct LocalPlayerPage {
     }
     this.lastPlayerAreaWidth = width
     this.lastPlayerAreaHeight = height
+    this.schedulePlayerAspectSync()
     if (!this.playerAutoFullscreen) {
       return
     }
@@ -2243,18 +2664,7 @@ export struct LocalPlayerPage {
     this.autoFullscreenEnterMs = Date.now()
     this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
-
-    this.getUIContext().animateTo({
-      duration: 350,
-      curve: Curve.FastOutSlowIn,
-      onFinish: () => {
-        this.setFullScreenMode(true, false)
-        this.finishFullscreenControlTransition()
-      }
-    }, () => {
-      this.isFullScreen = true
-      this.nonVideoOpacity = 0
-    })
+    this.runFullscreenOneShotTransition(true, false)
   }
 
   private exitAutoFullscreen(): void {
@@ -2266,20 +2676,8 @@ export struct LocalPlayerPage {
     this.autoFullscreenEnterMs = 0
     this.autoFullscreenExitCheckPending = false
     this.prepareFullscreenControlTransition()
-    this.setFullScreenMode(false)
+    this.runFullscreenOneShotTransition(false, false)
     this.setAutoRotationEnabled(this.playerAutoFullscreen)
-    setTimeout(() => {
-      this.getUIContext().animateTo({
-        duration: 350,
-        curve: Curve.FastOutSlowIn,
-        onFinish: () => {
-          this.finishFullscreenControlTransition()
-        }
-      }, () => {
-        this.isFullScreen = false
-        this.nonVideoOpacity = 1
-      })
-    }, 80)
   }
 
   private async setAutoRotationEnabled(enabled: boolean): Promise<void> {
@@ -2471,10 +2869,16 @@ export struct LocalPlayerPage {
       this.clearLivePlaybackPosition()
       this.playbackErrorText = ''
       this.clearDanmakuState()
+      this.drmScheme = ''
+      this.drmPluginName = ''
+      this.drmOfflineKeyId = ''
       const options = new PlaybackOptions()
       options.url = this.videoUri
       options.isLocalFile = true
       options.localFileSize = this.videoFileSize
+      options.drmScheme = this.drmScheme
+      options.drmPluginName = this.drmPluginName
+      options.drmOfflineKeyId = this.drmOfflineKeyId
       this.playbackOptions = options
       logger.info('选择本地视频: %{public}s', videoResult.fileName)
     } catch (err) {
@@ -2500,6 +2904,9 @@ export struct LocalPlayerPage {
       options.url = this.videoUri
       options.isLocalFile = true
       options.localFileSize = this.videoFileSize
+      options.drmScheme = this.drmScheme
+      options.drmPluginName = this.drmPluginName
+      options.drmOfflineKeyId = this.drmOfflineKeyId
       if (this.lastKnownPositionMs > 0) {
         options.startPositionMs = this.lastKnownPositionMs
       }
@@ -2563,7 +2970,7 @@ export struct LocalPlayerPage {
     }
   }
 
-  private async saveLocalHistory(): Promise<void> {
+  private async saveLocalHistory(captureExitFrame: boolean = false): Promise<void> {
     if (this.videoFileName.length === 0) {
       return
     }
@@ -2592,8 +2999,10 @@ export struct LocalPlayerPage {
       record.fileUri = this.videoUri
       record.fileName = this.videoFileName
       record.fileSize = this.videoFileSize
-      record.coverUri = await LocalVideoThumbnailStore.getInstance()
-        .ensureThumbnail(this.videoUri, this.videoFileName, this.videoFileSize)
+      if (captureExitFrame) {
+        record.coverUri = await LocalVideoThumbnailStore.getInstance()
+          .ensureThumbnail(this.videoUri, this.videoFileName, this.videoFileSize, this.positionMs)
+      }
       record.durationMs = this.durationMs
       record.positionMs = this.positionMs
       record.lastPlayedAt = Date.now()
@@ -2602,6 +3011,9 @@ export struct LocalPlayerPage {
       record.danmakuOffsetMs = this.danmakuOffsetMs
       record.danmakuFormat = this.danmakuLoadedFormat
       record.danmakuCount = this.danmakuLoadedCount
+      record.drmScheme = this.drmScheme
+      record.drmPluginName = this.drmPluginName
+      record.drmOfflineKeyId = this.drmOfflineKeyId
       record.createdAt = Date.now()
       logger.info('Save local history: name=%{public}s position=%{public}d duration=%{public}d',
         this.videoFileName, this.positionMs, this.durationMs)
@@ -2683,37 +3095,6 @@ export struct LocalPlayerPage {
       this.danmakuManager.resetDanmakuOffset()
       this.danmakuManager.loadLocalDanmaku(parseResult.items)
     }
-  }
-
-  private buildLocalPlaybackSummaryText(): string {
-    const parts: string[] = []
-    if (this.durationMs > 0) {
-      parts.push(this.formatTime(this.positionMs) + ' / ' + this.formatTime(this.durationMs))
-    } else if (this.positionMs > 0) {
-      parts.push(this.formatTime(this.positionMs))
-    } else {
-      parts.push('准备播放')
-    }
-    if (this.videoFileSize > 0) {
-      parts.push(this.formatFileSize(this.videoFileSize))
-    }
-    parts.push(this.speedLabel)
-    return parts.join(' · ')
-  }
-
-  private buildLocalCompactSummaryText(): string {
-    const parts: string[] = []
-    if (this.durationMs > 0) {
-      parts.push(this.formatTime(this.positionMs) + ' / ' + this.formatTime(this.durationMs))
-    } else if (this.positionMs > 0) {
-      parts.push(this.formatTime(this.positionMs))
-    } else {
-      parts.push('准备播放')
-    }
-    if (this.videoFileSize > 0) {
-      parts.push(this.formatFileSize(this.videoFileSize))
-    }
-    return parts.join(' · ')
   }
 
   private getAspectModeLabel(): string {

@@ -49,6 +49,10 @@ export class PlaybackOptions {
   streamMetadata: StreamMetadata | null = null
   isLocalFile: boolean = false
   localFileSize: number = 0
+  drmScheme: string = ''
+  drmPluginName: string = ''
+  drmOfflineKeyId: string = ''
+  drmMimeType: string = 'video/mp4'
 }
 
 export class PlayerState {

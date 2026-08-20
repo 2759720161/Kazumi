@@ -27,6 +27,13 @@ import { AnimeItem } from '../../models/AnimeItem'
 
 import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
 import { LocalFilePicker, LocalFileResult } from '../../services/LocalFilePicker'
+import { VideoDownloadManager } from '../../services/VideoDownloadManager'
+import {
+  VideoDownloadListener,
+  VideoDownloadRequest,
+  VideoDownloadSnapshot,
+  VideoDownloadState
+} from '../../models/VideoDownloadTask'
 import { CastEventCallbacks, CastMediaInfo, CastSessionManager } from '../../services/CastSessionManager'
 import { HistorySyncService } from '../../services/HistorySyncService'
 import { PiPCallbacks, PiPManager } from '../../services/PiPManager'
@@ -38,9 +45,15 @@ import { KeyCode } from '@ohos.multimodalInput.keyCode'
 import { audio } from '@kit.AudioKit'
 import { common } from '@kit.AbilityKit'
 import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
+import { HdsTabs } from '@kit.UIDesignKit'
 
 import { webview } from '@kit.ArkWeb'
 import { getBottomSpacerHeight, getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
+import {
+  buildAdaptiveMaterialEffect,
+  HDS_MATERIAL_LEVEL_DEFAULT,
+  PREFS_KEY_HDS_MATERIAL_LEVEL
+} from '../../utils/HdsPageStyle'
 import {
   createConfiguredImmersiveMaterial,
 } from '../../utils/ImmersiveMaterial'
@@ -132,6 +145,10 @@ export struct PlayerPage {
   private danmakuManager: DanmakuManager | null = null
   @State isDanmakuEnabled: boolean = true
   @State isDanmakuLoading: boolean = false
+  @State isDownloadStarting: boolean = false
+  @State isBatchDownloadStarting: boolean = false
+  @State downloadState: VideoDownloadState = VideoDownloadState.IDLE
+  @State downloadProgress: number = 0
   @State showMoreMenu: boolean = false
   @State showDanmakuMatchPanel: boolean = false
   @State showEpisodeSidePanel: boolean = false
@@ -154,7 +171,10 @@ export struct PlayerPage {
   @State currentManualMappingText: string = ''
   @State suppressControlAnimation: boolean = false
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State episodeGridColumns: string = '1fr 1fr 1fr'
+  @State isEpisodeDownloadSelecting: boolean = false
+  @State selectedDownloadEpisodeIndexes: number[] = []
   private panelTabsController: TabsController = new TabsController()
   private historyStore: HistoryStore = new HistoryStore()
   private collectController: CollectController = new CollectController()
@@ -162,6 +182,10 @@ export struct PlayerPage {
   private castSessionManager: CastSessionManager = CastSessionManager.getInstance()
   private pipManager: PiPManager = PiPManager.getInstance()
   private playbackSessionStore: PlaybackSessionStore = PlaybackSessionStore.getInstance()
+  private videoDownloadManager: VideoDownloadManager = VideoDownloadManager.getInstance()
+  private downloadListener: VideoDownloadListener | null = null
+  private activeDownloadTaskId: string = ''
+  private activeDownloadSourceUrl: string = ''
   private logListener: ((event: ResolveLogEvent) => void) | null = null
   private webController: webview.WebviewController = new webview.WebviewController()
   private backgroundWebController: webview.WebviewController = new webview.WebviewController()
@@ -171,6 +195,7 @@ export struct PlayerPage {
   private sourceId: number = -1
   private lastHistoryUpdateMs: number = 0
   private episodeUrl: string = ''
+  private resolvedVideoType: string = ''
   private ruleSourceId: number = -1
   private pendingSniff: boolean = false
   private preparedVideoResults: PreparedVideoSource[] = []
@@ -232,6 +257,7 @@ export struct PlayerPage {
 
   aboutToAppear(): void {
     this.isPageAlive = true
+    this.registerDownloadListener()
     AppStorage.setOrCreate('playerPageActive', true)
     this.danmakuManager = new DanmakuManager()
     this.danmakuManager.init().then(() => {
@@ -284,6 +310,7 @@ export struct PlayerPage {
       this.isPlayerLoading = true
       this.isPlayerBuffering = false
     }
+    this.syncCurrentDownloadState()
 
     this.sourceResolver.setWorkerWebController(1, this.webController)
     this.sourceResolver.setWorkerWebController(2, this.backgroundWebController)
@@ -342,6 +369,7 @@ export struct PlayerPage {
       logger.info('PlayerPage aboutToDisappear skipped release for PiP')
       return
     }
+    this.unregisterDownloadListener()
     releaseRetainedPlayerSession()
     this.playbackSessionStore.reset('player')
     this.isPageAlive = false
@@ -534,6 +562,10 @@ export struct PlayerPage {
     cloned.streamMetadata = this.playbackOptions.streamMetadata
     cloned.isLocalFile = this.playbackOptions.isLocalFile
     cloned.localFileSize = this.playbackOptions.localFileSize
+    cloned.drmScheme = this.playbackOptions.drmScheme
+    cloned.drmPluginName = this.playbackOptions.drmPluginName
+    cloned.drmOfflineKeyId = this.playbackOptions.drmOfflineKeyId
+    cloned.drmMimeType = this.playbackOptions.drmMimeType
     const keys = Object.keys(this.playbackOptions.headers)
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i]
@@ -543,7 +575,7 @@ export struct PlayerPage {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.Bottom }) {
       // Web uses a native rendering layer. Keep both sniff workers below the
       // player UI so their internal nodes cannot cover the retry controls.
       if (this.snifferWebVisible) {
@@ -552,6 +584,8 @@ export struct PlayerPage {
       }
 
       this.AdaptivePlayerLayout()
+
+      this.EpisodeDownloadFloatingLayer()
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -572,6 +606,22 @@ export struct PlayerPage {
         this.startAutoHideTimer()
       }
     })
+  }
+
+  @Builder
+  private EpisodeDownloadFloatingLayer() {
+    if (this.isPhoneDevice() && !this.isFullScreen) {
+      Row() {
+        this.EpisodeDownloadActions()
+      }
+      .width('100%')
+      .height((this.isEpisodeDownloadSelecting ? 220 : 52) + this.bottomSafeHeight + 20)
+      .padding({ right: 16, bottom: this.bottomSafeHeight + 20 })
+      .justifyContent(FlexAlign.End)
+      .alignItems(VerticalAlign.Bottom)
+      .hitTestBehavior(HitTestMode.Transparent)
+      .zIndex(12)
+    }
   }
 
   @Builder
@@ -786,6 +836,7 @@ export struct PlayerPage {
     DanmakuSettingsPanelContent({
       isDanmakuEnabled: this.isDanmakuEnabled,
       isFullScreen: this.isFullScreen,
+      showHeader: false,
       settingsVersion: this.danmakuSettingsOpenVersion,
       onSetDanmakuEnabled: (enabled: boolean) => {
         this.setDanmakuEnabled(enabled)
@@ -1147,6 +1198,411 @@ export struct PlayerPage {
 
 
 
+  private registerDownloadListener(): void {
+    if (this.downloadListener !== null) {
+      return
+    }
+    this.downloadListener = (snapshot: VideoDownloadSnapshot) => {
+      this.handleDownloadSnapshot(snapshot)
+    }
+    this.videoDownloadManager.addListener(this.downloadListener)
+  }
+
+  private unregisterDownloadListener(): void {
+    if (this.downloadListener === null) {
+      return
+    }
+    this.videoDownloadManager.removeListener(this.downloadListener)
+    this.downloadListener = null
+  }
+
+  private handleDownloadSnapshot(snapshot: VideoDownloadSnapshot): void {
+    const currentUrl = this.getCurrentDownloadUrl()
+    if (currentUrl.length === 0 || snapshot.sourceUrl !== currentUrl) {
+      return
+    }
+    const previousState = this.downloadState
+    this.activeDownloadTaskId = snapshot.taskId
+    this.activeDownloadSourceUrl = snapshot.sourceUrl
+    this.downloadState = snapshot.state
+    this.downloadProgress = snapshot.progressPercent
+
+    if (snapshot.state === VideoDownloadState.COMPLETED && previousState !== VideoDownloadState.COMPLETED) {
+      AppStorage.setOrCreate('downloadLibraryChangedAt', Date.now())
+      this.showDownloadToast('下载完成，可在本地视频中播放')
+    } else if (snapshot.state === VideoDownloadState.FAILED && previousState !== VideoDownloadState.FAILED) {
+      this.showDownloadToast(snapshot.errorMessage.length > 0 ? snapshot.errorMessage : '下载失败')
+    }
+  }
+
+  private getDownloadMenuLabel(): string {
+    if (this.isDownloadStarting) {
+      return '准备下载'
+    }
+    if (!this.isCurrentDownloadSource()) {
+      return '下载视频'
+    }
+    if (this.downloadState === VideoDownloadState.RUNNING) {
+      return this.downloadProgress > 0 ? '下载中 ' + String(this.downloadProgress) + '%' : '下载中'
+    }
+    if (this.downloadState === VideoDownloadState.QUEUED || this.downloadState === VideoDownloadState.PREPARING) {
+      return '排队下载'
+    }
+    if (this.downloadState === VideoDownloadState.PAUSED) {
+      return '继续下载'
+    }
+    if (this.downloadState === VideoDownloadState.COMPLETED) {
+      return '已下载'
+    }
+    return '下载视频'
+  }
+
+  private handleDownloadMenuAction(): void {
+    this.showMoreMenu = false
+    if (this.isDownloadStarting) {
+      return
+    }
+    if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
+      this.downloadState === VideoDownloadState.QUEUED || this.downloadState === VideoDownloadState.PREPARING) &&
+      this.activeDownloadTaskId.length > 0) {
+      this.pauseCurrentDownload()
+      return
+    }
+    if (this.isCurrentDownloadSource() && this.downloadState === VideoDownloadState.PAUSED &&
+      this.activeDownloadTaskId.length > 0) {
+      this.resumeCurrentDownload()
+      return
+    }
+    if (this.isCurrentDownloadSource() && this.downloadState === VideoDownloadState.COMPLETED) {
+      this.showDownloadToast('该视频已下载，可在下载管理中播放')
+      return
+    }
+    this.startCurrentVideoDownload()
+  }
+
+  private async startCurrentVideoDownload(): Promise<void> {
+    const url = this.getCurrentDownloadUrl()
+    if (url.length === 0) {
+      this.showDownloadToast('视频地址尚未解析完成')
+      return
+    }
+    this.isDownloadStarting = true
+    this.downloadState = VideoDownloadState.PREPARING
+    this.downloadProgress = 0
+    this.activeDownloadTaskId = ''
+    this.activeDownloadSourceUrl = url
+    try {
+      const input = new VideoDownloadRequest()
+      input.url = url
+      input.title = this.animeName
+      input.episodeTitle = this.episodeName
+      input.mediaType = this.inferDownloadMediaType(url)
+      input.headers = this.buildDownloadHeaders()
+      this.applyDownloadMetadata(input, this.episodeUrl, this.selectedRoadIndex, this.currentEpisodeIndex)
+      const context = getContext(this) as common.UIAbilityContext
+      const snapshot = await this.videoDownloadManager.startDownload(context, input)
+      this.activeDownloadTaskId = snapshot.taskId
+      this.activeDownloadSourceUrl = snapshot.sourceUrl
+      this.downloadState = snapshot.state
+      this.showDownloadToast('已开始下载')
+    } catch (err) {
+      this.downloadState = VideoDownloadState.FAILED
+      this.showDownloadToast(err instanceof Error ? err.message : String(err))
+    } finally {
+      this.isDownloadStarting = false
+    }
+  }
+
+  private async pauseCurrentDownload(): Promise<void> {
+    try {
+      await this.videoDownloadManager.pause(this.activeDownloadTaskId)
+      this.downloadState = VideoDownloadState.PAUSED
+      this.showDownloadToast('下载已暂停')
+    } catch (err) {
+      this.showDownloadToast('暂停失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  private async resumeCurrentDownload(): Promise<void> {
+    try {
+      await this.videoDownloadManager.resume(this.activeDownloadTaskId)
+      this.downloadState = VideoDownloadState.RUNNING
+      this.showDownloadToast('继续下载')
+    } catch (err) {
+      this.showDownloadToast('继续下载失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  private async cancelCurrentDownload(): Promise<void> {
+    const taskId = this.activeDownloadTaskId
+    if (taskId.length === 0) {
+      return
+    }
+    try {
+      await this.videoDownloadManager.cancel(taskId)
+      this.downloadState = VideoDownloadState.CANCELLED
+      this.downloadProgress = 0
+      this.activeDownloadTaskId = ''
+      this.showDownloadToast('下载已取消')
+    } catch (err) {
+      this.showDownloadToast('取消下载失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  private getCurrentDownloadUrl(): string {
+    return this.videoUrl.length > 0 ? this.videoUrl : this.playbackOptions.url
+  }
+
+  private isCurrentDownloadSource(): boolean {
+    const currentUrl = this.getCurrentDownloadUrl()
+    return currentUrl.length > 0 && currentUrl === this.activeDownloadSourceUrl
+  }
+
+  private syncCurrentDownloadState(): void {
+    const currentUrl = this.getCurrentDownloadUrl()
+    if (currentUrl.length === 0) {
+      return
+    }
+    const snapshot = this.videoDownloadManager.findLatestBySourceUrl(currentUrl)
+    if (snapshot !== null) {
+      this.handleDownloadSnapshot(snapshot)
+      return
+    }
+    this.activeDownloadTaskId = ''
+    this.activeDownloadSourceUrl = ''
+    this.downloadState = VideoDownloadState.IDLE
+    this.downloadProgress = 0
+  }
+
+  private inferDownloadMediaType(url: string): string {
+    if (this.resolvedVideoType.length > 0) {
+      return this.resolvedVideoType
+    }
+    if (this.playbackOptions.streamMetadata !== null && this.playbackOptions.streamMetadata.isHls) {
+      return 'm3u8'
+    }
+    const cleanUrl = url.toLowerCase().split('?')[0].split('#')[0]
+    const extensions = ['m3u8', 'mpd', 'mp4', 'mkv', 'webm', 'ts', 'flv', 'mov']
+    for (let i = 0; i < extensions.length; i++) {
+      if (cleanUrl.endsWith('.' + extensions[i])) {
+        return extensions[i]
+      }
+    }
+    return 'mp4'
+  }
+
+  private buildDownloadHeaders(): Record<string, string> {
+    return this.buildDownloadHeadersFromOptions(this.playbackOptions)
+  }
+
+  private buildDownloadHeadersFromOptions(options: PlaybackOptions): Record<string, string> {
+    const headers: Record<string, string> = {}
+    const keys = Object.keys(options.headers)
+    for (let i = 0; i < keys.length; i++) {
+      headers[keys[i]] = options.headers[keys[i]]
+    }
+    if (options.referer.length > 0 && headers['Referer'] === undefined) {
+      headers['Referer'] = options.referer
+    }
+    if (options.userAgent.length > 0 && headers['User-Agent'] === undefined) {
+      headers['User-Agent'] = options.userAgent
+    }
+    if (headers['Accept'] === undefined) {
+      headers['Accept'] = '*/*'
+    }
+    return headers
+  }
+
+  private applyDownloadMetadata(input: VideoDownloadRequest, sourceEpisodeUrl: string,
+    roadIndex: number, episodeIndex: number): void {
+    input.animeCover = this.getCastCover()
+    input.animeUrl = this.animeUrl
+    input.episodeUrl = sourceEpisodeUrl
+    input.sourceName = this.sourceName
+    input.sourceId = this.sourceId >= 0 ? this.sourceId : this.ruleSourceId
+    input.bangumiId = this.bangumiId
+    input.roadIndex = roadIndex
+    input.episodeIndex = episodeIndex
+    input.downloadDanmaku = true
+  }
+
+  private enterEpisodeDownloadSelection(): void {
+    if (this.getVisibleEpisodes().length === 0) {
+      this.showDownloadToast('当前线路没有可下载剧集')
+      return
+    }
+    this.isEpisodeDownloadSelecting = true
+    this.selectedDownloadEpisodeIndexes = []
+  }
+
+  private cancelEpisodeDownloadSelection(): void {
+    this.isEpisodeDownloadSelecting = false
+    this.selectedDownloadEpisodeIndexes = []
+  }
+
+  private toggleEpisodeDownloadSelection(index: number): void {
+    const selected = this.selectedDownloadEpisodeIndexes.indexOf(index)
+    const next: number[] = []
+    for (let i = 0; i < this.selectedDownloadEpisodeIndexes.length; i++) {
+      if (i !== selected) next.push(this.selectedDownloadEpisodeIndexes[i])
+    }
+    if (selected < 0) next.push(index)
+    this.selectedDownloadEpisodeIndexes = next
+  }
+
+  private isEpisodeDownloadSelected(index: number): boolean {
+    return index >= 0 && this.selectedDownloadEpisodeIndexes.indexOf(index) >= 0
+  }
+
+  private toggleSelectAllEpisodesForDownload(): void {
+    const episodes = this.getVisibleEpisodes()
+    if (episodes.length === 0) return
+    if (this.selectedDownloadEpisodeIndexes.length === episodes.length) {
+      this.selectedDownloadEpisodeIndexes = []
+      return
+    }
+    const all: number[] = []
+    for (let i = 0; i < episodes.length; i++) all.push(i)
+    this.selectedDownloadEpisodeIndexes = all
+  }
+
+  private confirmEpisodeDownloadSelection(): void {
+    if (this.selectedDownloadEpisodeIndexes.length === 0) {
+      this.showDownloadToast('请先选择要下载的集数')
+      return
+    }
+    const roadIndex = this.visibleRoadIndex
+    const indexes = this.selectedDownloadEpisodeIndexes.slice()
+    this.cancelEpisodeDownloadSelection()
+    this.downloadEpisodeIndexes(roadIndex, indexes)
+  }
+
+  private async downloadCurrentRoad(): Promise<void> {
+    this.showMoreMenu = false
+    if (this.isBatchDownloadStarting) {
+      return
+    }
+    if (!this.backgroundWebviewReady) {
+      this.showDownloadToast('后台解析器尚未就绪，请稍后再试')
+      return
+    }
+    if (this.selectedRoadIndex < 0 || this.selectedRoadIndex >= this.roads.length) {
+      this.showDownloadToast('当前线路不可用')
+      return
+    }
+    const roadIndex = this.selectedRoadIndex
+    const episodes = this.toEpisodePanelItems(this.roads[roadIndex])
+    if (episodes.length === 0) {
+      this.showDownloadToast('当前线路没有可下载剧集')
+      return
+    }
+    const episodeIndices: number[] = []
+    const startIndex = this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < episodes.length ?
+      this.currentEpisodeIndex : 0
+    for (let i = startIndex; i < episodes.length; i++) {
+      episodeIndices.push(i)
+    }
+    for (let i = 0; i < startIndex; i++) {
+      episodeIndices.push(i)
+    }
+    await this.downloadEpisodeIndexes(roadIndex, episodeIndices)
+  }
+
+  private async downloadEpisodeIndexes(roadIndex: number, episodeIndices: number[]): Promise<void> {
+    if (this.isBatchDownloadStarting) return
+    if (!this.backgroundWebviewReady) {
+      this.showDownloadToast('后台解析器尚未就绪，请稍后再试')
+      return
+    }
+    if (roadIndex < 0 || roadIndex >= this.roads.length || episodeIndices.length === 0) return
+    const episodes = this.toEpisodePanelItems(this.roads[roadIndex])
+    this.isBatchDownloadStarting = true
+    this.showDownloadToast('正在解析 ' + String(episodeIndices.length) + ' 集并加入队列')
+    let queuedCount = 0
+    let failedCount = 0
+    const context = getContext(this) as common.UIAbilityContext
+    try {
+      for (let step = 0; step < episodeIndices.length; step++) {
+        const i = episodeIndices[step]
+        if (i < 0 || i >= episodes.length) {
+          failedCount++
+          continue
+        }
+        try {
+          let mediaUrl = ''
+          let mediaType = ''
+          let options = new PlaybackOptions()
+          if (i === this.currentEpisodeIndex && this.getCurrentDownloadUrl().length > 0) {
+            mediaUrl = this.getCurrentDownloadUrl()
+            mediaType = this.inferDownloadMediaType(mediaUrl)
+            options = this.playbackOptions
+          } else {
+            const result = await this.resolveEpisodeForBatchDownload(episodes[i])
+            if (!result.isPlayable()) {
+              throw new Error(result.errorMessage.length > 0 ? result.errorMessage : '视频解析失败')
+            }
+            const request = new VideoSourceRequest()
+            request.episodeUrl = episodes[i].url
+            request.ruleSourceId = this.ruleSourceId
+            options = await this.sourceResolver.buildPlaybackOptionsWithRule(result, request)
+            mediaUrl = result.videoUrl
+            mediaType = result.videoType.length > 0 ? result.videoType : 'mp4'
+          }
+          const input = new VideoDownloadRequest()
+          input.url = mediaUrl
+          input.title = this.animeName
+          input.episodeTitle = episodes[i].name.length > 0 ? episodes[i].name : '第' + String(i + 1) + '集'
+          input.mediaType = mediaType
+          input.headers = this.buildDownloadHeadersFromOptions(options)
+          this.applyDownloadMetadata(input, episodes[i].url, roadIndex, i)
+          await this.videoDownloadManager.startDownload(context, input)
+          queuedCount++
+        } catch (err) {
+          failedCount++
+          logger.warn('批量下载第%{public}d集接入失败: %{public}s', i + 1,
+            err instanceof Error ? err.message : String(err))
+        }
+      }
+      AppStorage.setOrCreate('downloadLibraryChangedAt', Date.now())
+      const resultText = failedCount > 0 ?
+        '已加入 ' + String(queuedCount) + ' 集，' + String(failedCount) + ' 集解析失败' :
+        '已将 ' + String(queuedCount) + ' 集加入下载队列'
+      this.showDownloadToast(resultText)
+    } finally {
+      this.isBatchDownloadStarting = false
+    }
+  }
+
+  private async resolveEpisodeForBatchDownload(episode: EpisodePanelItem): Promise<VideoSourceResult> {
+    let prepared = this.takePreparedResult(episode.url, this.ruleSourceId)
+    let waitCount = 0
+    while (prepared === null && this.sourceResolver.getIsPreparingNext() && waitCount < 60) {
+      await this.delayBatchResolve(500)
+      prepared = this.takePreparedResult(episode.url, this.ruleSourceId)
+      waitCount++
+    }
+    if (prepared !== null && prepared.isPlayable()) {
+      return prepared
+    }
+    const request = new VideoSourceRequest()
+    request.episodeUrl = episode.url
+    request.ruleSourceId = this.ruleSourceId
+    return await this.sourceResolver.prepareNext(request)
+  }
+
+  private delayBatchResolve(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      setTimeout((): void => resolve(), ms)
+    })
+  }
+
+  private showDownloadToast(message: string): void {
+    try {
+      promptAction.showToast({ message: message })
+    } catch (_err) {
+    }
+  }
+
   @Builder
   private PlayerMoreMenu() {
     Stack({ alignContent: Alignment.TopEnd }) {
@@ -1160,6 +1616,14 @@ export struct PlayerPage {
 
       Column() {
         if (this.isFullScreen) {
+          if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
+            this.downloadState === VideoDownloadState.PAUSED || this.downloadState === VideoDownloadState.QUEUED ||
+            this.downloadState === VideoDownloadState.PREPARING)) {
+            this.MoreMenuItem('取消下载', () => {
+              this.showMoreMenu = false
+              this.cancelCurrentDownload()
+            })
+          }
           this.MoreMenuItem(this.isDanmakuEnabled ? '关闭弹幕' : '开启弹幕', () => {
             this.toggleDanmaku()
             this.showMoreMenu = false
@@ -1181,6 +1645,14 @@ export struct PlayerPage {
           })
 
         } else {
+          if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
+            this.downloadState === VideoDownloadState.PAUSED || this.downloadState === VideoDownloadState.QUEUED ||
+            this.downloadState === VideoDownloadState.PREPARING)) {
+            this.MoreMenuItem('取消下载', () => {
+              this.showMoreMenu = false
+              this.cancelCurrentDownload()
+            })
+          }
           this.MoreMenuItem('加载本地弹幕', () => {
             this.pickAndLoadLocalDanmaku()
             this.showMoreMenu = false
@@ -1686,6 +2158,7 @@ export struct PlayerPage {
       AVCastPicker({
         normalColor: '#F2FFFFFF',
         activeColor: '#F2FFFFFF',
+        sessionType: 'video',
         onStateChange: (state: AVCastPickerState) => {
           if (state === AVCastPickerState.STATE_APPEARING) {
             this.pauseAutoHideTimer()
@@ -1863,6 +2336,7 @@ export struct PlayerPage {
               }
             })
           }
+
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: 0, bottom: 2 })
@@ -1935,14 +2409,38 @@ export struct PlayerPage {
 
       Column() {
         Row() {
-          Column() {
-            Text('选集')
-              .fontSize(21)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_title'))
+          if (this.roads.length > 1) {
+            Row() {
+              Text(this.getSelectedRoadName())
+                .fontSize(13)
+                .fontColor($r('app.color.text_hint'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              SymbolGlyph($r('sys.symbol.chevron_down'))
+                .fontSize(11)
+                .fontColor([$r('app.color.text_hint')])
+            }
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .borderRadius(16)
+            .backgroundColor($r('app.color.episode_item_unselected_bg'))
+            .onClick(() => {
+              this.showSideRoadPickerPopup = !this.showSideRoadPickerPopup
+            })
+            .bindMenu(this.showSideRoadPickerPopup, this.RoadPickerPopupContent, {
+              placement: Placement.BottomLeft,
+              showInSubWindow: false,
+              onDisappear: () => {
+                this.showSideRoadPickerPopup = false
+              }
+            })
+          } else {
+            Blank()
+              .layoutWeight(1)
           }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
+
+          Blank()
+            .layoutWeight(1)
 
           this.EpisodeOrderButton()
 
@@ -1962,31 +2460,6 @@ export struct PlayerPage {
         .height(72)
         .padding({ left: 18, right: 14, top: 10, bottom: 8 })
         .alignItems(VerticalAlign.Center)
-
-        if (this.roads.length > 1) {
-          Row() {
-            Text(this.getSelectedRoadName())
-              .fontSize(13)
-              .fontColor($r('app.color.text_hint'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            SymbolGlyph($r('sys.symbol.chevron_down'))
-              .fontSize(11)
-              .fontColor([$r('app.color.text_hint')])
-          }
-          .width('100%')
-          .padding({ left: 18, right: 14, top: 0, bottom: 8 })
-          .onClick(() => {
-            this.showSideRoadPickerPopup = !this.showSideRoadPickerPopup
-          })
-          .bindMenu(this.showSideRoadPickerPopup, this.RoadPickerPopupContent, {
-            placement: Placement.BottomLeft,
-            showInSubWindow: false,
-            onDisappear: () => {
-              this.showSideRoadPickerPopup = false
-            }
-          })
-        }
 
         Scroll() {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
@@ -2009,7 +2482,6 @@ export struct PlayerPage {
           .padding({ left: 16, right: 8, top: 8, bottom: this.bottomSafeHeight + 24 })
         }
         .width('100%')
-        .height('100%')
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .align(Alignment.Top)
@@ -2020,6 +2492,7 @@ export struct PlayerPage {
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .systemMaterial(createConfiguredImmersiveMaterial())
       .borderRadius({ topLeft: 32, bottomLeft: 32 })
+      .clip(true)
       .border({ width: { left: 0.5 }, color: $r('app.color.divider_blue') })
       .shadow({ radius: 32, color: $r('app.color.shadow_surface'), offsetX: -12 })
       .translate({ x: this.episodePanelOffsetX })
@@ -2062,6 +2535,7 @@ export struct PlayerPage {
     DanmakuSettingsPanelContent({
       isDanmakuEnabled: this.isDanmakuEnabled,
       isFullScreen: this.isFullScreen,
+      showHeader: false,
       settingsVersion: this.danmakuSettingsOpenVersion,
       onSetDanmakuEnabled: (enabled: boolean) => {
         this.setDanmakuEnabled(enabled)
@@ -2080,7 +2554,7 @@ export struct PlayerPage {
 
   @Builder
   private EpisodeCard(ep: EpisodePanelItem, index?: number) {
-    Stack({ alignContent: Alignment.Bottom }) {
+    Stack({ alignContent: Alignment.TopEnd }) {
       Row() {
         if (this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex) {
           SymbolGlyph($r('sys.symbol.play_fill'))
@@ -2097,6 +2571,8 @@ export struct PlayerPage {
           .layoutWeight(1)
       }
       .height(52)
+      .width('100%')
+      .align(Alignment.TopStart)
       .padding({ left: 12, right: 8 })
       .borderRadius(12)
       .backgroundColor(this.visibleRoadIndex === this.selectedRoadIndex && this.getActualEpisodeIndex(index) === this.currentEpisodeIndex ? $r('app.color.accent_blue') : $r('app.color.episode_item_unselected_bg'))
@@ -2108,6 +2584,21 @@ export struct PlayerPage {
           .backgroundColor($r('app.color.text_on_primary'))
           .borderRadius({ bottomLeft: 12, bottomRight: 12 })
           .opacity(0.4)
+          .align(Alignment.BottomStart)
+      }
+
+      if (this.isEpisodeDownloadSelecting) {
+        Row() {
+          SymbolGlyph(this.isEpisodeDownloadSelected(this.getActualEpisodeIndex(index)) ?
+            $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.checkmark_circle'))
+            .fontSize(22)
+            .fontColor([$r('app.color.accent_blue')])
+        }
+          .width(30)
+          .height(30)
+          .justifyContent(FlexAlign.Center)
+          .alignItems(VerticalAlign.Center)
+          .align(Alignment.TopEnd)
       }
     }
     .width('100%')
@@ -2116,18 +2607,101 @@ export struct PlayerPage {
     .onClick(() => {
       const actualIndex = this.getActualEpisodeIndex(index)
       if (actualIndex >= 0) {
-        this.onEpisodeSelected(actualIndex)
+        if (this.isEpisodeDownloadSelecting) {
+          this.toggleEpisodeDownloadSelection(actualIndex)
+        } else {
+          this.onEpisodeSelected(actualIndex)
+        }
       }
     })
     .gesture(LongPressGesture({ duration: 500 })
       .onAction(() => {
         const actualIndex = this.getActualEpisodeIndex(index)
         if (actualIndex >= 0) {
-          this.onEpisodeSelected(actualIndex)
-          this.showHudText(`从${this.getEpisodeDisplayName(ep, actualIndex)}开始连续播放`)
+          if (this.isEpisodeDownloadSelecting) {
+            this.toggleEpisodeDownloadSelection(actualIndex)
+          } else {
+            this.onEpisodeSelected(actualIndex)
+            this.showHudText(`从${this.getEpisodeDisplayName(ep, actualIndex)}开始连续播放`)
+          }
         }
       })
     )
+  }
+
+  @Builder
+  private EpisodeDownloadActions() {
+    if (this.isPhoneDevice()) {
+      Column({ space: 4 }) {
+        if (this.isEpisodeDownloadSelecting) {
+          this.EpisodeDownloadActionButton($r('sys.symbol.xmark'), () => {
+            this.cancelEpisodeDownloadSelection()
+          })
+          this.EpisodeDownloadActionButton($r('sys.symbol.checkmark'), () => {
+            this.confirmEpisodeDownloadSelection()
+          })
+          this.EpisodeDownloadActionButton($r('sys.symbol.checkmark_square_on_square'), () => {
+            this.toggleSelectAllEpisodesForDownload()
+          })
+        }
+        this.EpisodeDownloadActionButton($r('sys.symbol.arrowshape_down_to_line_fill'), () => {
+          this.enterEpisodeDownloadSelection()
+        })
+      }
+      .width(52)
+      .alignItems(HorizontalAlign.Center)
+    }
+  }
+
+  @Builder
+  private EpisodeDownloadActionContent(icon: Resource, action: () => void) {
+    Row() {
+      SymbolGlyph(icon)
+        .fontSize(21)
+        .fontColor([$r('app.color.accent_blue')])
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .hitTestBehavior(HitTestMode.Transparent)
+    .onClick(() => {
+      action()
+    })
+  }
+
+  @Builder
+  private EpisodeDownloadActionButton(icon: Resource, action: () => void) {
+    HdsTabs() {
+      TabContent()
+        .clip(false)
+        .backgroundColor(Color.Transparent)
+        .hitTestBehavior(HitTestMode.Transparent)
+    }
+    .width(52)
+    .height(52)
+    .clip(false)
+    .hitTestBehavior(HitTestMode.Transparent)
+    .barWidth(52)
+    .barHeight(52)
+    .barOverlap(true)
+    .barPosition(BarPosition.End)
+    .backgroundColor(Color.Transparent)
+    .vertical(false)
+    .barFloatingStyle({
+      barWidth: { smallWidth: 52, mediumWidth: 52, largeWidth: 52 },
+      gradientMask: { maskColor: Color.Transparent },
+      barBottomMargin: 0,
+      barSideMargin: 0,
+      systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
+      miniBar: {
+        miniBarBuilder: () => {
+          this.EpisodeDownloadActionContent(icon, action)
+        },
+        miniBarStyle: 1
+      },
+      lightColor: Color.Transparent
+    })
   }
 
   @Builder
@@ -2598,9 +3172,11 @@ export struct PlayerPage {
         this.historySeekMs = -1
       }
       this.playbackOptions = options
+      this.resolvedVideoType = result.videoType
       logger.warn('CrashDiag handleSniffResult assign videoUrl begin: videoHash=%{public}s',
         this.shortHash(result.videoUrl))
       this.videoUrl = result.videoUrl
+      this.syncCurrentDownloadState()
       this.isEpisodeSwitching = false
       this.isPlayerLoading = true
       this.isPlayerBuffering = false
@@ -2852,6 +3428,7 @@ export struct PlayerPage {
       // but prevents them from receiving touch events on some devices.
       this.videoUrl = ''
       this.playbackOptions = new PlaybackOptions()
+      this.resolvedVideoType = ''
       this.sniffStatus = 'error'
       this.isPlayerLoading = false
       this.isPlayerBuffering = false
@@ -4101,6 +4678,7 @@ export struct PlayerPage {
 
   private initializeCastSession(): void {
     const context = getContext(this) as common.UIAbilityContext
+    this.castSessionManager.setLocalCastEnabled(false)
     this.castSessionManager.setCallbacks(this.buildCastCallbacks())
     this.castSessionManager.ensureVideoSession(context).then(() => {
       this.syncCastMediaInfo()

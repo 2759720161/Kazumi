@@ -46,6 +46,7 @@ const HOME_TITLE_TAG_VISUAL_OFFSET_Y: number = -5
 const HOME_STICKY_TAG_PIN_HYSTERESIS: number = 8
 const HOME_TAG_SWITCH_PIN_GUARD_MS: number = 450
 const HOME_STICKY_TAG_HEIGHT: number = 30
+const HIGH_SCORE_AUTO_PREFETCH_LIMIT: number = 200
 
 @Component
 export struct HomePage {
@@ -68,7 +69,13 @@ export struct HomePage {
   @State selectedTag: string = ''
   @State seasonalLoading: boolean = false
   @State highScoreLoading: boolean = false
+  @State trendingMoreLoading: boolean = false
+  @State seasonalMoreLoading: boolean = false
+  @State highScoreMoreLoading: boolean = false
   @State heroVersion: number = 0
+  @State trendingContentVersion: number = 0
+  @State seasonalContentVersion: number = 0
+  @State highScoreContentVersion: number = 0
   @State tagBarPinned: boolean = false
 
   private vm: RecommendViewModel = new RecommendViewModel()
@@ -78,6 +85,7 @@ export struct HomePage {
   private tagSwitchPinGuardUntil: number = 0
   private tagPinScrollThreshold: number = -1
   private tagRequestVersion: number = 0
+  private backgroundPrefetchStarted: boolean = false
 
   aboutToAppear(): void {
     this.loadRecommend()
@@ -137,7 +145,11 @@ export struct HomePage {
                 title: '热门番组',
                 subtitle: '近期讨论度最高',
                 items: this.trendingList,
-                showRank: false
+                itemsVersion: this.trendingContentVersion,
+                showRank: false,
+                onNeedMore: () => {
+                  this.loadRemainingTrendingSection(this.loadToken)
+                }
               })
             }
 
@@ -146,7 +158,11 @@ export struct HomePage {
                 title: this.seasonLabel,
                 subtitle: '正在放送',
                 items: this.seasonalList,
-                showRank: true
+                itemsVersion: this.seasonalContentVersion,
+                showRank: false,
+                onNeedMore: () => {
+                  this.loadRemainingSeasonalSection(this.loadToken)
+                }
               })
             } else if (this.seasonalLoading) {
               this.PosterRailSkeleton(this.seasonLabel.length > 0 ? this.seasonLabel : '本季新番', '正在放送')
@@ -157,7 +173,11 @@ export struct HomePage {
                 title: '高分佳作',
                 subtitle: '评分人数充足的口碑作品',
                 items: this.highScoreList,
-                showRank: true
+                itemsVersion: this.highScoreContentVersion,
+                showRank: true,
+                onNeedMore: () => {
+                  this.loadRemainingHighScoreSection(this.loadToken)
+                }
               })
             } else if (this.highScoreLoading) {
               this.PosterRailSkeleton('高分佳作', '评分人数充足的口碑作品')
@@ -216,11 +236,18 @@ export struct HomePage {
     this.hasLoadError = false
     this.seasonalLoading = true
     this.highScoreLoading = true
+    this.trendingMoreLoading = false
+    this.seasonalMoreLoading = false
+    this.highScoreMoreLoading = false
+    this.backgroundPrefetchStarted = false
     this.heroList = []
     this.trendingList = []
     this.seasonalList = []
     this.highScoreList = []
     this.heroVersion = 0
+    this.trendingContentVersion++
+    this.seasonalContentVersion++
+    this.highScoreContentVersion++
     this.seasonLabel = this.vm.seasonLabel.length > 0 ? this.vm.seasonLabel : '本季新番'
     try {
       let hero: RecommendCardModel[] = []
@@ -244,11 +271,11 @@ export struct HomePage {
 
       this.heroList = [...hero]
       this.trendingList = [...trending]
+      this.trendingContentVersion++
       this.heroVersion++
       this.hasLoadError = hero.length === 0 && trending.length === 0
       this.isLoading = false
 
-      this.loadRemainingTrendingSection(token)
       this.loadSeasonalSection(token)
       this.loadHighScoreSection(token)
       this.enrichHeroSection(token)
@@ -273,13 +300,14 @@ export struct HomePage {
         return
       }
       this.seasonalList = [...items]
+      this.seasonalContentVersion++
       this.seasonLabel = this.vm.seasonLabel
-      this.loadRemainingSeasonalSection(token)
     } catch (err) {
       logger.warn('loadHomeSeasonal failed')
     } finally {
       if (token === this.loadToken) {
         this.seasonalLoading = false
+        this.startBackgroundSectionPrefetchIfReady(token)
       }
     }
   }
@@ -291,13 +319,54 @@ export struct HomePage {
         return
       }
       this.highScoreList = [...items]
-      this.loadRemainingHighScoreSection(token)
+      this.highScoreContentVersion++
     } catch (err) {
       logger.warn('loadHomeHighScore failed')
     } finally {
       if (token === this.loadToken) {
         this.highScoreLoading = false
+        this.startBackgroundSectionPrefetchIfReady(token)
       }
+    }
+  }
+
+  private startBackgroundSectionPrefetchIfReady(token: number): void {
+    if (token !== this.loadToken || this.seasonalLoading || this.highScoreLoading || this.backgroundPrefetchStarted) {
+      return
+    }
+    this.backgroundPrefetchStarted = true
+    this.prefetchRemainingSections(token)
+  }
+
+  private async prefetchRemainingSections(token: number): Promise<void> {
+    logger.info('background section prefetch started')
+    // Each rail owns an independent offset cursor. Prefetch them together so a
+    // slow or large section cannot make the other rails wait for an edge swipe.
+    await Promise.all([
+      this.prefetchTrendingSection(token),
+      this.prefetchSeasonalSection(token),
+      this.prefetchHighScoreSection(token)
+    ])
+    if (token === this.loadToken) {
+      logger.info('background section prefetch complete')
+    }
+  }
+
+  private async prefetchTrendingSection(token: number): Promise<void> {
+    if (token === this.loadToken) {
+      await this.loadRemainingTrendingSection(token)
+    }
+  }
+
+  private async prefetchSeasonalSection(token: number): Promise<void> {
+    if (token === this.loadToken) {
+      await this.loadRemainingSeasonalSection(token)
+    }
+  }
+
+  private async prefetchHighScoreSection(token: number): Promise<void> {
+    if (token === this.loadToken) {
+      await this.loadRemainingHighScoreSection(token, HIGH_SCORE_AUTO_PREFETCH_LIMIT)
     }
   }
 
@@ -315,27 +384,51 @@ export struct HomePage {
   }
 
   private async loadRemainingTrendingSection(token: number): Promise<void> {
+    if (this.trendingMoreLoading) {
+      return
+    }
+    this.trendingMoreLoading = true
     await this.vm.loadRemainingTrending((items: RecommendCardModel[]): void => {
       if (token === this.loadToken) {
         this.trendingList = items
+        this.trendingContentVersion++
       }
     }, (): boolean => token === this.loadToken)
+    if (token === this.loadToken) {
+      this.trendingMoreLoading = false
+    }
   }
 
   private async loadRemainingSeasonalSection(token: number): Promise<void> {
+    if (this.seasonalMoreLoading) {
+      return
+    }
+    this.seasonalMoreLoading = true
     await this.vm.loadRemainingSeasonal((items: RecommendCardModel[]): void => {
       if (token === this.loadToken) {
         this.seasonalList = items
+        this.seasonalContentVersion++
       }
     }, (): boolean => token === this.loadToken)
+    if (token === this.loadToken) {
+      this.seasonalMoreLoading = false
+    }
   }
 
-  private async loadRemainingHighScoreSection(token: number): Promise<void> {
+  private async loadRemainingHighScoreSection(token: number, maxItems: number = 0): Promise<void> {
+    if (this.highScoreMoreLoading) {
+      return
+    }
+    this.highScoreMoreLoading = true
     await this.vm.loadRemainingHighScore((items: RecommendCardModel[]): void => {
       if (token === this.loadToken) {
         this.highScoreList = items
+        this.highScoreContentVersion++
       }
-    }, (): boolean => token === this.loadToken)
+    }, (): boolean => token === this.loadToken, maxItems)
+    if (token === this.loadToken) {
+      this.highScoreMoreLoading = false
+    }
   }
 
   @Builder

@@ -15,7 +15,7 @@ import { LocalVideoThumbnailStore } from '../../services/LocalVideoThumbnailStor
 import { LocalVideoRecord } from '../../models/LocalVideoRecord'
 import { LocalVideoHistoryStore } from '../../store/LocalVideoHistoryStore'
 import { LOCAL_VIDEO_HISTORY_VERSION_KEY } from '../../store/LocalVideoHistoryChangeSignal'
-import { UserDownloadFolder } from '../../services/UserDownloadFolder'
+import { UserDownloadFolder, UserFolderEntry } from '../../services/UserDownloadFolder'
 import { Logger } from '../../utils/Logger'
 import {
   getTopSpacerHeight,
@@ -34,9 +34,9 @@ import {
 } from '../../utils/BottomTabAutoHide'
 
 const logger = new Logger('LocalPage')
-const LOCAL_TAB_LABELS: string[] = ['本地目录', '历史记录']
+const LOCAL_TAB_LABELS: string[] = ['下载视频', '历史记录']
 const LOCAL_TAB_BAR_HEIGHT: number = 40
-const LOCAL_TAB_ITEM_WIDTH: number = 128
+const LOCAL_TAB_ITEM_WIDTH: number = 136
 
 @Component
 export struct LocalPage {
@@ -51,17 +51,20 @@ export struct LocalPage {
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
   @State localHistory: LocalVideoRecord[] = []
   @State ownFolderVideos: LocalVideoRecord[] = []
+  @State rootFolderEntries: UserFolderEntry[] = []
+  @State rootFolderRenderVersion: number = 0
   @State ownFolderScanned: boolean = false
   @State ownFolderScanFailed: boolean = false
   @State ownFolderScanning: boolean = false
   @State ownFolderCoverRenderVersion: number = 0
   @State selectedLocalTabIndex: number = 0
-  @State showDeleteConfirm: boolean = false
+  @State showDeleteSheet: boolean = false
+  @State isBatchDeleteSheet: boolean = false
   @State pendingDeleteId: number = -1
   @State pendingDeleteFileName: string = ''
   @State isEditMode: boolean = false
   @State selectedIds: number[] = []
-  @State showBatchDeleteDialog: boolean = false
+  @State historyActionMenuId: number = -1
   private scroller: Scroller = new Scroller()
   private localVideoHistoryStore: LocalVideoHistoryStore = new LocalVideoHistoryStore()
   private hasScannedOwnDownloadFolder: boolean = false
@@ -69,6 +72,7 @@ export struct LocalPage {
   private isGeneratingOwnFolderCovers: boolean = false
   private pendingOwnFolderCoverGeneration: boolean = false
   private pendingOwnFolderRescan: boolean = false
+  private isCleaningMissingHistory: boolean = false
 
   aboutToAppear(): void {
     if (this.appRdbReady) {
@@ -82,6 +86,14 @@ export struct LocalPage {
   }
 
   onBackPress(): boolean {
+    if (this.historyActionMenuId >= 0) {
+      this.historyActionMenuId = -1
+      return true
+    }
+    if (this.showDeleteSheet) {
+      this.closeDeleteDialog()
+      return true
+    }
     if (this.isEditMode) {
       this.exitEditMode()
       return true
@@ -197,18 +209,12 @@ export struct LocalPage {
       .hideBackButton(true)
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
-      .bindSheet($$this.showDeleteConfirm, this.DeleteConfirmSheet, {
-        height: 230,
-        showClose: false,
-        dragBar: false
-      })
-      .bindSheet($$this.showBatchDeleteDialog, this.BatchDeleteSheet, {
-        height: 220,
-        showClose: false,
-        dragBar: false
-      })
 
       this.LocalTabBar()
+
+      if (this.showDeleteSheet) {
+        this.DeleteConfirmDialog()
+      }
     }
     .width('100%')
     .height('100%')
@@ -401,11 +407,11 @@ export struct LocalPage {
         .height(72)
         .margin({ bottom: 12 })
 
-        Text('本地播放')
+        Text('下载视频')
           .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
-        Text('选择本地视频播放，可手动导入 XML / JSON / ASS 弹幕')
+        Text('在线播放页面下载的视频会自动归档到这里')
           .fontSize(13)
           .fontColor($r('app.color.text_secondary'))
           .textAlign(TextAlign.Center)
@@ -431,13 +437,22 @@ export struct LocalPage {
   @Builder
   private OwnFolderSection(): void {
     Column() {
-      if (this.ownFolderVideos.length > 0) {
-        Column({ space: 8 }) {
-          ForEach(this.ownFolderVideos, (record: LocalVideoRecord) => {
-            this.OwnFolderVideoCard(record)
-          }, (record: LocalVideoRecord) => 'own_folder_' + record.fileUri + '_' + record.fileSize + '_' +
-            record.coverUri + '_' + this.ownFolderCoverRenderVersion)
+      if (this.rootFolderEntries.length > 0) {
+        Scroll() {
+          Row({ space: 12 }) {
+            ForEach(this.rootFolderEntries, (entry: UserFolderEntry) => {
+              this.OwnFolderDirectoryCard(entry)
+            }, (entry: UserFolderEntry) => 'own_anime_folder_' + entry.relativePath + '_' + entry.coverUri + '_' +
+              this.rootFolderRenderVersion)
+          }
+          .justifyContent(FlexAlign.Start)
+          .alignItems(VerticalAlign.Top)
+          .constraintSize({ minWidth: '100%' })
+          .padding({ right: 24 })
         }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .align(Alignment.TopStart)
         .width('100%')
       } else {
         Column() {
@@ -472,6 +487,60 @@ export struct LocalPage {
       }
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private OwnFolderDirectoryCard(entry: UserFolderEntry): void {
+    Column({ space: 8 }) {
+      Stack({ alignContent: Alignment.BottomEnd }) {
+        Image(entry.coverUri.length > 0 ? entry.coverUri : $r('app.media.ic_placeholder'))
+          .draggable(false)
+          .width(132)
+          .height(176)
+          .objectFit(ImageFit.Cover)
+          .borderRadius(12)
+          .opacity(entry.coverUri.length > 0 ? 1 : 0.82)
+        if (entry.coverUri.length === 0) {
+          SymbolGlyph($r('sys.symbol.folder_fill'))
+            .fontSize(34)
+            .fontColor([$r('app.color.accent_blue')])
+            .margin({ right: 12, bottom: 12 })
+        } else {
+          Rect()
+            .width(36)
+            .height(36)
+            .radius(18)
+            .fill('#88000000')
+            .margin({ right: 10, bottom: 10 })
+          SymbolGlyph($r('sys.symbol.folder_fill'))
+            .fontSize(20)
+            .fontColor([$r('app.color.text_on_primary')])
+            .margin({ right: 18, bottom: 18 })
+        }
+      }
+      .width(132)
+      .height(176)
+      .clip(true)
+      .backgroundColor($r('app.color.button_ghost_bg'))
+      .borderRadius(12)
+
+      Text(entry.name)
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width(132)
+      Text(this.buildFolderEntryStatus(entry))
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width(132)
+    }
+    .width(132)
+    .onClick(() => this.openOwnFolderDirectory(entry))
   }
 
   @Builder
@@ -480,14 +549,22 @@ export struct LocalPage {
       Stack() {
         Image(record.coverUri.length > 0 ? record.coverUri : $r('app.media.ic_placeholder'))
           .draggable(false)
-          .width(82)
-          .height(58)
+          .width(124)
+          .height(78)
           .objectFit(ImageFit.Cover)
-          .borderRadius(10)
+          .borderRadius(12)
           .opacity(record.coverUri.length > 0 ? 1 : 0.82)
+        Rect()
+          .width(124)
+          .height(78)
+          .radius(12)
+          .fill('#33000000')
+        SymbolGlyph($r('sys.symbol.play_fill'))
+          .fontSize(25)
+          .fontColor([$r('app.color.text_on_primary')])
       }
-      .width(82)
-      .height(58)
+      .width(124)
+      .height(78)
 
       Column() {
         Text(record.fileName)
@@ -510,17 +587,17 @@ export struct LocalPage {
         .alignItems(VerticalAlign.Center)
       }
       .layoutWeight(1)
-      .height(58)
+      .height(78)
       .alignItems(HorizontalAlign.Start)
       .justifyContent(FlexAlign.Start)
 
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(16)
         .fontColor([$r('sys.color.icon_secondary')])
-        .margin({ top: 21 })
+        .margin({ top: 31 })
     }
     .width('100%')
-    .height(106)
+    .height(104)
     .padding({ left: 12, right: 10, top: 12, bottom: 12 })
     .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
@@ -541,18 +618,18 @@ export struct LocalPage {
             .fontColor([$r('app.color.accent_blue')])
             .margin({ bottom: 22 })
 
-          Text('还没有播放记录')
+          Text('还没有下载视频播放记录')
             .fontSize(22)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
             .textAlign(TextAlign.Center)
-          Text('播放过的视频会显示在这里')
+          Text('播放过的下载视频会显示在这里')
             .fontSize(14)
             .fontColor($r('app.color.text_secondary'))
             .textAlign(TextAlign.Center)
             .lineHeight(24)
             .margin({ top: 18 })
-          Text('本地视频的播放进度、封面和弹幕绑定\n会在播放后自动保存')
+          Text('下载视频的播放进度、封面和弹幕绑定\n会在播放后自动保存')
             .fontSize(13)
             .fontColor($r('app.color.text_hint'))
             .textAlign(TextAlign.Center)
@@ -565,139 +642,114 @@ export struct LocalPage {
         .alignItems(HorizontalAlign.Center)
         .padding({ left: 28, right: 28 })
       } else {
-        Column({ space: 8 }) {
+        Column({ space: 0 }) {
           ForEach(this.localHistory, (record: LocalVideoRecord) => {
             this.HistoryCard(record)
           }, (record: LocalVideoRecord) => 'local_history_' + record.id + '_' + record.fileKey)
         }
         .width('100%')
+        .alignItems(HorizontalAlign.Start)
       }
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   private HistoryCard(record: LocalVideoRecord): void {
-    Row({ space: 12 }) {
-      Stack() {
-        if (record.coverUri.length > 0) {
-          Image(record.coverUri)
+    Column() {
+      Row({ space: 12 }) {
+        Stack({ alignContent: Alignment.BottomStart }) {
+          Image(record.coverUri.length > 0 ? record.coverUri : $r('app.media.ic_placeholder'))
             .draggable(false)
-            .width(82)
-            .height(58)
+            .width(112)
+            .height(63)
             .objectFit(ImageFit.Cover)
             .borderRadius(10)
-        } else {
-          Image($r('app.media.ic_placeholder'))
-            .draggable(false)
-            .width(82)
-            .height(58)
-            .objectFit(ImageFit.Cover)
-            .borderRadius(10)
-            .opacity(0.82)
-        }
-      }
-      .width(82)
-      .height(58)
-
-      Column() {
-        Row() {
-           Text(record.fileName)
-            .layoutWeight(1)
-            .fontSize(15)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-          if (!this.isEditMode) {
-            SymbolGlyph($r('sys.symbol.dot_grid_1x2'))
-              .fontSize(18)
-              .fontColor([$r('sys.color.icon_secondary')])
-              .padding({ left: 8, right: 4, top: 4, bottom: 4 })
-              .hitTestBehavior(HitTestMode.Block)
-              .onClick(() => {
-                this.askDeleteRecord(record)
-              })
+            .opacity(record.coverUri.length > 0 ? 1 : 0.82)
+          if (record.durationMs > 0) {
+            Progress({
+              value: Math.min(record.positionMs, record.durationMs),
+              total: record.durationMs,
+              type: ProgressType.Linear
+            })
+              .width(96)
+              .height(3)
+              .color($r('app.color.accent_blue'))
+              .backgroundColor('#66000000')
+              .margin({ left: 8, bottom: 7 })
           }
         }
-        .width('100%')
-        .alignItems(VerticalAlign.Top)
+        .width(112)
+        .height(63)
 
-        Row() {
+        Column() {
+          Text(record.fileName)
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
           Text(this.buildProgressText(record))
             .fontSize(12)
             .fontColor($r('app.color.text_secondary'))
-          Text(this.buildProgressPercentText(record))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ top: 5 })
+          Text(this.formatLastPlayedAt(record.lastPlayedAt))
             .fontSize(12)
             .fontColor($r('app.color.text_hint'))
-            .margin({ left: 8 })
+            .margin({ top: 4 })
         }
-        .width('100%')
-        .margin({ top: 4 })
+        .layoutWeight(1)
+        .height(72)
+        .alignItems(HorizontalAlign.Start)
 
-        if (record.durationMs > 0) {
-          Progress({
-            value: Math.min(record.positionMs, record.durationMs),
-            total: record.durationMs,
-            type: ProgressType.Linear
-          })
-            .height(3)
-            .color($r('app.color.accent_blue'))
-            .backgroundColor($r('app.color.button_ghost_bg'))
-            .margin({ top: 8 })
+        if (this.isEditMode) {
+          SymbolGlyph(this.selectedIds.indexOf(record.id) >= 0 ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle'))
+            .fontSize(22)
+            .fontColor([this.selectedIds.indexOf(record.id) >= 0 ? $r('app.color.accent_blue') : $r('sys.color.icon_secondary')])
+            .width(28)
         }
-
-        Row() {
-          Row() {
-            if (record.danmakuFileName.length > 0) {
-              this.HistoryDanmakuPill(this.buildDanmakuText(record), true)
-            } else {
-              this.HistoryDanmakuPill('未匹配弹幕', false)
-            }
+      }
+      .width('100%')
+      .height(88)
+      .alignItems(VerticalAlign.Center)
+      .gesture(
+        GestureGroup(GestureMode.Exclusive,
+          TapGesture({ count: 1 })
+            .onAction(() => {
+              if (this.isEditMode) {
+                this.toggleSelect(record.id)
+              } else {
+                this.openHistoryRecord(record)
+              }
+            }),
+          LongPressGesture({ duration: 500 })
+            .onAction(() => {
+              if (!this.isEditMode) {
+                this.historyActionMenuId = record.id
+              }
+            })
+        )
+      )
+      .bindMenu(this.historyActionMenuId === record.id, this.HistoryActionMenuContent, {
+        placement: Placement.Bottom,
+        showInSubWindow: false,
+        onDisappear: () => {
+          if (this.historyActionMenuId === record.id) {
+            this.historyActionMenuId = -1
           }
-          .layoutWeight(1)
-          .constraintSize({ minWidth: 0 })
-
-          Text('上次播放 ' + this.formatLastPlayedAt(record.lastPlayedAt))
-            .fontSize(11)
-            .fontColor($r('app.color.text_hint'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Clip })
-            .margin({ left: 8 })
         }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-        .margin({ top: 8 })
-      }
-      .layoutWeight(1)
-      .height(82)
-      .alignItems(HorizontalAlign.Start)
+      })
 
-      if (this.isEditMode) {
-        SymbolGlyph(this.selectedIds.indexOf(record.id) >= 0 ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.checkmark_circle'))
-          .fontSize(24)
-          .fontColor([this.selectedIds.indexOf(record.id) >= 0 ? $r('sys.color.font_emphasize') : $r('app.color.text_secondary')])
-          .margin({ left: 8 })
-          .onClick(() => {
-            this.toggleSelect(record.id)
-          })
-      }
+      Divider()
+        .color($r('app.color.divider_color'))
+        .margin({ left: 124 })
     }
     .width('100%')
-    .height(106)
-    .padding({ left: 12, right: 10, top: 12, bottom: 12 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    .alignItems(VerticalAlign.Top)
-    .onClick(() => {
-      if (this.isEditMode) {
-        this.toggleSelect(record.id)
-      } else {
-        this.openHistoryRecord(record)
-      }
-    })
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -713,142 +765,104 @@ export struct LocalPage {
   }
 
   @Builder
-  private HistoryDanmakuPill(text: string, highlighted: boolean): void {
-    Text(text)
-      .fontSize(11)
-      .fontColor(highlighted ? $r('app.color.accent_blue') : $r('app.color.text_secondary'))
-      .maxLines(1)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
-      .width('100%')
-      .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-      .borderRadius(8)
-      .backgroundColor(highlighted ? $r('app.color.button_ghost_bg') : Color.Transparent)
-  }
-
-  @Builder
-  private DeleteConfirmSheet(): void {
+  private DeleteConfirmDialog(): void {
     Column() {
-      Text('删除这条播放记录？')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .width('100%')
-        .margin({ top: 28, bottom: 20 })
-      Text(this.pendingDeleteFileName.length > 0 ? this.pendingDeleteFileName : '不会删除本地视频文件。')
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .lineHeight(26)
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .margin({ bottom: 26 })
+      Column() {
+        Text('是否删除此视频？')
+          .fontSize(22)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+          .margin({ bottom: 24 })
 
-      Row() {
-        Text('取消')
-          .layoutWeight(1)
-          .height(52)
+        Text(this.isBatchDeleteSheet ?
+          `确定要删除这 ${this.selectedIds.length} 条观看记录吗？` : '确定要删除这条观看记录吗？')
           .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
-            this.showDeleteConfirm = false
-            this.pendingDeleteId = -1
-            this.pendingDeleteFileName = ''
-          })
+          .lineHeight(26)
+          .width('100%')
+          .margin({ bottom: 26 })
 
-        Divider()
-          .vertical(true)
-          .height(34)
-          .color($r('app.color.divider_color'))
-          .margin({ left: 4, right: 4 })
+        Row() {
+          Text('取消')
+            .layoutWeight(1)
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Center)
+            .onClick(() => {
+              this.closeDeleteDialog()
+            })
 
-        Text('删除')
-          .layoutWeight(1)
-          .height(52)
-          .fontSize(18)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.status_error'))
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
-            const id = this.pendingDeleteId
-            this.showDeleteConfirm = false
-            this.pendingDeleteId = -1
-            this.pendingDeleteFileName = ''
-            this.deleteHistoryRecord(id)
-          })
+          Divider()
+            .vertical(true)
+            .height(34)
+            .color($r('app.color.divider_color'))
+            .margin({ left: 4, right: 4 })
+
+          Text('删除')
+            .layoutWeight(1)
+            .height(52)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.status_error'))
+            .textAlign(TextAlign.Center)
+            .onClick(() => {
+              if (this.isBatchDeleteSheet) {
+                this.confirmBatchDelete()
+              } else {
+                const id = this.pendingDeleteId
+                this.closeDeleteDialog()
+                this.deleteHistoryRecord(id)
+              }
+            })
+        }
+        .width('100%')
+        .height(52)
+        .alignItems(VerticalAlign.Center)
       }
       .width('100%')
-      .height(52)
-      .alignItems(VerticalAlign.Center)
-      .padding({ left: 10, right: 10 })
+      .padding({ left: 30, right: 30, top: 30, bottom: 20 })
+      .borderRadius(34)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
     }
     .width('100%')
-    .padding({ left: 20, right: 20, bottom: 14 })
+    .height('100%')
+    .backgroundColor(0x66000000)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 20, right: 20, bottom: 28 })
+    .onClick(() => {
+      this.closeDeleteDialog()
+    })
   }
 
-  @Builder
-  private BatchDeleteSheet(): void {
-    Column() {
-      Text('删除' + String(this.selectedIds.length) + '条播放记录？')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .width('100%')
-        .margin({ top: 28, bottom: 20 })
-      Text('这不会删除本地视频文件。')
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .lineHeight(26)
-        .width('100%')
-        .margin({ bottom: 26 })
-
-      Row() {
-        Text('取消')
-          .layoutWeight(1)
-          .height(52)
-          .fontSize(18)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
-            this.showBatchDeleteDialog = false
-          })
-
-        Divider()
-          .vertical(true)
-          .height(34)
-          .color($r('app.color.divider_color'))
-          .margin({ left: 4, right: 4 })
-
-        Text('删除')
-          .layoutWeight(1)
-          .height(52)
-          .fontSize(18)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.status_error'))
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
-            this.confirmBatchDelete()
-          })
-      }
-      .width('100%')
-      .height(52)
-      .alignItems(VerticalAlign.Center)
-      .padding({ left: 10, right: 10 })
-    }
-    .width('100%')
-    .padding({ left: 20, right: 20, bottom: 14 })
+  private closeDeleteDialog(): void {
+    this.showDeleteSheet = false
+    this.pendingDeleteId = -1
+    this.pendingDeleteFileName = ''
   }
 
   private async openOwnFolderVideo(record: LocalVideoRecord): Promise<void> {
     if (!await LocalFilePicker.ensureReadableUri(record.fileUri)) {
-      logger.warn('本地目录视频不可读: %{public}s', record.fileName)
-      return
+      try {
+        const context = getContext(this) as common.UIAbilityContext
+        const authorized = await LocalFilePicker.authorizeExistingUri(context, record.fileUri)
+        if (!authorized) {
+          logger.warn('本地目录视频授权失败: %{public}s', record.fileName)
+          return
+        }
+      } catch (err) {
+        logger.warn('本地目录视频授权异常: %{public}s', err instanceof Error ? err.message : String(err))
+        return
+      }
     }
     const latestRecord = await this.resolveLatestOwnFolderRecord(record)
+    const playbackQueue = await this.buildPlaybackQueueForRecord(latestRecord)
+    const queueIndex = this.findPlaybackQueueIndex(playbackQueue, latestRecord.fileUri)
     router.pushUrl({
       url: 'pages/player/LocalPlayerPage',
       params: {
@@ -860,7 +874,12 @@ export struct LocalPage {
         danmakuFileName: latestRecord.danmakuFileName,
         danmakuOffsetMs: latestRecord.danmakuOffsetMs,
         danmakuFormat: latestRecord.danmakuFormat,
-        danmakuCount: latestRecord.danmakuCount
+        danmakuCount: latestRecord.danmakuCount,
+        drmScheme: latestRecord.drmScheme,
+        drmPluginName: latestRecord.drmPluginName,
+        drmOfflineKeyId: latestRecord.drmOfflineKeyId,
+        playlistJson: JSON.stringify(playbackQueue),
+        queueIndex: queueIndex
       }
     })
   }
@@ -879,6 +898,8 @@ export struct LocalPage {
         return
       }
     }
+    const playbackQueue = await this.buildPlaybackQueueForRecord(record)
+    const queueIndex = this.findPlaybackQueueIndex(playbackQueue, record.fileUri)
     router.pushUrl({
       url: 'pages/player/LocalPlayerPage',
       params: {
@@ -890,9 +911,58 @@ export struct LocalPage {
         danmakuFileName: record.danmakuFileName,
         danmakuOffsetMs: record.danmakuOffsetMs,
         danmakuFormat: record.danmakuFormat,
-        danmakuCount: record.danmakuCount
+        danmakuCount: record.danmakuCount,
+        drmScheme: record.drmScheme,
+        drmPluginName: record.drmPluginName,
+        drmOfflineKeyId: record.drmOfflineKeyId,
+        playlistJson: JSON.stringify(playbackQueue),
+        queueIndex: queueIndex
       }
     })
+  }
+
+  private async buildPlaybackQueueForRecord(record: LocalVideoRecord): Promise<LocalVideoRecord[]> {
+    const fallback: LocalVideoRecord[] = [record]
+    const context = getContext(this) as common.UIAbilityContext
+    const scanned = await UserDownloadFolder.scanOwnVideoFiles(context)
+    if (scanned === null || scanned.length === 0) {
+      return fallback
+    }
+    const historyRecords = await this.loadLocalHistoryForMerge()
+    const mergedRecords = this.mergeOwnFolderHistoryBindings(scanned, historyRecords)
+    const parentPath = this.getParentPath(record.fileUri)
+    if (parentPath.length === 0) {
+      return fallback
+    }
+    const queue: LocalVideoRecord[] = []
+    for (let i = 0; i < mergedRecords.length; i++) {
+      const candidate = mergedRecords[i]
+      if (this.getParentPath(candidate.fileUri) === parentPath) {
+        queue.push(candidate)
+      }
+    }
+    if (queue.length === 0) {
+      return fallback
+    }
+    queue.sort((first: LocalVideoRecord, second: LocalVideoRecord): number => {
+      return UserDownloadFolder.compareVideoNames(first.fileName, second.fileName)
+    })
+    return queue
+  }
+
+  private findPlaybackQueueIndex(queue: LocalVideoRecord[], fileUri: string): number {
+    for (let i = 0; i < queue.length; i++) {
+      if (queue[i].fileUri === fileUri) {
+        return i
+      }
+    }
+    return 0
+  }
+
+  private getParentPath(path: string): string {
+    const normalized = path.replace(/\\/g, '/')
+    const slashIndex = normalized.lastIndexOf('/')
+    return slashIndex > 0 ? normalized.substring(0, slashIndex) : ''
   }
 
   private async loadLocalHistory(): Promise<void> {
@@ -901,7 +971,8 @@ export struct LocalPage {
       return
     }
     try {
-      this.localHistory = await this.localVideoHistoryStore.getAll()
+      const records = await this.localVideoHistoryStore.getAll()
+      this.localHistory = await this.removeMissingHistoryRecords(records)
       this.ensureMissingCovers()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -976,6 +1047,11 @@ export struct LocalPage {
       this.hasScannedOwnDownloadFolder = true
       const historyRecords = await this.loadLocalHistoryForMerge()
       this.ownFolderVideos = this.mergeOwnFolderHistoryBindings(records, historyRecords)
+      const rootEntries = await UserDownloadFolder.listOwnDirectory(context)
+      this.rootFolderEntries = rootEntries === null ? [] : rootEntries.filter((entry: UserFolderEntry): boolean => {
+        return entry.isDirectory
+      })
+      this.rootFolderRenderVersion++
       this.ownFolderScanned = true
       this.ownFolderScanFailed = false
       logger.info('读取用户Download包名目录完成: %{public}d', records.length)
@@ -1066,10 +1142,51 @@ export struct LocalPage {
       return []
     }
     try {
-      return await this.localVideoHistoryStore.getAll()
+      const records = await this.localVideoHistoryStore.getAll()
+      return await this.removeMissingHistoryRecords(records)
     } catch (err) {
       logger.warn('读取本地历史用于目录合并失败: %{public}s', err instanceof Error ? err.message : String(err))
       return []
+    }
+  }
+
+  private async removeMissingHistoryRecords(records: LocalVideoRecord[]): Promise<LocalVideoRecord[]> {
+    if (records.length === 0 || this.isCleaningMissingHistory) {
+      return records
+    }
+    this.isCleaningMissingHistory = true
+    const availableRecords: LocalVideoRecord[] = []
+    const missingIds: number[] = []
+    const missingRecords: LocalVideoRecord[] = []
+    try {
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i]
+        if (record.fileUri.length > 0 && await LocalFilePicker.ensureReadableUri(record.fileUri)) {
+          availableRecords.push(record)
+        } else {
+          missingIds.push(record.id)
+          missingRecords.push(record)
+        }
+      }
+
+      if (missingIds.length > 0) {
+        try {
+          await this.localVideoHistoryStore.deleteByIds(missingIds)
+          for (let i = 0; i < missingRecords.length; i++) {
+            await LocalFilePicker.revokeUriPermission(missingRecords[i].fileUri)
+            if (missingRecords[i].danmakuUri.length > 0) {
+              await LocalFilePicker.revokeUriPermission(missingRecords[i].danmakuUri)
+            }
+            logger.info('视频文件已删除，自动清理历史记录: %{public}s', missingRecords[i].fileName)
+          }
+        } catch (err) {
+          logger.warn('自动清理已删除视频历史记录失败: %{public}s',
+            err instanceof Error ? err.message : String(err))
+        }
+      }
+      return availableRecords
+    } finally {
+      this.isCleaningMissingHistory = false
     }
   }
 
@@ -1112,6 +1229,10 @@ export struct LocalPage {
     merged.durationMs = historyRecord.durationMs
     merged.positionMs = historyRecord.positionMs
     merged.lastPlayedAt = historyRecord.lastPlayedAt
+    merged.drmScheme = historyRecord.drmScheme.length > 0 ? historyRecord.drmScheme : record.drmScheme
+    merged.drmPluginName = historyRecord.drmPluginName.length > 0 ? historyRecord.drmPluginName : record.drmPluginName
+    merged.drmOfflineKeyId = historyRecord.drmOfflineKeyId.length > 0 ?
+      historyRecord.drmOfflineKeyId : record.drmOfflineKeyId
     if (historyRecord.danmakuFileName.length > 0 && historyRecord.danmakuUri.length > 0) {
       merged.danmakuFileName = historyRecord.danmakuFileName
       merged.danmakuUri = historyRecord.danmakuUri
@@ -1159,7 +1280,33 @@ export struct LocalPage {
   private askDeleteRecord(record: LocalVideoRecord): void {
     this.pendingDeleteId = record.id
     this.pendingDeleteFileName = record.fileName
-    this.showDeleteConfirm = true
+    this.isBatchDeleteSheet = false
+    this.showDeleteSheet = true
+  }
+
+  @Builder
+  private HistoryActionMenuContent(): void {
+    Menu() {
+      MenuItem({ content: '删除' })
+        .onClick(() => {
+          const record = this.findHistoryRecordById(this.historyActionMenuId)
+          this.historyActionMenuId = -1
+          if (record !== null) {
+            this.askDeleteRecord(record)
+          }
+        })
+      MenuItem({ content: '多选' })
+        .onClick(() => {
+          const record = this.findHistoryRecordById(this.historyActionMenuId)
+          this.historyActionMenuId = -1
+          if (record !== null) {
+            this.isEditMode = true
+            this.selectedIds = [record.id]
+          }
+        })
+    }
+    .width(120)
+    .radius(16)
   }
 
   private toggleSelect(id: number): void {
@@ -1195,7 +1342,7 @@ export struct LocalPage {
   }
 
   private async confirmBatchDelete(): Promise<void> {
-    this.showBatchDeleteDialog = false
+    this.showDeleteSheet = false
     const idsToDelete: number[] = [...this.selectedIds]
     if (idsToDelete.length === 0) {
       return
@@ -1252,6 +1399,16 @@ export struct LocalPage {
     }
   }
 
+  private buildDownloadManagerIcon(): HdsNavigationIconOptions {
+    return {
+      icon: $r('sys.symbol.arrow_down_circle'),
+      label: 'downloads',
+      action: () => {
+        router.pushUrl({ url: 'pages/download/DownloadPage' })
+      }
+    }
+  }
+
   private buildLocalTitle(): HdsNavigationTitle {
     if (this.isEditMode) {
       return {
@@ -1260,7 +1417,7 @@ export struct LocalPage {
       }
     }
     return {
-      mainTitle: '本地视频'
+      mainTitle: '下载视频'
     }
   }
 
@@ -1279,7 +1436,8 @@ export struct LocalPage {
           label: 'delete',
           action: () => {
             if (this.selectedIds.length > 0) {
-              this.showBatchDeleteDialog = true
+              this.isBatchDeleteSheet = true
+              this.showDeleteSheet = true
             }
           }
         }
@@ -1302,11 +1460,12 @@ export struct LocalPage {
         }
       }
       return {
-        value: [{ content: editIcon }, { content: this.buildRefreshLocalDirectoryIcon() }]
+        value: [{ content: editIcon }, { content: this.buildDownloadManagerIcon() },
+          { content: this.buildRefreshLocalDirectoryIcon() }]
       }
     }
     return {
-      value: [{ content: this.buildRefreshLocalDirectoryIcon() }]
+      value: [{ content: this.buildDownloadManagerIcon() }, { content: this.buildRefreshLocalDirectoryIcon() }]
     }
   }
 
@@ -1318,7 +1477,7 @@ export struct LocalPage {
   }
 
   private buildLocalTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('本地视频', this.hdsMaterialLevel)
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('下载视频', this.hdsMaterialLevel)
     base.content = this.buildLocalTitleBarContent()
     if (base.style?.originalStyle?.backgroundStyle) {
       base.style.originalStyle.backgroundStyle.maskExtraHeight = LOCAL_TAB_BAR_HEIGHT
@@ -1354,7 +1513,27 @@ export struct LocalPage {
     if (!this.ownFolderScanned) {
       return '未读取'
     }
-    return this.ownFolderVideos.length + ' 个视频'
+    return this.rootFolderEntries.length + ' 部番剧'
+  }
+
+  private buildFolderEntryStatus(entry: UserFolderEntry): string {
+    const parts: string[] = []
+    if (entry.childVideoCount > 0) {
+      parts.push(String(entry.childVideoCount) + ' 个视频')
+    }
+    if (entry.childDirectoryCount > 0) {
+      parts.push(String(entry.childDirectoryCount) + ' 个文件夹')
+    }
+    return parts.length > 0 ? parts.join(' · ') : '空文件夹'
+  }
+
+  private openOwnFolderDirectory(entry: UserFolderEntry): void {
+    router.pushUrl({
+      url: 'pages/local/FolderPage',
+      params: { relativePath: entry.relativePath }
+    }).catch((err: Object): void => {
+      logger.warn('打开番剧文件夹失败: %{public}s', err instanceof Error ? err.message : String(err))
+    })
   }
 
   private buildOwnFolderEmptyTitle(): string {
@@ -1364,7 +1543,7 @@ export struct LocalPage {
     if (this.ownFolderScanFailed) {
       return '目录暂不可访问'
     }
-    return '本地目录空空如也'
+    return '暂无下载视频'
   }
 
   private buildOwnFolderEmptySubtitle(): string {
@@ -1374,14 +1553,14 @@ export struct LocalPage {
     if (this.ownFolderScanFailed) {
       return '请确认系统已授权或通过刷新重新激活目录'
     }
-    return '请将视频文件放入手机专属下载目录\n我的手机/Download/FanPlayer\n然后返回本页自动同步\n您也可以点击右上角按钮进行同步'
+    return '从在线播放页面点击下载后，视频会按番剧自动归档\n下载完成后返回本页即可播放'
   }
 
   private buildOwnFolderDanmakuHint(): string {
     if (this.ownFolderScanning || this.ownFolderScanFailed) {
       return ''
     }
-    return '弹幕文件可与视频同名放在同一目录\n支持 XML / JSON / ASS，扫描后自动匹配'
+    return '下载的视频、弹幕和封面会自动绑定\n支持离线播放与播放历史记录'
   }
 
   private formatFileSize(size: number): string {

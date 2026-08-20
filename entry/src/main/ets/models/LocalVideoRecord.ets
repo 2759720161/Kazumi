@@ -13,5 +13,8 @@ export class LocalVideoRecord {
   danmakuOffsetMs: number = 0
   danmakuFormat: string = ''
   danmakuCount: number = 0
+  drmScheme: string = ''
+  drmPluginName: string = ''
+  drmOfflineKeyId: string = ''
   createdAt: number = 0
 }

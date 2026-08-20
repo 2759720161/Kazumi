@@ -100,4 +100,4 @@ if __name__ == '__main__':
     if len(sys.argv) < 3:
         print("Usage: set_soname.py <path_to_so> <new_soname>")
         sys.exit(1)
-    set_soname(sys.argv[1], sys.argv[2])
+    sys.exit(0 if set_soname(sys.argv[1], sys.argv[2]) else 1)

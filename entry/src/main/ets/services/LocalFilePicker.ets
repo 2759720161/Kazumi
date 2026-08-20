@@ -1,10 +1,11 @@
-import { picker, fileIo, fileShare } from '@kit.CoreFileKit'
+import { picker, fileIo, fileShare, fileUri } from '@kit.CoreFileKit'
 import { bundleManager, common } from '@kit.AbilityKit'
 import { util } from '@kit.ArkTS'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('LocalFilePicker')
 const DOWNLOAD_MODE_URI_PREFIX = 'file://docs/storage/Users/currentUser/Download/'
+const FANPLAYER_DOWNLOAD_URI_PREFIX = DOWNLOAD_MODE_URI_PREFIX + 'FanPlayer/'
 
 export class LocalFileResult {
   fileName: string = ''
@@ -88,12 +89,29 @@ export class LocalFilePicker {
     if (uri.length === 0) {
       return false
     }
+    const path = LocalFilePicker.getFileAccessPath(uri)
     try {
-      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY)
+      const file = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY)
       fileIo.closeSync(file)
       return true
     } catch (_err) {
       return false
+    }
+  }
+
+  /**
+   * Converts an app-owned Download-mode URI to the real filesystem path used
+   * by fileIo and AVPlayer. Other document URIs must remain unchanged so that
+   * their persisted FileShare permissions continue to work.
+   */
+  static getFileAccessPath(uri: string): string {
+    if (!LocalFilePicker.isOwnDownloadModeUri(uri)) {
+      return uri
+    }
+    try {
+      return new fileUri.FileUri(uri).path
+    } catch (_err) {
+      return uri
     }
   }
 
@@ -234,7 +252,7 @@ export class LocalFilePicker {
     emptyResult.content = ''
     emptyResult.fileSize = 0
     try {
-      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY)
+      const file = fileIo.openSync(LocalFilePicker.getFileAccessPath(uri), fileIo.OpenMode.READ_ONLY)
       try {
         const stat = fileIo.statSync(file.fd)
         if (stat.size > 20 * 1024 * 1024) {
@@ -276,7 +294,7 @@ export class LocalFilePicker {
 
   private static getFileSize(uri: string): number {
     try {
-      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY)
+      const file = fileIo.openSync(LocalFilePicker.getFileAccessPath(uri), fileIo.OpenMode.READ_ONLY)
       try {
         const stat = fileIo.statSync(file.fd)
         return stat.size
@@ -313,8 +331,9 @@ export class LocalFilePicker {
   }
 
   private static isOwnDownloadModeUri(uri: string): boolean {
-    if (!uri.startsWith(DOWNLOAD_MODE_URI_PREFIX)) {
-      return false
+    if (uri.startsWith(FANPLAYER_DOWNLOAD_URI_PREFIX) ||
+      uri === DOWNLOAD_MODE_URI_PREFIX + 'FanPlayer') {
+      return true
     }
     const bundleName = LocalFilePicker.getBundleName()
     if (bundleName.length === 0) {

@@ -493,6 +493,10 @@ export class TypeNodePiPSession {
     cloned.streamMetadata = options.streamMetadata
     cloned.isLocalFile = options.isLocalFile
     cloned.localFileSize = options.localFileSize
+    cloned.drmScheme = options.drmScheme
+    cloned.drmPluginName = options.drmPluginName
+    cloned.drmOfflineKeyId = options.drmOfflineKeyId
+    cloned.drmMimeType = options.drmMimeType
     const keys = Object.keys(options.headers)
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i]

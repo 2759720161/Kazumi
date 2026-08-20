@@ -1,4 +1,4 @@
-import { RuleSource } from '../models/RuleSource'
+import { RuleInstallOrigin, RuleSource } from '../models/RuleSource'
 import { RuleSourceStore } from '../store/RuleSourceStore'
 import { HttpClient } from '../network/HttpClient'
 import { RequestConfig, RetryPolicy } from '../network/RequestConfig'
@@ -45,7 +45,8 @@ export class DefaultRuleSourceInitializer {
     return []
   }
 
-  static async importFromJson(jsonStr: string): Promise<number> {
+  static async importFromJson(jsonStr: string,
+    installOrigin: string = RuleInstallOrigin.IMPORTED): Promise<number> {
     const store = new RuleSourceStore()
     let count = 0
     let failed = 0
@@ -61,13 +62,8 @@ export class DefaultRuleSourceInitializer {
             const rawRule = arr[i] as Record<string, Object>
             DefaultRuleSourceInitializer.assertValidRuleJson(rawRule)
             const rule = RuleSource.fromJSON(rawRule)
-            const existing = await store.getByName(rule.name)
-            if (existing !== null) {
-              rule.id = existing.id
-              await store.update(rule)
-            } else {
-              await store.insert(rule)
-            }
+            rule.installOrigin = RuleInstallOrigin.normalize(installOrigin)
+            await DefaultRuleSourceInitializer.saveImportedRule(store, rule)
             count++
           } catch (err) {
             failed++
@@ -79,13 +75,8 @@ export class DefaultRuleSourceInitializer {
         const rawRule = parsed as Record<string, Object>
         DefaultRuleSourceInitializer.assertValidRuleJson(rawRule)
         const rule = RuleSource.fromJSON(rawRule)
-        const existing = await store.getByName(rule.name)
-        if (existing !== null) {
-          rule.id = existing.id
-          await store.update(rule)
-        } else {
-          await store.insert(rule)
-        }
+        rule.installOrigin = RuleInstallOrigin.normalize(installOrigin)
+        await DefaultRuleSourceInitializer.saveImportedRule(store, rule)
         count = 1
       }
     } catch (err) {
@@ -99,9 +90,24 @@ export class DefaultRuleSourceInitializer {
     return count
   }
 
-  static async importFromUrl(url: string): Promise<number> {
+  private static async saveImportedRule(store: RuleSourceStore, rule: RuleSource): Promise<void> {
+    const existing = await store.getByName(rule.name)
+    if (existing !== null) {
+      rule.id = existing.id
+      rule.enabled = existing.enabled
+      rule.sortOrder = existing.sortOrder
+      await store.update(rule)
+      return
+    }
+    rule.enabled = true
+    rule.sortOrder = await store.getNextSortOrder()
+    await store.insert(rule)
+  }
+
+  static async importFromUrl(url: string,
+    installOrigin: string = RuleInstallOrigin.IMPORTED): Promise<number> {
     const body = await DefaultRuleSourceInitializer.fetchTextWithGithubMirror(url)
-    return await DefaultRuleSourceInitializer.importFromJson(body)
+    return await DefaultRuleSourceInitializer.importFromJson(body, installOrigin)
   }
 
   static async importFromCatalogUrl(indexUrl: string): Promise<number> {
@@ -124,7 +130,7 @@ export class DefaultRuleSourceInitializer {
         }
         const ruleUrl = DefaultRuleSourceInitializer.buildCatalogRuleUrl(indexUrl, name)
         const ruleBody = await DefaultRuleSourceInitializer.fetchTextWithGithubMirror(ruleUrl)
-        imported += await DefaultRuleSourceInitializer.importFromJson(ruleBody)
+        imported += await DefaultRuleSourceInitializer.importFromJson(ruleBody, RuleInstallOrigin.REPOSITORY)
       } catch (err) {
         failed++
         const msg = err instanceof Error ? err.message : String(err)

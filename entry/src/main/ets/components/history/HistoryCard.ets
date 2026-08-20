@@ -1,5 +1,7 @@
 import { HistoryRecord } from '../../models/HistoryRecord'
 import { router } from '@kit.ArkUI'
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
+import { BangumiConfig } from '../../core/api/BangumiConfig'
 
 @Component
 export struct HistoryCard {
@@ -14,13 +16,13 @@ export struct HistoryCard {
 
   build() {
     Row() {
-      Image(this.record.animeCover)
-        .draggable(false)
+      CachedRemoteImage({
+        source: this.getPrimaryCoverUrl(),
+        sources: this.getCoverUrls()
+      })
         .width(80)
         .height(108)
-        .objectFit(ImageFit.Cover)
         .borderRadius(12)
-        .alt($r('app.media.ic_placeholder'))
 
       Column() {
         Column() {
@@ -208,5 +210,36 @@ export struct HistoryCard {
       return '0' + String(n)
     }
     return String(n)
+  }
+
+  private getPrimaryCoverUrl(): string {
+    const urls = this.getCoverUrls()
+    return urls.length > 0 ? urls[0] : ''
+  }
+
+  private getCoverUrls(): string[] {
+    const urls: string[] = []
+    this.pushCoverUrl(urls, this.record.animeCover)
+    if (this.record.bangumiId > 0) {
+      const fallbackUrls = BangumiConfig.getSubjectImageUrls(this.record.bangumiId)
+      for (let i = 0; i < fallbackUrls.length; i++) {
+        this.pushCoverUrl(urls, fallbackUrls[i])
+      }
+    }
+    return urls
+  }
+
+  private pushCoverUrl(urls: string[], value: string): void {
+    const raw = value.trim()
+    if (raw.length === 0) {
+      return
+    }
+    const normalized = raw.startsWith('file://') || raw.startsWith('/')
+      ? raw
+      : BangumiConfig.normalizeImageUrl(raw)
+    const candidate = normalized.length > 0 ? normalized : raw
+    if (urls.indexOf(candidate) < 0) {
+      urls.push(candidate)
+    }
   }
 }

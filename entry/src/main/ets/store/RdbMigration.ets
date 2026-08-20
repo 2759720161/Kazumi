@@ -199,6 +199,28 @@ export class RdbMigration {
           'TEXT NOT NULL DEFAULT \'\'');
         logger.info('Migration v11: added source_name to watch_history');
       }
+    },
+    {
+      version: 12,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.addColumnIfMissing(rdbManager,
+          RdbConstants.TABLE_RULE_SOURCE,
+          RdbConstants.COL_INSTALL_ORIGIN,
+          'TEXT NOT NULL DEFAULT \'legacy\'');
+        logger.info('Migration v12: added install_origin to rule_source');
+      }
+    },
+    {
+      version: 13,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_LOCAL_VIDEO_HISTORY,
+          RdbConstants.COL_DRM_SCHEME, 'TEXT NOT NULL DEFAULT \'\'');
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_LOCAL_VIDEO_HISTORY,
+          RdbConstants.COL_DRM_PLUGIN_NAME, 'TEXT NOT NULL DEFAULT \'\'');
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_LOCAL_VIDEO_HISTORY,
+          RdbConstants.COL_DRM_OFFLINE_KEY_ID, 'TEXT NOT NULL DEFAULT \'\'');
+        logger.info('Migration v13: added offline DRM metadata to local_video_history');
+      }
     }
   ];
 

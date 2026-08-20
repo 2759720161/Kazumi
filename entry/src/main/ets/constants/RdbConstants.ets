@@ -1,6 +1,6 @@
 export class RdbConstants {
   static readonly DB_NAME: string = 'kazumi_main.db'
-  static readonly DB_VERSION: number = 11
+  static readonly DB_VERSION: number = 13
   static readonly DB_SECURITY_LEVEL: number = 1
 
   static readonly TABLE_RULE_SOURCE: string = 'rule_source'
@@ -36,6 +36,7 @@ export class RdbConstants {
   static readonly COL_CREATED_AT: string = 'created_at'
   static readonly COL_UPDATED_AT: string = 'updated_at'
   static readonly COL_SORT_ORDER: string = 'sort_order'
+  static readonly COL_INSTALL_ORIGIN: string = 'install_origin'
 
   static readonly COL_ANIME_ID: string = 'anime_id'
   static readonly COL_ANIME_NAME: string = 'anime_name'
@@ -68,4 +69,7 @@ export class RdbConstants {
   static readonly COL_DANMAKU_OFFSET_MS: string = 'danmaku_offset_ms'
   static readonly COL_DANMAKU_FORMAT: string = 'danmaku_format'
   static readonly COL_DANMAKU_COUNT: string = 'danmaku_count'
+  static readonly COL_DRM_SCHEME: string = 'drm_scheme'
+  static readonly COL_DRM_PLUGIN_NAME: string = 'drm_plugin_name'
+  static readonly COL_DRM_OFFLINE_KEY_ID: string = 'drm_offline_key_id'
 }

@@ -73,9 +73,11 @@ export class BangumiConfig {
       return [];
     }
     const base = `${BangumiConfig.BANGUMI_IMAGE_API_BASE}/v0/subjects/${subjectId}/image`;
+    // The large variant is frequently redirected and only partially
+    // delivered by the mirror. Timeline cards do not need that resolution;
+    // avoid starting a slow multi-hundred-KB request as a fallback candidate.
     return [
       `${base}?type=common`,
-      `${base}?type=large`,
       `${base}?type=medium`
     ];
   }

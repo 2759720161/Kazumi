@@ -1,8 +1,12 @@
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
+
 @Component
 export struct DetailInfoPanel {
   @Prop @Watch('onCoverChanged') cover: string = ''
   @Prop @Watch('onCoverChanged') coverFallback: string = ''
   @Prop @Watch('onCoverChanged') bangumiCover: string = ''
+  @Prop sharedCover: string = ''
+  @Prop sharedCoverId: string = ''
   @Prop ratingScore: number = 0
   @Prop rank: number = 0
   @Prop votes: number = 0
@@ -28,17 +32,16 @@ export struct DetailInfoPanel {
   @Builder
   private CompactLayout() {
     Row() {
-      Image(this.currentCover.length > 0 ? this.currentCover : $r('app.media.ic_placeholder'))
-        .draggable(false)
+      CachedRemoteImage({
+        source: this.getDisplayCover(),
+        sources: this.buildCoverUrls(),
+        sharedId: this.sharedCoverId,
+        cornerRadius: 14
+      })
         .width(118)
         .height(168)
-        .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
         .borderRadius(14)
-        .alt($r('app.media.ic_placeholder'))
         .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
-        .onError(() => {
-          this.tryNextCover()
-        })
 
       Column({ space: 8 }) {
         this.PrimaryMetric()
@@ -61,17 +64,14 @@ export struct DetailInfoPanel {
   @Builder
   private WideLayout() {
     Column({ space: 14 }) {
-      Image(this.currentCover.length > 0 ? this.currentCover : $r('app.media.ic_placeholder'))
-        .draggable(false)
+      CachedRemoteImage({
+        source: this.getDisplayCover(),
+        sources: this.buildCoverUrls()
+      })
         .width('100%')
         .aspectRatio(118 / 168)
-        .objectFit(this.currentCover.length > 0 ? ImageFit.Cover : ImageFit.Contain)
         .borderRadius(12)
-        .alt($r('app.media.ic_placeholder'))
         .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
-        .onError(() => {
-          this.tryNextCover()
-        })
 
       Column({ space: 8 }) {
         this.PrimaryMetric()
@@ -169,6 +169,9 @@ export struct DetailInfoPanel {
   }
 
   private selectBestCover(): string {
+    if (this.sharedCover.length > 0) {
+      return this.sharedCover
+    }
     if (this.cover.startsWith('file://') || this.cover.startsWith('/')) {
       return this.cover
     }
@@ -179,6 +182,16 @@ export struct DetailInfoPanel {
       return this.cover
     }
     return this.coverFallback
+  }
+
+  private getDisplayCover(): string {
+    if (this.currentCover.length > 0) {
+      return this.currentCover
+    }
+    if (this.sharedCover.length > 0) {
+      return this.sharedCover
+    }
+    return ''
   }
 
   private getRatingText(): string {
@@ -216,6 +229,21 @@ export struct DetailInfoPanel {
       this.currentCover = this.coverFallback
     } else {
       this.currentCover = ''
+    }
+  }
+
+  private buildCoverUrls(): string[] {
+    const urls: string[] = []
+    this.pushCoverUrl(urls, this.sharedCover)
+    this.pushCoverUrl(urls, this.bangumiCover)
+    this.pushCoverUrl(urls, this.cover)
+    this.pushCoverUrl(urls, this.coverFallback)
+    return urls
+  }
+
+  private pushCoverUrl(urls: string[], url: string): void {
+    if (url.length > 0 && urls.indexOf(url) < 0) {
+      urls.push(url)
     }
   }
 }

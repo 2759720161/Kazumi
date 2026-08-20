@@ -1,6 +1,9 @@
 import { media } from '@kit.MediaKit'
+import { drm } from '@kit.DrmKit'
+import { util } from '@kit.ArkTS'
 import { fileIo } from '@kit.CoreFileKit'
 import { IPlayerEngine, PlaybackOptions, PlayerState, VideoAspectMode } from './IPlayerEngine'
+import { LocalFilePicker } from '../../services/LocalFilePicker'
 import { Logger } from '../../utils/Logger'
 
 const logger = new Logger('AVPlayerEngine')
@@ -28,6 +31,10 @@ export class AVPlayerEngine implements IPlayerEngine {
   private progressPollingTimer: number = -1
   private localSourceFile: fileIo.File | null = null
   private prepareGeneration: number = 0
+  private drmKeySystem: drm.MediaKeySystem | null = null
+  private drmKeySession: drm.MediaKeySession | null = null
+  private drmConfiguring: boolean = false
+  private drmConfigured: boolean = false
 
   setSurfaceId(surfaceId: string): void {
     this.surfaceId = surfaceId
@@ -72,7 +79,7 @@ export class AVPlayerEngine implements IPlayerEngine {
       if (options.url.length > 0) {
         try {
           if (options.isLocalFile) {
-            const file = fileIo.openSync(options.url, fileIo.OpenMode.READ_ONLY)
+            const file = fileIo.openSync(LocalFilePicker.getFileAccessPath(options.url), fileIo.OpenMode.READ_ONLY)
             const length = options.localFileSize > 0 ? options.localFileSize : fileIo.statSync(file.fd).size
             player.fdSrc = {
               fd: file.fd,
@@ -246,6 +253,10 @@ export class AVPlayerEngine implements IPlayerEngine {
       this.notifyStateChange()
     })
 
+    this.avPlayer.on('mediaKeySystemInfoUpdate', (infos: Array<drm.MediaKeySystemInfo>) => {
+      this.configureOfflineDrm(infos)
+    })
+
     this.avPlayer.on('timeUpdate', (time: number) => {
       if (this.shouldRejectInitialSeekRegression(time, 'timeUpdate')) {
         return
@@ -283,6 +294,68 @@ export class AVPlayerEngine implements IPlayerEngine {
       this.state.stateName = 'error'
       this.notifyStateChange()
     })
+  }
+
+  private configureOfflineDrm(infos: Array<drm.MediaKeySystemInfo>): void {
+    const options = this.currentOptions
+    const player = this.avPlayer
+    if (options === null || player === null || options.drmOfflineKeyId.length === 0 ||
+      this.drmConfiguring || this.drmConfigured) {
+      return
+    }
+    const requestedUuid = this.normalizeDrmUuid(options.drmScheme)
+    let mediaInfo: drm.MediaKeySystemInfo | null = null
+    for (let i = 0; i < infos.length; i++) {
+      if (requestedUuid.length === 0 || this.normalizeDrmUuid(infos[i].uuid) === requestedUuid) {
+        mediaInfo = infos[i]
+        break
+      }
+    }
+    if (mediaInfo === null) {
+      this.failPlayback('本地媒体的 DRM 系统与离线许可证不匹配')
+      return
+    }
+    const pluginName = options.drmPluginName.length > 0 ? options.drmPluginName :
+      this.findDrmPluginName(mediaInfo.uuid)
+    if (pluginName.length === 0) {
+      this.failPlayback('当前设备未安装此离线媒体所需的 DRM 插件')
+      return
+    }
+    this.drmConfiguring = true
+    const keyId = new util.Base64Helper().decodeSync(options.drmOfflineKeyId)
+    const keySystem = drm.createMediaKeySystem(pluginName)
+    const keySession = keySystem.createMediaKeySession()
+    this.drmKeySystem = keySystem
+    this.drmKeySession = keySession
+    keySession.restoreOfflineMediaKeys(keyId).then(() => {
+      if (this.currentOptions !== options || this.avPlayer !== player || this.drmKeySession !== keySession) {
+        return
+      }
+      const mimeType = options.drmMimeType.length > 0 ? options.drmMimeType : 'video/mp4'
+      const secureVideoPath = keySession.requireSecureDecoderModule(mimeType)
+      player.setDecryptionConfig(keySession, secureVideoPath)
+      this.drmConfiguring = false
+      this.drmConfigured = true
+      logger.info('AVPlayer offline DRM configured: scheme=%{public}s secure=%{public}s',
+        this.normalizeDrmUuid(mediaInfo!.uuid), String(secureVideoPath))
+    }).catch((err: Error) => {
+      if (this.currentOptions !== options || this.avPlayer !== player) return
+      this.drmConfiguring = false
+      this.failPlayback('恢复 DRM 离线许可证失败：' + (err instanceof Error ? err.message : String(err)))
+    })
+  }
+
+  private findDrmPluginName(uuid: string): string {
+    const target = this.normalizeDrmUuid(uuid)
+    const systems = drm.getMediaKeySystems()
+    for (let i = 0; i < systems.length; i++) {
+      if (this.normalizeDrmUuid(systems[i].uuid) === target) return systems[i].name
+    }
+    return ''
+  }
+
+  private normalizeDrmUuid(value: string): string {
+    return value.toLowerCase().replace(/[{}]/g, '').replace(/^urn:uuid:/, '')
   }
 
   private seekBeforeInitialPlay(positionMs: number): void {
@@ -421,7 +494,7 @@ export class AVPlayerEngine implements IPlayerEngine {
 
   setAspectMode(mode: VideoAspectMode): void {
     this.pendingAspectMode = mode
-    if (this.avPlayer !== null) {
+    if (this.avPlayer !== null && this.isAspectModeReady()) {
       try {
         const modeName = this.getAspectModeName(mode)
         const scaleType = this.getVideoScaleType(mode)
@@ -433,6 +506,11 @@ export class AVPlayerEngine implements IPlayerEngine {
         logger.warn('AVPlayer setAspectMode failed: %{public}s', String(err))
       }
     }
+  }
+
+  private isAspectModeReady(): boolean {
+    return this.state.stateName === 'prepared' || this.state.stateName === 'playing' ||
+      this.state.stateName === 'paused' || this.state.stateName === 'completed'
   }
 
   private getVideoScaleType(mode: VideoAspectMode): media.VideoScaleType {
@@ -488,6 +566,20 @@ export class AVPlayerEngine implements IPlayerEngine {
       }
       this.avPlayer = null
     }
+    this.releaseDrmResources()
+  }
+
+  private releaseDrmResources(): void {
+    if (this.drmKeySession !== null) {
+      try { this.drmKeySession.destroy() } catch (_err) {}
+      this.drmKeySession = null
+    }
+    if (this.drmKeySystem !== null) {
+      try { this.drmKeySystem.destroy() } catch (_err) {}
+      this.drmKeySystem = null
+    }
+    this.drmConfiguring = false
+    this.drmConfigured = false
   }
 
   private startPrepareTimeout(): void {
@@ -649,6 +741,7 @@ export class AVPlayerEngine implements IPlayerEngine {
       }
       this.avPlayer = null
     }
+    this.releaseDrmResources()
     this.closeLocalSourceFile()
   }
 

@@ -1,24 +1,27 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
 import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
-import { router } from '@kit.ArkUI'
+import { navigateToDetail } from '../../utils/DetailNavigation'
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
 
 @Component
 export struct RecommendCard {
   @Prop item: RecommendCardModel = new RecommendCardModel()
   @Prop showRank: boolean = false
   @Prop cardWidth: number = 112
+  @Prop sharedCoverIdPrefix: string = 'poster'
   @State isPressed: boolean = false
 
   build() {
     Column({ space: 8 }) {
       Stack({ alignContent: Alignment.TopStart }) {
-        Image(this.item.getGridCover().length > 0 ? this.item.getGridCover() : $r('app.media.ic_placeholder'))
-          .draggable(false)
+        CachedRemoteImage({
+          source: this.item.getGridCover(),
+          sources: this.getCoverCandidates(),
+          sharedId: this.getSharedCoverId()
+        })
           .width('100%')
           .height('100%')
-          .objectFit(ImageFit.Cover)
           .borderRadius(12)
-          .alt($r('app.media.ic_placeholder'))
 
         if (this.showRank && this.item.rank > 0) {
           this.RankBadge()
@@ -72,10 +75,7 @@ export struct RecommendCard {
   }
 
   private navigateToDetail(): void {
-    router.pushUrl({
-      url: 'pages/detail/DetailPage',
-      params: buildRecommendDetailParams(this.item)
-    })
+    navigateToDetail(buildRecommendDetailParams(this.item, this.getSharedCoverId()))
   }
 
   private getPosterHeight(): number {
@@ -84,5 +84,20 @@ export struct RecommendCard {
 
   private getCardHeight(): number {
     return this.getPosterHeight() + 44
+  }
+
+  private getSharedCoverId(): string {
+    const subjectId = this.item.bangumiId > 0 ? this.item.bangumiId : this.item.id
+    return this.sharedCoverIdPrefix + '-cover-' + subjectId.toString()
+  }
+
+  private getCoverCandidates(): string[] {
+    return [
+      this.item.coverCommon,
+      this.item.coverMedium,
+      this.item.bangumiCover,
+      this.item.cover,
+      this.item.coverFallback
+    ]
   }
 }

@@ -357,7 +357,12 @@ export class DanmakuTimeSync {
         continue
       }
       if (pending.emitAtMs <= now && this.currentPlaying) {
-        this.emitDanmaku(pending.item, this.currentPositionMs)
+        if (this.getFilterReason(pending.item).length === 0) {
+          this.emitDanmaku(pending.item, this.currentPositionMs)
+        } else {
+          this.stats.filteredCount++
+          this.stats.lastFilterReason = 'source_disabled'
+        }
         continue
       }
       if (writeIndex !== i) {
@@ -482,17 +487,7 @@ export class DanmakuTimeSync {
   }
 
   private isSourceEnabled(source: string): boolean {
-    const normalized = source.toLowerCase()
-    if (normalized.length === 0 || normalized === 'local') {
-      return true
-    }
-    if (normalized.indexOf('bilibili') >= 0 || normalized.indexOf('bili') >= 0) {
-      return this.settings.biliBiliSource
-    }
-    if (normalized.indexOf('gamer') >= 0) {
-      return this.settings.gamerSource
-    }
-    return this.settings.danDanSource
+    return this.settings.isSourceEnabled(source)
   }
 
   private parseBlockedKeywords(text: string): string[] {

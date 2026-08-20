@@ -649,7 +649,6 @@ export struct SourceSheet {
         .padding({ left: 14, right: 14 })
         .backgroundColor($r('app.color.accent_blue'))
         .borderRadius(16)
-        .systemMaterial(createThinImmersiveMaterial())
         .onClick(() => {
           this.onSearchResultSelected(result)
         })
@@ -680,7 +679,6 @@ export struct SourceSheet {
         .fontColor(Color.Black)
         .borderRadius(14)
         .border({ width: 0.5, color: $r('app.color.border_subtle') })
-        .systemMaterial(createThinImmersiveMaterial())
         .margin({ left: 8 })
         .onClick(() => {
           this.openAliasDialog()
@@ -692,7 +690,6 @@ export struct SourceSheet {
         .backgroundColor($r('app.color.accent_blue'))
         .fontColor($r('app.color.text_on_primary'))
         .borderRadius(14)
-        .systemMaterial(createThinImmersiveMaterial())
         .margin({ left: 8 })
         .onClick(() => {
           this.openManualSearchDialog()
@@ -785,7 +782,6 @@ export struct SourceSheet {
           .fontColor(Color.Black)
           .borderRadius(21)
           .border({ width: 0.5, color: $r('app.color.border_subtle') })
-          .systemMaterial(createThickImmersiveMaterial())
           .margin({ right: 12 })
           .onClick(() => {
             this.openAliasDialog()
@@ -797,7 +793,6 @@ export struct SourceSheet {
           .backgroundColor($r('app.color.accent_blue'))
           .fontColor($r('app.color.text_on_primary'))
           .borderRadius(21)
-          .systemMaterial(createThickImmersiveMaterial())
           .onClick(() => {
             this.openManualSearchDialog()
           })
@@ -836,7 +831,6 @@ export struct SourceSheet {
           .backgroundColor($r('app.color.accent_blue'))
           .fontColor($r('app.color.text_on_primary'))
           .borderRadius(21)
-          .systemMaterial(createThickImmersiveMaterial())
           .onClick(() => {
             this.openManualSearchDialog()
           })
@@ -917,7 +911,6 @@ export struct SourceSheet {
           .backgroundColor(Color.White)
           .fontColor(Color.Black)
           .borderRadius(21)
-          .systemMaterial(createThickImmersiveMaterial())
           .border({ width: 0.5, color: $r('app.color.border_subtle') })
           .margin({ right: 10 })
           .onClick(() => {
@@ -930,7 +923,6 @@ export struct SourceSheet {
           .backgroundColor($r('app.color.accent_blue'))
           .fontColor($r('app.color.text_on_primary'))
           .borderRadius(21)
-          .systemMaterial(createThickImmersiveMaterial())
           .onClick(() => {
             this.openManualSearchDialog()
           })
@@ -1025,7 +1017,6 @@ export struct SourceSheet {
             .borderRadius(18)
             .border({ width: 0.5, color: $r('app.color.border_specular') })
             .shadow({ radius: 12, color: $r('app.color.shadow_surface'), offsetY: 4 })
-            .systemMaterial(createThickImmersiveMaterial())
             .layoutWeight(1)
             .onClick(() => {
               this.showAliasDialog = false
@@ -1091,7 +1082,6 @@ export struct SourceSheet {
             .fontColor($r('app.color.text_primary'))
             .borderRadius(21)
             .border({ width: 0.5, color: $r('app.color.border_subtle') })
-            .systemMaterial(createThinImmersiveMaterial())
             .layoutWeight(1)
             .margin({ right: 8 })
             .onClick(() => {
@@ -1106,7 +1096,6 @@ export struct SourceSheet {
             .fontColor($r('app.color.text_on_primary'))
             .borderRadius(21)
             .shadow({ radius: 12, color: $r('app.color.shadow_button_accent'), offsetY: 4 })
-            .systemMaterial(createThickImmersiveMaterial())
             .layoutWeight(1)
             .onClick(() => {
               const keyword = this.manualSearchKeyword.trim()

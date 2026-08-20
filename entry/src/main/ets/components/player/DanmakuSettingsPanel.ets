@@ -106,18 +106,6 @@ export class DanmakuSettingsController {
     }
   }
 
-  canToggleSource(targetKey: string, biliBili: boolean, gamer: boolean, danDan: boolean): boolean {
-    let enabledCount = 0
-    if (biliBili) enabledCount++
-    if (gamer) enabledCount++
-    if (danDan) enabledCount++
-    if (enabledCount <= 1) {
-      if (targetKey === DANMAKU_PREFS_KEY_BILIBILI_SOURCE && biliBili) return false
-      if (targetKey === DANMAKU_PREFS_KEY_GAMER_SOURCE && gamer) return false
-      if (targetKey === DANMAKU_PREFS_KEY_DANDAN_SOURCE && danDan) return false
-    }
-    return true
-  }
 }
 
 @Component
@@ -156,8 +144,10 @@ struct DanmakuSwitchRow {
 export struct DanmakuSettingsPanelContent {
   @Prop @Watch('onDanmakuEnabledChanged') isDanmakuEnabled: boolean = true
   @Prop isFullScreen: boolean = false
+  @Prop showHeader: boolean = true
   @Prop @Watch('onSettingsVersionChanged') settingsVersion: number = 0
   @Prop showSourceFilter: boolean = true
+  @Prop useGlassBackground: boolean = false
   onSetDanmakuEnabled: (enabled: boolean) => void = () => {}
   onPanelClose: () => void = () => {}
   onPauseAutoHide: () => void = () => {}
@@ -246,29 +236,31 @@ export struct DanmakuSettingsPanelContent {
 
   build() {
     Column() {
-      Row() {
-        Text('弹幕设置')
-          .fontSize(18)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .layoutWeight(1)
-
+      if (this.showHeader) {
         Row() {
-          SymbolGlyph($r('sys.symbol.xmark'))
+          Text('弹幕设置')
             .fontSize(18)
-            .fontColor([$r('app.color.text_primary')])
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+
+          Row() {
+            SymbolGlyph($r('sys.symbol.xmark'))
+              .fontSize(18)
+              .fontColor([$r('app.color.text_primary')])
+          }
+          .width(36)
+          .height(36)
+          .borderRadius(18)
+          .justifyContent(FlexAlign.Center)
+          .alignItems(VerticalAlign.Center)
+          .onClick(() => {
+            this.onPanelClose()
+          })
         }
-        .width(36)
-        .height(36)
-        .borderRadius(18)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .onClick(() => {
-          this.onPanelClose()
-        })
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 12, bottom: 8 })
       }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 12, bottom: 8 })
 
       Scroll() {
         Column() {
@@ -292,7 +284,7 @@ export struct DanmakuSettingsPanelContent {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.page_background'))
+    .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.page_background'))
   }
 
   @Builder
@@ -312,7 +304,8 @@ export struct DanmakuSettingsPanelContent {
       .width('100%')
       .borderRadius(12)
       .clip(true)
-      .backgroundColor($r('app.color.card_background'))
+      .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.card_background'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
@@ -370,7 +363,8 @@ export struct DanmakuSettingsPanelContent {
       .width('100%')
       .borderRadius(12)
       .clip(true)
-      .backgroundColor($r('app.color.card_background'))
+      .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.card_background'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
@@ -461,7 +455,8 @@ export struct DanmakuSettingsPanelContent {
       .width('100%')
       .borderRadius(12)
       .clip(true)
-      .backgroundColor($r('app.color.card_background'))
+      .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.card_background'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
@@ -565,7 +560,8 @@ export struct DanmakuSettingsPanelContent {
       .width('100%')
       .borderRadius(12)
       .clip(true)
-      .backgroundColor($r('app.color.card_background'))
+      .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.card_background'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
@@ -583,11 +579,6 @@ export struct DanmakuSettingsPanelContent {
           value: $biliBiliSource,
           switchEnabled: true,
           onToggle: (value: boolean) => {
-            if (!value && !this.controller.canToggleSource(DANMAKU_PREFS_KEY_BILIBILI_SOURCE,
-              !value, this.gamerSource, this.danDanSource)) {
-              this.biliBiliSource = !value
-              return
-            }
             this.saveBooleanSetting(DANMAKU_PREFS_KEY_BILIBILI_SOURCE, value, !value, (value: boolean) => {
               this.biliBiliSource = value
             })
@@ -599,11 +590,6 @@ export struct DanmakuSettingsPanelContent {
           value: $gamerSource,
           switchEnabled: true,
           onToggle: (value: boolean) => {
-            if (!value && !this.controller.canToggleSource(DANMAKU_PREFS_KEY_GAMER_SOURCE,
-              this.biliBiliSource, !value, this.danDanSource)) {
-              this.gamerSource = !value
-              return
-            }
             this.saveBooleanSetting(DANMAKU_PREFS_KEY_GAMER_SOURCE, value, !value, (value: boolean) => {
               this.gamerSource = value
             })
@@ -615,11 +601,6 @@ export struct DanmakuSettingsPanelContent {
           value: $danDanSource,
           switchEnabled: true,
           onToggle: (value: boolean) => {
-            if (!value && !this.controller.canToggleSource(DANMAKU_PREFS_KEY_DANDAN_SOURCE,
-              this.biliBiliSource, this.gamerSource, !value)) {
-              this.danDanSource = !value
-              return
-            }
             this.saveBooleanSetting(DANMAKU_PREFS_KEY_DANDAN_SOURCE, value, !value, (value: boolean) => {
               this.danDanSource = value
             })
@@ -629,7 +610,8 @@ export struct DanmakuSettingsPanelContent {
       .width('100%')
       .borderRadius(12)
       .clip(true)
-      .backgroundColor($r('app.color.card_background'))
+      .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.card_background'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }
@@ -704,7 +686,8 @@ export struct DanmakuSettingsPanelContent {
       .width('100%')
       .borderRadius(12)
       .clip(true)
-      .backgroundColor($r('app.color.card_background'))
+      .backgroundColor(this.useGlassBackground ? $r('app.color.speed_menu_surface') : $r('app.color.card_background'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .border({ width: 0.5, color: $r('app.color.card_specular_border') })
       .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
     }

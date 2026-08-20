@@ -53,6 +53,11 @@ export class LocalVideoHistoryStore {
         record.danmakuFormat = existing.danmakuFormat;
         record.danmakuCount = existing.danmakuCount;
       }
+      if (record.drmOfflineKeyId.length === 0 && existing.drmOfflineKeyId.length > 0) {
+        record.drmScheme = existing.drmScheme;
+        record.drmPluginName = existing.drmPluginName;
+        record.drmOfflineKeyId = existing.drmOfflineKeyId;
+      }
       const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY);
       predicates.equalTo(RdbConstants.COL_FILE_KEY, fileKey);
       const values: relationalStore.ValuesBucket = {
@@ -68,7 +73,10 @@ export class LocalVideoHistoryStore {
         danmaku_uri: record.danmakuUri,
         danmaku_offset_ms: record.danmakuOffsetMs,
         danmaku_format: record.danmakuFormat,
-        danmaku_count: record.danmakuCount
+        danmaku_count: record.danmakuCount,
+        drm_scheme: record.drmScheme,
+        drm_plugin_name: record.drmPluginName,
+        drm_offline_key_id: record.drmOfflineKeyId
       };
       const rows = await this.rdbManager.update(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values, predicates);
       LocalVideoHistoryChangeSignal.notifyChanged();
@@ -88,6 +96,9 @@ export class LocalVideoHistoryStore {
         danmaku_offset_ms: record.danmakuOffsetMs,
         danmaku_format: record.danmakuFormat,
         danmaku_count: record.danmakuCount,
+        drm_scheme: record.drmScheme,
+        drm_plugin_name: record.drmPluginName,
+        drm_offline_key_id: record.drmOfflineKeyId,
         created_at: Date.now()
       };
       const id = await this.rdbManager.insert(RdbConstants.TABLE_LOCAL_VIDEO_HISTORY, values);
@@ -168,6 +179,9 @@ export class LocalVideoHistoryStore {
           record.danmakuOffsetMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_DANMAKU_OFFSET_MS));
           record.danmakuFormat = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_DANMAKU_FORMAT));
           record.danmakuCount = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_DANMAKU_COUNT));
+          record.drmScheme = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_DRM_SCHEME));
+          record.drmPluginName = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_DRM_PLUGIN_NAME));
+          record.drmOfflineKeyId = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_DRM_OFFLINE_KEY_ID));
           record.createdAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_CREATED_AT));
           list.push(record);
         } while (resultSet.goToNextRow());

@@ -1,5 +1,7 @@
 import { HistoryRecord } from '../../models/HistoryRecord'
 import { router } from '@kit.ArkUI'
+import { DetailNavigationParams, navigateToDetail } from '../../utils/DetailNavigation'
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
 
 @Component
 export struct ContinueWatchingSection {
@@ -52,13 +54,14 @@ export struct ContinueWatchingSection {
   @Builder
   private ContinueCard(record: HistoryRecord) {
     Row({ space: 12 }) {
-      Image(record.animeCover.length > 0 ? record.animeCover : $r('app.media.ic_placeholder'))
-        .draggable(false)
+      CachedRemoteImage({
+        source: record.animeCover,
+        sharedId: this.getSharedCoverId(record),
+        cornerRadius: 8
+      })
         .width(52)
         .height(72)
-        .objectFit(ImageFit.Cover)
         .borderRadius(8)
-        .alt($r('app.media.ic_placeholder'))
 
       Column({ space: 4 }) {
         Text(record.animeName)
@@ -136,17 +139,16 @@ export struct ContinueWatchingSection {
   }
 
   private navigateToDetail(record: HistoryRecord): void {
-    router.pushUrl({
-      url: 'pages/detail/DetailPage',
-      params: {
-        animeName: record.animeName,
-        animeCover: record.animeCover,
-        animeUrl: record.animeUrl,
-        sourceId: record.sourceId,
-        sourceName: record.sourceName,
-        bangumiId: record.bangumiId
-      }
-    })
+    const params = new DetailNavigationParams()
+    params.animeName = record.animeName
+    params.animeCover = record.animeCover
+    params.animeUrl = record.animeUrl
+    params.sourceId = record.sourceId
+    params.sourceName = record.sourceName
+    params.bangumiId = record.bangumiId
+    params.sharedCoverId = this.getSharedCoverId(record)
+    params.transitionCover = record.animeCover
+    navigateToDetail(params)
   }
 
   private formatProgress(positionMs: number, durationMs: number): string {
@@ -158,5 +160,10 @@ export struct ContinueWatchingSection {
     const durRemSec = durSec % 60
     return posMin.toString() + ':' + posRemSec.toString().padStart(2, '0') + ' / ' +
       durMin.toString() + ':' + durRemSec.toString().padStart(2, '0')
+  }
+
+  private getSharedCoverId(record: HistoryRecord): string {
+    const subjectId = record.bangumiId > 0 ? record.bangumiId : record.animeId
+    return 'continue-cover-' + subjectId.toString()
   }
 }

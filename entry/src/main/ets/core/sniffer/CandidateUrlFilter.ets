@@ -235,6 +235,10 @@ export class CandidateUrlFilter {
     const query = url.substring(queryIndex + 1)
     const params = query.split('&')
     const keys: string[] = ['url=', 'play=', 'src=', 'video=', 'videourl=']
+    // 7sefun 的 404 包装页把真实媒体地址放在 vid 参数中，仅对该域名启用。
+    if (url.toLowerCase().indexOf('yun.92cj.com/404.php?') !== -1) {
+      keys.push('vid=')
+    }
     for (let i = 0; i < params.length; i++) {
       const part = params[i]
       const lowerPart = part.toLowerCase()

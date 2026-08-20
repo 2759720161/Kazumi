@@ -1,28 +1,8 @@
 import { RecommendCardModel } from '../models/RecommendCardModel'
+import { DetailNavigationParams } from './DetailNavigation'
 
-class RecommendDetailParams {
-  animeName: string = ''
-  animeCover: string = ''
-  animeCoverFallback: string = ''
-  animeBangumiCover: string = ''
-  animeDesc: string = ''
-  animeOriginalName: string = ''
-  animeAirDate: string = ''
-  animeRatingScore: number = 0
-  animeRank: number = 0
-  animeTags: string = ''
-  animeVotes: number = 0
-  animeVotesCount: string = ''
-  animeAirWeekday: number = 0
-  animeEps: number = 0
-  animeUrl: string = ''
-  sourceName: string = ''
-  sourceId: number = -1
-  bangumiId: number = -1
-}
-
-export function buildRecommendDetailParams(item: RecommendCardModel): RecommendDetailParams {
-  const params = new RecommendDetailParams()
+export function buildRecommendDetailParams(item: RecommendCardModel, sharedCoverId: string = ''): DetailNavigationParams {
+  const params = new DetailNavigationParams()
   params.animeName = item.title
   params.animeCover = item.cover
   params.animeCoverFallback = item.coverFallback
@@ -41,5 +21,7 @@ export function buildRecommendDetailParams(item: RecommendCardModel): RecommendD
   params.sourceName = item.sourceName
   params.sourceId = item.sourceId
   params.bangumiId = item.bangumiId
+  params.sharedCoverId = sharedCoverId.length > 0 ? sharedCoverId : 'subject-cover-' + item.bangumiId.toString()
+  params.transitionCover = item.getGridCover()
   return params
 }

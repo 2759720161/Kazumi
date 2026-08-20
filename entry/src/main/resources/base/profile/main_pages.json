@@ -12,9 +12,12 @@
     "pages/settings/DanmakuSettingsPage",
     "pages/settings/DanmakuBlockRulesPage",
     "pages/settings/RuleShopPage",
+    "pages/settings/RuleEditorPage",
     "pages/settings/PlayerSettingsPage",
     "pages/settings/AppearanceSettingsPage",
     "pages/settings/ThirdPartyPage",
-    "pages/player/LocalPlayerPage"
+    "pages/player/LocalPlayerPage",
+    "pages/download/DownloadPage",
+    "pages/local/FolderPage"
   ]
 }

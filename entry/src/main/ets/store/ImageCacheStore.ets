@@ -4,12 +4,21 @@ import { FileStore } from './FileStore';
 import { Logger, extractErrorMsg } from '../utils/Logger';
 
 const logger = new Logger('ImageCacheStore');
+// Keep image bursts below the socket pressure that can trigger curl 55 on
+// some HarmonyOS devices while still allowing the grid to fill quickly.
+const MAX_CONCURRENT_IMAGE_DOWNLOADS = 3;
+const IMAGE_RETRY_DELAY_MS = 350;
 
 export class ImageCacheStore {
   private static instance: ImageCacheStore | null = null;
   private readonly cacheDirName: string = 'image_cache';
   private readonly failedUrls: Map<string, number> = new Map();
-  private readonly failureCooldownMs: number = 5 * 60 * 1000;
+  // Image failures are usually transient network errors. A long cooldown
+  // leaves a card stuck on a placeholder after one interrupted response.
+  private readonly failureCooldownMs: number = 15 * 1000;
+  private readonly inFlightDownloads: Map<string, Promise<ArrayBuffer>> = new Map();
+  private readonly downloadWaiters: Array<() => void> = [];
+  private activeDownloadCount: number = 0;
 
   private constructor() {}
 
@@ -35,10 +44,10 @@ export class ImageCacheStore {
         const path = this.getCachePath(url);
         if (fs.accessSync(path)) {
           const stat = fs.statSync(path);
-          if (stat.size > 100) {
+          if (stat.size > 100 && this.isValidImageFile(path)) {
             return fileUri.getUriFromPath(path);
           }
-          logger.warn('Invalid cache file (size=%{public}d), deleting: %{public}s',
+          logger.warn('Invalid or truncated cache file (size=%{public}d), deleting: %{public}s',
             stat.size, this.shorten(url));
           fs.unlinkSync(path);
         }
@@ -68,9 +77,10 @@ export class ImageCacheStore {
           continue;
         }
         const stat = fs.statSync(path);
-        if (stat.size > 100) {
+        if (stat.size > 100 && this.isValidImageFile(path)) {
           return fileUri.getUriFromPath(path);
         }
+        fs.unlinkSync(path);
       } catch (err) {
         logger.warn('Read cached image failed: %{public}s', extractErrorMsg(err as Object));
       }
@@ -79,6 +89,65 @@ export class ImageCacheStore {
   }
 
   private async downloadImage(url: string): Promise<ArrayBuffer> {
+    const inFlight = this.inFlightDownloads.get(url);
+    if (inFlight !== undefined) {
+      return await inFlight;
+    }
+
+    const task = this.downloadImageWithRetry(url);
+    this.inFlightDownloads.set(url, task);
+    try {
+      return await task;
+    } finally {
+      if (this.inFlightDownloads.get(url) === task) {
+        this.inFlightDownloads.delete(url);
+      }
+    }
+  }
+
+  private async downloadImageWithRetry(url: string): Promise<ArrayBuffer> {
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await this.acquireDownloadSlot();
+      try {
+        return await this.downloadImageOnce(url);
+      } catch (err) {
+        lastError = new Error(extractErrorMsg(err as Object));
+        if (attempt < 2) {
+          await new Promise<void>((resolve: () => void) => {
+            setTimeout(resolve, IMAGE_RETRY_DELAY_MS * (attempt + 1));
+          });
+        }
+      } finally {
+        this.releaseDownloadSlot();
+      }
+    }
+    throw lastError === null ? new Error('Image download failed') : lastError;
+  }
+
+  private async acquireDownloadSlot(): Promise<void> {
+    if (this.activeDownloadCount < MAX_CONCURRENT_IMAGE_DOWNLOADS) {
+      this.activeDownloadCount++;
+      return;
+    }
+    await new Promise<void>((resolve: () => void) => {
+      this.downloadWaiters.push(resolve);
+    });
+  }
+
+  private releaseDownloadSlot(): void {
+    const next = this.downloadWaiters.shift();
+    if (next !== undefined) {
+      // Transfer the released slot directly to the next waiter. Keeping the
+      // count unchanged prevents a new caller from exceeding the limit while
+      // the waiter is being resumed.
+      next();
+      return;
+    }
+    this.activeDownloadCount = Math.max(0, this.activeDownloadCount - 1);
+  }
+
+  private async downloadImageOnce(url: string): Promise<ArrayBuffer> {
     const request = http.createHttp();
     try {
       const isProxyUrl = url.includes('/img.php') || url.includes('/image.php') ||
@@ -115,6 +184,9 @@ export class ImageCacheStore {
       if (data.byteLength < 100) {
         throw new Error(`Image too small: ${data.byteLength} bytes`);
       }
+      if (!this.isValidImageData(data)) {
+        throw new Error(`Incomplete image data: ${data.byteLength} bytes`);
+      }
       return data;
     } finally {
       request.destroy();
@@ -132,6 +204,70 @@ export class ImageCacheStore {
     } finally {
       fs.closeSync(file);
     }
+  }
+
+  /**
+   * A timed-out HTTP request can still report status 200 and return a partial
+   * ArrayBuffer. Check the container trailer before putting it in the cache.
+   */
+  private isValidImageFile(path: string): boolean {
+    let file: fs.File | null = null;
+    try {
+      const stat = fs.statSync(path);
+      if (stat.size <= 100) {
+        return false;
+      }
+      const data = new ArrayBuffer(stat.size);
+      file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      fs.readSync(file.fd, data);
+      return this.isValidImageData(data);
+    } catch (err) {
+      return false;
+    } finally {
+      if (file !== null) {
+        fs.closeSync(file);
+      }
+    }
+  }
+
+  private isValidImageData(data: ArrayBuffer): boolean {
+    const bytes = new Uint8Array(data);
+    if (bytes.length < 12) {
+      return false;
+    }
+
+    // JPEG: SOI at the front and EOI at the end. This catches the partial
+    // JPEG bodies returned by the network stack after curl timeout 28.
+    if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
+      return bytes[bytes.length - 2] === 0xFF && bytes[bytes.length - 1] === 0xD9;
+    }
+
+    // PNG: signature plus IEND near the end of the file.
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E &&
+      bytes[3] === 0x47 && bytes[4] === 0x0D && bytes[5] === 0x0A &&
+      bytes[6] === 0x1A && bytes[7] === 0x0A) {
+      for (let i = Math.max(8, bytes.length - 32); i <= bytes.length - 4; i++) {
+        if (bytes[i] === 0x49 && bytes[i + 1] === 0x45 &&
+          bytes[i + 2] === 0x4E && bytes[i + 3] === 0x44) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // WebP: RIFF container with WEBP form type. The RIFF length is allowed
+    // to include padding, so only require the declared payload to be present.
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 &&
+      bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 &&
+      bytes[10] === 0x42 && bytes[11] === 0x50) {
+      const declaredSize = bytes[4] + (bytes[5] << 8) + (bytes[6] << 16) + (bytes[7] << 24);
+      return declaredSize <= bytes.length - 8;
+    }
+
+    // Keep compatibility with uncommon image formats returned by a rule
+    // source. The known truncated formats above are the failure cases we can
+    // identify without decoding the image on the UI thread.
+    return true;
   }
 
   private getCachePath(url: string): string {

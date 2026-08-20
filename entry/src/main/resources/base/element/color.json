@@ -45,6 +45,10 @@
       "value": "#B3FFFFFF"
     },
     {
+      "name": "speed_menu_surface",
+      "value": "#33FFFFFF"
+    },
+    {
       "name": "category_menu_item_selected",
       "value": "#14007DFF"
     },

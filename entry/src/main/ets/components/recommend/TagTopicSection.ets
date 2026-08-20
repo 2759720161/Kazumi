@@ -1,11 +1,8 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
 import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
 import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
-import { router } from '@kit.ArkUI'
-import { ImageCacheStore } from '../../store/ImageCacheStore'
-import { Logger } from '../../utils/Logger'
-
-const logger = new Logger('TagTopicSection')
+import { navigateToDetail } from '../../utils/DetailNavigation'
+import { CachedRemoteImage } from '../common/CachedRemoteImage'
 
 @Component
 export struct TagTopicSection {
@@ -173,37 +170,22 @@ export struct TagTopicSection {
 
 @Component
 struct TagTopicCard {
-  @Prop @Watch('onItemChanged') item: RecommendCardModel = new RecommendCardModel()
-  @State currentCover: string = ''
-  @State coverKey: string = ''
-  @State hasCoverError: boolean = false
+  @Prop item: RecommendCardModel = new RecommendCardModel()
   @State isPressed: boolean = false
-
-  aboutToAppear(): void {
-    this.coverKey = this.buildCoverKey()
-    this.currentCover = this.selectBestCover()
-    this.hasCoverError = false
-    this.prepareCachedCover(this.coverKey)
-  }
 
   build() {
     Column({ space: 8 }) {
-      Image(this.getCoverSource())
-        .draggable(false)
+      CachedRemoteImage({
+        source: this.selectBestCover(),
+        sources: this.getCoverCandidates(),
+        sharedId: this.getSharedCoverId()
+      })
         .width('100%')
         .aspectRatio(3 / 4)
-        .objectFit(this.currentCover.length > 0 && !this.hasCoverError ? ImageFit.Cover : ImageFit.Contain)
         .borderRadius(12)
-        .alt($r('app.media.ic_placeholder'))
         .backgroundColor($r('app.color.card_background'))
         .border({ width: 0.5, color: $r('app.color.card_specular_border') })
         .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 4 })
-        .onError(() => {
-          const urlPrefix = this.currentCover.length > 120 ? this.currentCover.substring(0, 120) : this.currentCover
-          logger.warn('Tag topic cover load failed: %{public}s', urlPrefix)
-          this.currentCover = ''
-          this.hasCoverError = true
-        })
 
       Text(this.item.title)
         .fontSize(14)
@@ -220,10 +202,7 @@ struct TagTopicCard {
     .scale({ x: this.isPressed ? 0.98 : 1, y: this.isPressed ? 0.98 : 1 })
     .animation({ duration: 150 })
     .onClick(() => {
-      router.pushUrl({
-        url: 'pages/detail/DetailPage',
-        params: buildRecommendDetailParams(this.item)
-      })
+      navigateToDetail(buildRecommendDetailParams(this.item, this.getSharedCoverId()))
     })
     .onTouch((event: TouchEvent) => {
       if (event.type === TouchType.Down) {
@@ -234,11 +213,9 @@ struct TagTopicCard {
     })
   }
 
-  private getCoverSource(): ResourceStr {
-    if (this.currentCover.length > 0 && !this.hasCoverError) {
-      return this.currentCover
-    }
-    return $r('app.media.ic_placeholder')
+  private getSharedCoverId(): string {
+    const subjectId = this.item.bangumiId > 0 ? this.item.bangumiId : this.item.id
+    return 'tag-cover-' + subjectId.toString()
   }
 
   private selectBestCover(): string {
@@ -246,36 +223,13 @@ struct TagTopicCard {
     return cover.length > 0 ? cover : ''
   }
 
-  private buildCoverKey(): string {
-    return this.item.id.toString() + '|' + this.selectBestCover()
-  }
-
-  private onItemChanged(): void {
-    const nextKey = this.buildCoverKey()
-    if (nextKey === this.coverKey) {
-      return
-    }
-    this.coverKey = nextKey
-    this.currentCover = this.selectBestCover()
-    this.hasCoverError = false
-    this.prepareCachedCover(nextKey)
-  }
-
-  private async prepareCachedCover(expectedKey: string): Promise<void> {
-    const cover = this.selectBestCover()
-    if (cover.length === 0) {
-      return
-    }
-    const localUri = await ImageCacheStore.getInstance().getCachedImageUri([cover])
-    if (this.coverKey !== expectedKey) {
-      return
-    }
-    if (localUri.length > 0) {
-      this.currentCover = localUri
-      this.hasCoverError = false
-    } else {
-      this.currentCover = cover
-      this.hasCoverError = false
-    }
+  private getCoverCandidates(): string[] {
+    return [
+      this.item.coverCommon,
+      this.item.coverMedium,
+      this.item.bangumiCover,
+      this.item.cover,
+      this.item.coverFallback
+    ]
   }
 }

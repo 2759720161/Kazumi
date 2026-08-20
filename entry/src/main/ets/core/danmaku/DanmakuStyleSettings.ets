@@ -165,6 +165,21 @@ export class DanmakuStyleSettings {
     return new DanmakuStyleSettings()
   }
 
+  /** Returns whether a danmaku item from the given source is allowed to render. */
+  isSourceEnabled(source: string): boolean {
+    const normalized = source.trim().toLowerCase()
+    if (normalized.length === 0 || normalized === 'local') {
+      return true
+    }
+    if (normalized.indexOf('bilibili') >= 0 || normalized.indexOf('bili') >= 0 || normalized.indexOf('哔哩') >= 0) {
+      return this.biliBiliSource
+    }
+    if (normalized.indexOf('gamer') >= 0) {
+      return this.gamerSource
+    }
+    return this.danDanSource
+  }
+
   private static clampNumber(value: number, min: number, max: number): number {
     if (value < min) {
       return min

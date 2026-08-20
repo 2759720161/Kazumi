@@ -25,6 +25,7 @@ export class RdbSchema {
       `${RdbConstants.COL_AD_BLOCKER} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_MULTI_SOURCES} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_ENABLED} INTEGER NOT NULL DEFAULT 1, ` +
+      `${RdbConstants.COL_INSTALL_ORIGIN} TEXT NOT NULL DEFAULT 'legacy', ` +
       `${RdbConstants.COL_RAW_JSON} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0, ` +
@@ -104,6 +105,9 @@ export class RdbSchema {
       `${RdbConstants.COL_DANMAKU_OFFSET_MS} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_DANMAKU_FORMAT} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_DANMAKU_COUNT} INTEGER NOT NULL DEFAULT 0, ` +
+      `${RdbConstants.COL_DRM_SCHEME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DRM_PLUGIN_NAME} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_DRM_OFFLINE_KEY_ID} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_CREATED_AT} INTEGER NOT NULL DEFAULT 0` +
       `)`;
   }

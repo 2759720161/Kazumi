@@ -308,7 +308,7 @@ export class VideoSourceResolver {
       return null
     }
     const type = SnifferResult.detectType(url)
-    if (type !== 'm3u8' && type !== 'mp4' && type !== 'flv' && type !== 'ts') {
+    if (type !== 'm3u8' && type !== 'mpd' && type !== 'mp4' && type !== 'flv' && type !== 'ts') {
       return null
     }
     if (this.shouldSniff7sefunOriginalPage(url)) {
@@ -498,7 +498,7 @@ export class VideoSourceResolver {
   }
 
   private isDirectPlayableType(type: string): boolean {
-    return type === 'm3u8' || type === 'mp4' || type === 'flv' || type === 'ts'
+    return type === 'm3u8' || type === 'mpd' || type === 'mp4' || type === 'flv' || type === 'ts'
   }
 
   private async attachStreamMetadata(result: VideoSourceResult, request: VideoSourceRequest,
@@ -890,6 +890,8 @@ export class VideoSourceResolver {
     let protocol = ''
     if (result.type === 'm3u8') {
       protocol = '.m3u8'
+    } else if (result.type === 'mpd') {
+      protocol = '.mpd'
     } else if (result.type === 'mp4') {
       protocol = '.mp4'
     } else if (result.type === 'flv') {
@@ -945,6 +947,7 @@ export class VideoSourceResolver {
     if (type === 'm3u8') {
       return 500
     }
+    if (type === 'mpd') return 450
     if (type === 'mp4') {
       return 400
     }
@@ -965,7 +968,7 @@ export class VideoSourceResolver {
     if (this.ruleEvaluator.shouldBlockSniffing(url)) {
       return true
     }
-    return lowerUrl.endsWith('.mpd')
+    return false
   }
 
   private applyRuleSourceToResult(result: VideoSourceResult, rule: RuleSource): VideoSourceResult {

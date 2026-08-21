@@ -833,14 +833,21 @@ export struct TimelinePage {
       return
     }
     this.addEnrichKey(this.enrichingWeekdayKeys, key)
-    BangumiApi.enrichCalendarItemsForDay(this.calendar, weekdayIndex, 10)
+    const targetCalendar = this.calendar
+    const visibleDayItemCount = targetCalendar[weekdayIndex].length
+    BangumiApi.enrichCalendarItemsForDay(targetCalendar, weekdayIndex, visibleDayItemCount, () => {
+      if (this.buildEnrichWeekdayKey(this.selectedWeekdayIndex) !== key || this.calendar.length < WEEKDAY_TAB_COUNT) {
+        return
+      }
+      this.calendar = this.cloneCalendar(targetCalendar)
+    })
       .then(() => {
         this.removeEnrichKey(this.enrichingWeekdayKeys, key)
         this.addEnrichKey(this.enrichedWeekdayKeys, key)
         if (this.buildEnrichWeekdayKey(this.selectedWeekdayIndex) !== key || this.calendar.length < WEEKDAY_TAB_COUNT) {
           return
         }
-        this.calendar = this.cloneCalendar(this.calendar)
+        this.calendar = this.cloneCalendar(targetCalendar)
       })
       .catch((_err: Error) => {
         this.removeEnrichKey(this.enrichingWeekdayKeys, key)

@@ -34,6 +34,7 @@ import {
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../utils/HdsPageStyle'
+import { setHomePreloadEnabled } from '../utils/HomePreloadGate'
 
 const logger = new Logger('Index')
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady'
@@ -81,12 +82,23 @@ struct Index {
   private readonly qixiAudioService: QixiAudioService = QixiAudioService.getInstance()
 
   aboutToAppear(): void {
+    setHomePreloadEnabled(true)
     this.refreshHdsMaterialSupport()
     this.normalizeCurrentTab()
     ContinuationState.markIndex(this.currentTab)
     this.restoreContinuationIfNeeded()
     this.openDownloadPageIfNeeded()
     this.checkQixiAudioPrompt()
+  }
+
+  onPageShow(): void {
+    setHomePreloadEnabled(true)
+    logger.info('Index page visible, resume home preload')
+  }
+
+  onPageHide(): void {
+    setHomePreloadEnabled(false)
+    logger.info('Index page hidden, pause home preload')
   }
 
   private onAppPreferencesReadyChanged(): void {

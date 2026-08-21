@@ -8,6 +8,7 @@ import { Logger, extractErrorMsg } from '../../utils/Logger';
 const logger: Logger = new Logger('BangumiApi');
 
 const BANGUMI_API_DOMAINS: string[] = BangumiConfig.BANGUMI_API_BASES;
+const BANGUMI_SUBJECT_V0_DOMAINS: string[] = BangumiConfig.BANGUMI_SUBJECT_V0_BASES;
 const BANGUMI_SEARCH_DOMAINS: string[] = BangumiConfig.BANGUMI_SEARCH_BASES;
 const BANGUMI_NEXT_DOMAINS: string[] = BangumiConfig.BANGUMI_NEXT_BASES;
 const BANGUMI_SEARCH_PATH = '/v0/search/subjects?limit=5&offset=0';
@@ -517,6 +518,8 @@ export class BangumiApi {
 
     BangumiApi.collectCoverUrls(html, '//lain.bgm.tv/pic/cover/', candidates);
     BangumiApi.collectCoverUrls(html, 'https://lain.bgm.tv/pic/cover/', candidates);
+    BangumiApi.collectCoverUrls(html, '//lain.bangumi.pro/pic/cover/', candidates);
+    BangumiApi.collectCoverUrls(html, 'https://lain.bangumi.pro/pic/cover/', candidates);
     BangumiApi.collectCoverUrls(html, '//lain.bangumi.lol/pic/cover/', candidates);
     BangumiApi.collectCoverUrls(html, 'https://lain.bangumi.lol/pic/cover/', candidates);
     return candidates;
@@ -886,7 +889,10 @@ export class BangumiApi {
         logger.info('Subject %{public}d loaded from %{public}s: %{public}s eps=%{public}d airDate=%{public}s',
           bangumiId, domain, item.name, item.eps, item.airDate);
         request.destroy();
-        if (item.eps <= 0 || item.airDate.length === 0) {
+        if (item.eps <= 0 || item.airDate.length === 0 || item.bangumiCover.length === 0) {
+          if (item.bangumiCover.length === 0) {
+            logger.info('Subject %{public}d /p1 has no direct cover, resolving /v0 cover metadata', bangumiId);
+          }
           const v0Item = await BangumiApi.fetchSubjectV0(bangumiId);
           if (v0Item !== null) {
             BangumiApi.mergeSubjectDetail(item, v0Item);
@@ -939,8 +945,8 @@ export class BangumiApi {
 
   private static async fetchSubjectV0(bangumiId: number): Promise<AnimeItem | null> {
     const v0Path = `/v0/subjects/${bangumiId}`;
-    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
-      const domain = BANGUMI_API_DOMAINS[d];
+    for (let d = 0; d < BANGUMI_SUBJECT_V0_DOMAINS.length; d++) {
+      const domain = BANGUMI_SUBJECT_V0_DOMAINS[d];
       const url = domain + v0Path;
       const request = http.createHttp();
       try {
@@ -1003,10 +1009,11 @@ export class BangumiApi {
     if (target.coverMedium.length === 0) target.coverMedium = fallback.coverMedium;
   }
 
-  static async enrichCalendarItemsForDay(result: AnimeItem[][], weekdayIndex: number, maxItems: number = 12): Promise<void> {
+  static async enrichCalendarItemsForDay(result: AnimeItem[][], weekdayIndex: number, maxItems: number = 12,
+    onBatchComplete?: () => void): Promise<void> {
     const candidates: AnimeItem[] = [];
     BangumiApi.collectCalendarEnrichCandidates(result, weekdayIndex, candidates);
-    await BangumiApi.enrichCalendarCandidates(candidates, maxItems, 'visible day');
+    await BangumiApi.enrichCalendarCandidates(candidates, maxItems, 'visible day', onBatchComplete);
   }
 
   private static async enrichCalendarItems(result: AnimeItem[][]): Promise<void> {
@@ -1025,7 +1032,8 @@ export class BangumiApi {
     await BangumiApi.enrichCalendarCandidates(candidates, 28, 'calendar');
   }
 
-  private static async enrichCalendarCandidates(candidates: AnimeItem[], maxCount: number, reason: string): Promise<void> {
+  private static async enrichCalendarCandidates(candidates: AnimeItem[], maxCount: number, reason: string,
+    onBatchComplete?: () => void): Promise<void> {
     if (candidates.length === 0) {
       return;
     }
@@ -1040,6 +1048,9 @@ export class BangumiApi {
         tasks.push(BangumiApi.enrichCalendarItem(candidates[i]));
       }
       await Promise.all(tasks);
+      if (onBatchComplete !== undefined) {
+        onBatchComplete();
+      }
     }
   }
 
@@ -1049,10 +1060,19 @@ export class BangumiApi {
     }
     for (let i = 0; i < result[day].length; i++) {
       const item = result[day][i];
-      if (item.bangumiId > 0 && (item.desc.length === 0 || item.tags.length <= 3 || item.eps <= 0)) {
+      if (item.bangumiId > 0 && (!BangumiApi.hasUsableCalendarCover(item) || item.desc.length === 0 ||
+        item.tags.length <= 3 || item.eps <= 0)) {
         candidates.push(item);
       }
     }
+  }
+
+  private static hasUsableCalendarCover(item: AnimeItem): boolean {
+    return BangumiConfig.normalizeImageUrl(item.coverCommon).length > 0 ||
+      BangumiConfig.normalizeImageUrl(item.coverMedium).length > 0 ||
+      BangumiConfig.normalizeImageUrl(item.bangumiCover).length > 0 ||
+      BangumiConfig.normalizeImageUrl(item.cover).length > 0 ||
+      BangumiConfig.normalizeImageUrl(item.coverFallback).length > 0;
   }
 
   private static getTodayCalendarIndex(): number {

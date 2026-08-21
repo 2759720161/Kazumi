@@ -178,7 +178,8 @@ struct TagTopicCard {
       CachedRemoteImage({
         source: this.selectBestCover(),
         sources: this.getCoverCandidates(),
-        sharedId: this.getSharedCoverId()
+        sharedId: this.getSharedCoverId(),
+        pauseWhenHomeInactive: true
       })
         .width('100%')
         .aspectRatio(3 / 4)

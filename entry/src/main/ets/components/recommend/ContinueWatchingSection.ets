@@ -57,7 +57,8 @@ export struct ContinueWatchingSection {
       CachedRemoteImage({
         source: record.animeCover,
         sharedId: this.getSharedCoverId(record),
-        cornerRadius: 8
+        cornerRadius: 8,
+        pauseWhenHomeInactive: true
       })
         .width(52)
         .height(72)

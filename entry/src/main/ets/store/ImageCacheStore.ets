@@ -5,8 +5,12 @@ import { Logger, extractErrorMsg } from '../utils/Logger';
 
 const logger = new Logger('ImageCacheStore');
 // Keep image bursts below the socket pressure that can trigger curl 55 on
-// some HarmonyOS devices while still allowing the grid to fill quickly.
+// some HarmonyOS devices while still allowing the visible grid to fill quickly.
 const MAX_CONCURRENT_IMAGE_DOWNLOADS = 3;
+// Always leave one slot for visible/search images. Otherwise three slow home
+// requests can make a newly opened page wait for their timeout before it gets
+// its first cover.
+const MAX_REGULAR_IMAGE_DOWNLOADS = 2;
 const IMAGE_RETRY_DELAY_MS = 350;
 
 export class ImageCacheStore {
@@ -18,7 +22,10 @@ export class ImageCacheStore {
   private readonly failureCooldownMs: number = 15 * 1000;
   private readonly inFlightDownloads: Map<string, Promise<ArrayBuffer>> = new Map();
   private readonly downloadWaiters: Array<() => void> = [];
+  private readonly priorityDownloadWaiters: Array<() => void> = [];
   private activeDownloadCount: number = 0;
+  private activeRegularDownloadCount: number = 0;
+  private activePriorityDownloadCount: number = 0;
 
   private constructor() {}
 
@@ -29,7 +36,7 @@ export class ImageCacheStore {
     return ImageCacheStore.instance;
   }
 
-  async getCachedImageUri(urls: string[]): Promise<string> {
+  async getCachedImageUri(urls: string[], priority: boolean = false): Promise<string> {
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i].trim();
       if (url.length === 0 || url.startsWith('file://')) {
@@ -52,7 +59,7 @@ export class ImageCacheStore {
           fs.unlinkSync(path);
         }
 
-        const data = await this.downloadImage(url);
+        const data = await this.downloadImage(url, priority);
         this.writeBinary(path, data);
         return fileUri.getUriFromPath(path);
       } catch (err) {
@@ -88,13 +95,13 @@ export class ImageCacheStore {
     return '';
   }
 
-  private async downloadImage(url: string): Promise<ArrayBuffer> {
+  private async downloadImage(url: string, priority: boolean): Promise<ArrayBuffer> {
     const inFlight = this.inFlightDownloads.get(url);
     if (inFlight !== undefined) {
       return await inFlight;
     }
 
-    const task = this.downloadImageWithRetry(url);
+    const task = this.downloadImageWithRetry(url, priority);
     this.inFlightDownloads.set(url, task);
     try {
       return await task;
@@ -105,10 +112,10 @@ export class ImageCacheStore {
     }
   }
 
-  private async downloadImageWithRetry(url: string): Promise<ArrayBuffer> {
+  private async downloadImageWithRetry(url: string, priority: boolean): Promise<ArrayBuffer> {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      await this.acquireDownloadSlot();
+      await this.acquireDownloadSlot(priority);
       try {
         return await this.downloadImageOnce(url);
       } catch (err) {
@@ -119,28 +126,50 @@ export class ImageCacheStore {
           });
         }
       } finally {
-        this.releaseDownloadSlot();
+        this.releaseDownloadSlot(priority);
       }
     }
     throw lastError === null ? new Error('Image download failed') : lastError;
   }
 
-  private async acquireDownloadSlot(): Promise<void> {
-    if (this.activeDownloadCount < MAX_CONCURRENT_IMAGE_DOWNLOADS) {
+  private async acquireDownloadSlot(priority: boolean): Promise<void> {
+    if (priority && this.activeDownloadCount < MAX_CONCURRENT_IMAGE_DOWNLOADS) {
       this.activeDownloadCount++;
+      this.activePriorityDownloadCount++;
+      return;
+    }
+    if (!priority && this.activeDownloadCount < MAX_CONCURRENT_IMAGE_DOWNLOADS &&
+      this.activeRegularDownloadCount < MAX_REGULAR_IMAGE_DOWNLOADS) {
+      this.activeDownloadCount++;
+      this.activeRegularDownloadCount++;
       return;
     }
     await new Promise<void>((resolve: () => void) => {
-      this.downloadWaiters.push(resolve);
+      if (priority) {
+        this.priorityDownloadWaiters.push(resolve);
+      } else {
+        this.downloadWaiters.push(resolve);
+      }
     });
+    if (priority) {
+      this.activePriorityDownloadCount++;
+    } else {
+      this.activeRegularDownloadCount++;
+    }
   }
 
-  private releaseDownloadSlot(): void {
-    const next = this.downloadWaiters.shift();
+  private releaseDownloadSlot(priority: boolean): void {
+    if (priority) {
+      this.activePriorityDownloadCount = Math.max(0, this.activePriorityDownloadCount - 1);
+    } else {
+      this.activeRegularDownloadCount = Math.max(0, this.activeRegularDownloadCount - 1);
+    }
+    const next = this.priorityDownloadWaiters.length > 0
+      ? this.priorityDownloadWaiters.shift()
+      : this.downloadWaiters.shift();
     if (next !== undefined) {
-      // Transfer the released slot directly to the next waiter. Keeping the
-      // count unchanged prevents a new caller from exceeding the limit while
-      // the waiter is being resumed.
+      // Transfer the released slot directly to the next waiter. The resumed
+      // waiter accounts for the slot before continuing its request.
       next();
       return;
     }
@@ -236,10 +265,17 @@ export class ImageCacheStore {
       return false;
     }
 
-    // JPEG: SOI at the front and EOI at the end. This catches the partial
-    // JPEG bodies returned by the network stack after curl timeout 28.
+    // JPEG: SOI at the front and EOI near the end. Some image mirrors append
+    // a small trailer after a complete JPEG; requiring EOI to be the final
+    // two bytes incorrectly rejects those otherwise valid covers.
     if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
-      return bytes[bytes.length - 2] === 0xFF && bytes[bytes.length - 1] === 0xD9;
+      const searchStart = Math.max(2, bytes.length - 64);
+      for (let i = searchStart; i <= bytes.length - 2; i++) {
+        if (bytes[i] === 0xFF && bytes[i + 1] === 0xD9) {
+          return true;
+        }
+      }
+      return false;
     }
 
     // PNG: signature plus IEND near the end of the file.

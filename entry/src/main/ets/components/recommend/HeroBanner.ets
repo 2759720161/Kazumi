@@ -54,7 +54,8 @@ export struct HeroBanner {
           CachedRemoteImage({
             source: item.getHeroBackdrop(),
             sources: this.getCoverCandidates(item),
-            cornerRadius: 0
+            cornerRadius: 0,
+            pauseWhenHomeInactive: true
           })
             .width('100%')
             .aspectRatio(16 / 9)
@@ -64,7 +65,8 @@ export struct HeroBanner {
           CachedRemoteImage({
             source: item.getHeroBackdrop(),
             sources: this.getCoverCandidates(item),
-            cornerRadius: 0
+            cornerRadius: 0,
+            pauseWhenHomeInactive: true
           })
             .width('100%')
             .height('100%')
@@ -171,7 +173,8 @@ export struct HeroBanner {
           CachedRemoteImage({
             source: item.getGridCover(),
             sources: this.getCoverCandidates(item),
-            sharedId: this.getSharedCoverId(item)
+            sharedId: this.getSharedCoverId(item),
+            pauseWhenHomeInactive: true
           })
             .width('100%')
             .height('100%')

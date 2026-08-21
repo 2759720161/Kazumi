@@ -86,6 +86,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('playerFullScreen', false);
     AppStorage.setOrCreate('playerPageActive', false);
     AppStorage.setOrCreate('appInForeground', true);
+    AppStorage.setOrCreate('homeBackgroundPreloadEnabled', true);
     AppStorage.setOrCreate('screenWidthVp', 0);
     AppStorage.setOrCreate('screenHeightVp', 0);
     AppStorage.setOrCreate('bottomTabAutoHide', BOTTOM_TAB_AUTO_HIDE_DEFAULT);

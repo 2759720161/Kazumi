@@ -29,6 +29,7 @@ import {
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
+import { HOME_PRELOAD_ENABLED_KEY, isHomePreloadEnabled } from '../../utils/HomePreloadGate'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
   getBottomTabHideDistance,
@@ -50,6 +51,8 @@ const HIGH_SCORE_AUTO_PREFETCH_LIMIT: number = 200
 
 @Component
 export struct HomePage {
+  @StorageLink('currentTab') @Watch('onCurrentTabChanged') currentTab: number = 0
+  @StorageLink(HOME_PRELOAD_ENABLED_KEY) @Watch('onHomePreloadGateChanged') homePreloadEnabled: boolean = true
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
@@ -85,10 +88,44 @@ export struct HomePage {
   private tagSwitchPinGuardUntil: number = 0
   private tagPinScrollThreshold: number = -1
   private tagRequestVersion: number = 0
-  private backgroundPrefetchStarted: boolean = false
+  private backgroundPrefetchInFlight: boolean = false
+  private backgroundPrefetchRunToken: number = 0
 
   aboutToAppear(): void {
+    this.vm.setBackgroundPreloadEnabled(this.isHomeActive())
     this.loadRecommend()
+  }
+
+  private onCurrentTabChanged(): void {
+    this.vm.setBackgroundPreloadEnabled(this.isHomeActive())
+  }
+
+  private onHomePreloadGateChanged(): void {
+    this.vm.setBackgroundPreloadEnabled(this.isHomeActive())
+    if (!this.isHomeActive()) {
+      this.backgroundPrefetchRunToken++
+    }
+    if (this.isHomeActive()) {
+      this.resumeBackgroundLoading()
+    }
+  }
+
+  private isHomeActive(): boolean {
+    return this.currentTab === 0 && this.homePreloadEnabled && isHomePreloadEnabled()
+  }
+
+  private resumeBackgroundLoading(): void {
+    const token = this.loadToken
+    if (token <= 0 || this.isLoading || !this.isHomeActive()) {
+      return
+    }
+    if (this.seasonalList.length === 0 && this.seasonalLoading) {
+      this.loadSeasonalSection(token)
+    }
+    if (this.highScoreList.length === 0 && this.highScoreLoading) {
+      this.loadHighScoreSection(token)
+    }
+    this.startBackgroundSectionPrefetchIfReady(token)
   }
 
   build() {
@@ -239,7 +276,8 @@ export struct HomePage {
     this.trendingMoreLoading = false
     this.seasonalMoreLoading = false
     this.highScoreMoreLoading = false
-    this.backgroundPrefetchStarted = false
+    this.backgroundPrefetchInFlight = false
+    this.backgroundPrefetchRunToken++
     this.heroList = []
     this.trendingList = []
     this.seasonalList = []
@@ -294,6 +332,9 @@ export struct HomePage {
   }
 
   private async loadSeasonalSection(token: number): Promise<void> {
+    if (!this.isHomeActive()) {
+      return
+    }
     try {
       const items = await this.vm.loadHomeSeasonal()
       if (token !== this.loadToken) {
@@ -313,6 +354,9 @@ export struct HomePage {
   }
 
   private async loadHighScoreSection(token: number): Promise<void> {
+    if (!this.isHomeActive()) {
+      return
+    }
     try {
       const items = await this.vm.loadHomeHighScore()
       if (token !== this.loadToken) {
@@ -331,14 +375,15 @@ export struct HomePage {
   }
 
   private startBackgroundSectionPrefetchIfReady(token: number): void {
-    if (token !== this.loadToken || this.seasonalLoading || this.highScoreLoading || this.backgroundPrefetchStarted) {
+    if (!this.isHomeActive() || token !== this.loadToken || this.seasonalLoading || this.highScoreLoading || this.backgroundPrefetchInFlight) {
       return
     }
-    this.backgroundPrefetchStarted = true
-    this.prefetchRemainingSections(token)
+    this.backgroundPrefetchInFlight = true
+    const runToken = ++this.backgroundPrefetchRunToken
+    this.prefetchRemainingSections(token, runToken)
   }
 
-  private async prefetchRemainingSections(token: number): Promise<void> {
+  private async prefetchRemainingSections(token: number, runToken: number): Promise<void> {
     logger.info('background section prefetch started')
     // Each rail owns an independent offset cursor. Prefetch them together so a
     // slow or large section cannot make the other rails wait for an edge swipe.
@@ -347,8 +392,12 @@ export struct HomePage {
       this.prefetchSeasonalSection(token),
       this.prefetchHighScoreSection(token)
     ])
-    if (token === this.loadToken) {
+    this.backgroundPrefetchInFlight = false
+    if (token === this.loadToken && runToken === this.backgroundPrefetchRunToken && this.isHomeActive()) {
       logger.info('background section prefetch complete')
+    }
+    if (token === this.loadToken && this.isHomeActive() && runToken !== this.backgroundPrefetchRunToken) {
+      this.startBackgroundSectionPrefetchIfReady(token)
     }
   }
 

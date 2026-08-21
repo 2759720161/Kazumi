@@ -20,7 +20,8 @@ export struct TimelineAnimeCard {
           source: this.getPrimaryCoverUrl(),
           sources: this.buildCoverUrls(),
           sharedId: this.getSharedCoverId(),
-          cornerRadius: 10
+          cornerRadius: 10,
+          priority: true
         })
           .borderRadius(10)
           .clip(true)

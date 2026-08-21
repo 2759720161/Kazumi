@@ -1,4 +1,5 @@
 import { CachedRemoteImage } from './CachedRemoteImage'
+import { BangumiConfig } from '../../core/api/BangumiConfig'
 
 @Component
 export struct AnimeCard {
@@ -6,6 +7,11 @@ export struct AnimeCard {
   @Prop @Watch('onCoverChanged') cover: string = '';
   @Prop @Watch('onCoverChanged') coverFallback: string = '';
   @Prop @Watch('onCoverChanged') bangumiCover: string = '';
+  @Prop @Watch('onCoverChanged') coverLarge: string = '';
+  @Prop @Watch('onCoverChanged') coverCommon: string = '';
+  @Prop @Watch('onCoverChanged') coverMedium: string = '';
+  @Prop @Watch('onCoverChanged') bangumiId: number = -1;
+  @Prop imagePriority: boolean = false;
   @Prop sourceName: string = '';
   @Prop sharedCoverId: string = '';
   @State coverKey: string = '';
@@ -21,7 +27,8 @@ export struct AnimeCard {
       CachedRemoteImage({
         source: this.getPrimaryCoverUrl(),
         sources: this.getCoverUrls(),
-        sharedId: this.sharedCoverId
+        sharedId: this.sharedCoverId,
+        priority: this.imagePriority
       })
         .width('100%')
         .height(0)
@@ -61,7 +68,7 @@ export struct AnimeCard {
   }
 
   private buildCoverKey(): string {
-    return `${this.bangumiCover}|${this.cover}|${this.coverFallback}`;
+    return `${this.bangumiId}|${this.bangumiCover}|${this.coverLarge}|${this.coverCommon}|${this.coverMedium}|${this.cover}|${this.coverFallback}`;
   }
 
   private onCoverChanged(): void {
@@ -74,16 +81,52 @@ export struct AnimeCard {
 
   private getCoverUrls(): string[] {
     const urls: string[] = []
+    if (this.bangumiId > 0) {
+      const fallbackUrls = BangumiConfig.getSubjectImageUrls(this.bangumiId)
+      for (let i = 0; i < fallbackUrls.length; i++) {
+        this.pushCoverUrl(urls, fallbackUrls[i])
+      }
+    }
+    // Grid cards should prefer the common/medium variants. They are smaller,
+    // load faster, and avoid stalling the visible search result on a large CDN
+    // response while the home page is preloading in the background.
+    this.pushCoverUrl(urls, this.coverCommon)
+    this.pushCoverUrl(urls, this.coverMedium)
     this.pushCoverUrl(urls, this.bangumiCover)
+    this.pushCoverUrl(urls, this.coverLarge)
     this.pushCoverUrl(urls, this.cover)
     this.pushCoverUrl(urls, this.coverFallback)
     return urls
   }
 
   private pushCoverUrl(urls: string[], url: string): void {
-    if (url.length > 0 && urls.indexOf(url) < 0) {
-      urls.push(url)
+    const raw = url.trim()
+    if (raw.length === 0) {
+      return
     }
+    const normalized = raw.startsWith('file://') || raw.startsWith('/')
+      ? raw
+      : BangumiConfig.normalizeImageUrl(raw)
+    if (normalized.length === 0) {
+      return
+    }
+    const compact = this.compactBangumiCoverUrl(normalized)
+    if (urls.indexOf(compact) < 0) {
+      urls.push(compact)
+    }
+    if (compact !== normalized && urls.indexOf(normalized) < 0) {
+      urls.push(normalized)
+    }
+  }
+
+  private compactBangumiCoverUrl(url: string): string {
+    if (url.indexOf('/r/800/') >= 0) {
+      return url.replace('/r/800/', '/r/200/')
+    }
+    if (url.indexOf('/r/400/') >= 0) {
+      return url.replace('/r/400/', '/r/200/')
+    }
+    return url
   }
 
   private getPrimaryCoverUrl(): string {

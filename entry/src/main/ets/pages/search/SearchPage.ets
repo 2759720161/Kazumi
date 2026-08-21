@@ -557,6 +557,11 @@ export struct SearchPage {
       cover: item.cover,
       coverFallback: item.coverFallback,
       bangumiCover: item.bangumiCover,
+      coverLarge: item.coverLarge,
+      coverCommon: item.coverCommon,
+      coverMedium: item.coverMedium,
+      bangumiId: item.bangumiId,
+      imagePriority: true,
       sourceName: item.sourceName,
       sharedCoverId: this.getSharedCoverId(item),
       onCardClick: () => {

@@ -5,6 +5,7 @@ import { BangumiApi, BangumiSearchProgressOptions } from '../core/api/BangumiApi
 import { HistoryStore } from '../store/HistoryStore'
 import { RECOMMEND_GENRE_TAGS } from '../constants/RecommendTags'
 import { Logger } from '../utils/Logger'
+import { isHomePreloadEnabled } from '../utils/HomePreloadGate'
 
 const logger = new Logger('RecommendViewModel')
 const HOME_SECTION_PAGE_SIZE: number = 24
@@ -28,6 +29,17 @@ export class RecommendViewModel {
   private trendingRemainingFinished: boolean = false
   private seasonalRemainingFinished: boolean = false
   private highScoreRemainingFinished: boolean = false
+  private backgroundPreloadEnabled: boolean = true
+  private backgroundPreloadGeneration: number = 0
+
+  setBackgroundPreloadEnabled(enabled: boolean): void {
+    if (this.backgroundPreloadEnabled === enabled) {
+      return
+    }
+    this.backgroundPreloadEnabled = enabled
+    this.backgroundPreloadGeneration++
+    logger.info('Home background preload %{public}s', enabled ? 'resumed' : 'paused')
+  }
 
   async load(): Promise<void> {
     if (this.isLoading) {
@@ -327,6 +339,9 @@ export class RecommendViewModel {
     sectionName: string = 'section',
     initialOffset: number = HOME_SECTION_PAGE_SIZE,
     maxItems: number = 0): Promise<void> {
+    if (!this.canRunBackgroundPreload()) {
+      return
+    }
     if (this.isRemainingFinished(sectionName)) {
       return
     }
@@ -337,13 +352,14 @@ export class RecommendViewModel {
 
     let offset = this.getRemainingOffset(sectionName, initialOffset)
     let pageCount = 0
+    const preloadGeneration = this.backgroundPreloadGeneration
     try {
       // Keep loading metadata until the source is exhausted. The old implementation
       // used this loop, which prevents the horizontal rail from depending on a second
       // edge gesture after every page. Images remain lazy-loaded by the card component.
-      while (!shouldContinue || shouldContinue()) {
+      while (this.canRunBackgroundPreload(preloadGeneration) && (!shouldContinue || shouldContinue())) {
         const results = await loader(offset)
-        if (shouldContinue && !shouldContinue()) {
+        if (!this.canRunBackgroundPreload(preloadGeneration) || (shouldContinue && !shouldContinue())) {
           return
         }
 
@@ -377,6 +393,12 @@ export class RecommendViewModel {
     } catch (err) {
       logger.warn('loadRemainingSection failed for %{public}s', sectionName)
     }
+  }
+
+  private canRunBackgroundPreload(generation: number = this.backgroundPreloadGeneration): boolean {
+    return this.backgroundPreloadEnabled &&
+      generation === this.backgroundPreloadGeneration &&
+      isHomePreloadEnabled()
   }
 
   private getRemainingOffset(sectionName: string, initialOffset: number): number {

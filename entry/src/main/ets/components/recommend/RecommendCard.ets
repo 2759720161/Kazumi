@@ -17,7 +17,8 @@ export struct RecommendCard {
         CachedRemoteImage({
           source: this.item.getGridCover(),
           sources: this.getCoverCandidates(),
-          sharedId: this.getSharedCoverId()
+          sharedId: this.getSharedCoverId(),
+          pauseWhenHomeInactive: true
         })
           .width('100%')
           .height('100%')

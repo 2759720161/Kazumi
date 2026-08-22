@@ -328,6 +328,11 @@ export class UserDownloadFolder {
     const directoryPath = normalizedDirectory.length > 0 ? rootPath + '/' + normalizedDirectory : rootPath
     const entries: UserFolderEntry[] = []
     try {
+      // HLS/DASH episode directories contain implementation files such as hundreds of
+      // transport-stream fragments. Expose the directory as one logical video instead
+      // of treating every fragment as an independent local video.
+      const adaptivePlayablePath = UserDownloadFolder.findAdaptivePlayablePath(directoryPath)
+      const isAdaptiveDirectory = UserDownloadFolder.isAdaptiveDirectory(directoryPath)
       const names = fileIo.listFileSync(directoryPath)
       for (let i = 0; i < names.length; i++) {
         const name = UserDownloadFolder.normalizeRelativePath(names[i])
@@ -355,10 +360,18 @@ export class UserDownloadFolder {
           continue
         }
         if (!stat.isFile() || !UserDownloadFolder.isVideoFile(name)) {
+          if (!isAdaptiveDirectory || childPath !== adaptivePlayablePath ||
+            !name.toLowerCase().endsWith('.m3u8')) {
+            continue
+          }
+        }
+        if (isAdaptiveDirectory && childPath !== adaptivePlayablePath) {
           continue
         }
         const entry = new UserFolderEntry()
-        entry.name = UserDownloadFolder.getFileName(name)
+        entry.name = isAdaptiveDirectory ?
+          UserDownloadFolder.buildAdaptiveDisplayName(normalizedDirectory, name) :
+          UserDownloadFolder.getFileName(name)
         entry.relativePath = relativePath
         entry.isDirectory = false
         entry.modifiedTime = stat.mtime
@@ -407,6 +420,37 @@ export class UserDownloadFolder {
       name === INFORMATION_FOLDER_NAME || name === '.subtitles' ||
       name === HLS_DIRECTORY_MARKER || name === DASH_DIRECTORY_MARKER ||
       name.endsWith(DOWNLOAD_STAGING_SUFFIX)
+  }
+
+  private static isAdaptiveDirectory(directoryPath: string): boolean {
+    return fileIo.accessSync(directoryPath + '/' + HLS_DIRECTORY_MARKER) ||
+      fileIo.accessSync(directoryPath + '/' + DASH_DIRECTORY_MARKER)
+  }
+
+  /**
+   * Returns the sole user-facing media file for a managed adaptive-download
+   * directory. A successful native remux always wins over the HLS playlist.
+   */
+  private static findAdaptivePlayablePath(directoryPath: string): string {
+    if (!UserDownloadFolder.isAdaptiveDirectory(directoryPath)) {
+      return ''
+    }
+    const remuxedPath = directoryPath + '/video.mp4'
+    if (fileIo.accessSync(remuxedPath)) {
+      return remuxedPath
+    }
+    const playlistPath = directoryPath + '/playlist.m3u8'
+    if (fileIo.accessSync(playlistPath)) {
+      return playlistPath
+    }
+    return ''
+  }
+
+  private static buildAdaptiveDisplayName(relativeDirectory: string, playableName: string): string {
+    const episodeName = UserDownloadFolder.getFileName(relativeDirectory)
+    const extensionIndex = playableName.lastIndexOf('.')
+    const extension = extensionIndex >= 0 ? playableName.substring(extensionIndex) : ''
+    return (episodeName.length > 0 ? episodeName : UserDownloadFolder.removeExtension(playableName)) + extension
   }
 
   private static findDirectoryCover(directoryPath: string): string {
@@ -462,6 +506,10 @@ export class UserDownloadFolder {
   private static getDirectDirectorySummary(directoryPath: string): UserDirectorySummary {
     const summary = new UserDirectorySummary()
     try {
+      if (UserDownloadFolder.isAdaptiveDirectory(directoryPath)) {
+        summary.videoCount = UserDownloadFolder.findAdaptivePlayablePath(directoryPath).length > 0 ? 1 : 0
+        return summary
+      }
       const names = fileIo.listFileSync(directoryPath)
       for (let i = 0; i < names.length; i++) {
         const name = UserDownloadFolder.normalizeRelativePath(names[i])

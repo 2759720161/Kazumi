@@ -59,6 +59,12 @@ import {
   CONTINUATION_SUPPORT_PAGE_STACK_KEY,
   ContinuationState
 } from '../utils/ContinuationState';
+import {
+  APP_LAUNCH_COUNT_PREF_KEY,
+  THIRD_LAUNCH_NOTICE_ACKNOWLEDGED_PREF_KEY,
+  THIRD_LAUNCH_NOTICE_PENDING_KEY,
+  THIRD_LAUNCH_NOTICE_TRIGGER_COUNT
+} from '../utils/ThirdLaunchNotice';
 
 const logger = new Logger('EntryAbility');
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady';
@@ -105,6 +111,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(CONTINUATION_RESTORE_TOKEN_KEY, 0);
     AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, MPV_DETAIL_ENHANCER_ENABLED_DEFAULT);
     AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, MPV_DETAIL_ENHANCER_QUALITY_DEFAULT);
+    AppStorage.setOrCreate(THIRD_LAUNCH_NOTICE_PENDING_KEY, false);
     SettingsChangeSignal.initDanmakuVersion();
     this.captureContinuationPayload(want);
     this.handleDownloadWant(want);
@@ -270,6 +277,8 @@ export default class EntryAbility extends UIAbility {
       PreferencesStore.getInstance().init(prefs);
       logger.info('Preferences initialized');
 
+      await this.updateThirdLaunchNoticeState();
+
       const savedColorMode = await PreferencesStore.getInstance().getNumber('colorMode', ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
       if (savedColorMode !== ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET) {
         this.context.getApplicationContext().setColorMode(savedColorMode);
@@ -395,6 +404,18 @@ export default class EntryAbility extends UIAbility {
     }
 
     this.storesInitialized = true;
+  }
+
+  private async updateThirdLaunchNoticeState(): Promise<void> {
+    const store = PreferencesStore.getInstance();
+    const previousLaunchCount = await store.getNumber(APP_LAUNCH_COUNT_PREF_KEY, 0);
+    const launchCount = Math.min(previousLaunchCount + 1, THIRD_LAUNCH_NOTICE_TRIGGER_COUNT);
+    const acknowledged = await store.getBoolean(THIRD_LAUNCH_NOTICE_ACKNOWLEDGED_PREF_KEY, false);
+    await store.setNumber(APP_LAUNCH_COUNT_PREF_KEY, launchCount);
+    const pending = launchCount >= THIRD_LAUNCH_NOTICE_TRIGGER_COUNT && !acknowledged;
+    AppStorage.setOrCreate(THIRD_LAUNCH_NOTICE_PENDING_KEY, pending);
+    AppStorage.set<boolean>(THIRD_LAUNCH_NOTICE_PENDING_KEY, pending);
+    logger.info('Launch notice state: count=%{public}d pending=%{public}s', launchCount, String(pending));
   }
 
   private updateSystemSafeArea(mainWindow: window.Window): void {

@@ -3,6 +3,7 @@ import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
 import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
 import { navigateToDetail } from '../../utils/DetailNavigation'
 import { CachedRemoteImage } from '../common/CachedRemoteImage'
+import { HOME_PRELOAD_GROUP_TOPIC } from '../../utils/HomePreloadGate'
 
 @Component
 export struct TagTopicSection {
@@ -179,7 +180,9 @@ struct TagTopicCard {
         source: this.selectBestCover(),
         sources: this.getCoverCandidates(),
         sharedId: this.getSharedCoverId(),
-        pauseWhenHomeInactive: true
+        priority: true,
+        pauseWhenHomeInactive: true,
+        homePreloadGroup: HOME_PRELOAD_GROUP_TOPIC
       })
         .width('100%')
         .aspectRatio(3 / 4)

@@ -1,5 +1,14 @@
 import { ImageCacheStore } from '../../store/ImageCacheStore'
-import { HOME_PRELOAD_ENABLED_KEY, isHomePreloadEnabled } from '../../utils/HomePreloadGate'
+import {
+  HOME_PRELOAD_ENABLED_KEY,
+  HOME_PRELOAD_GROUP_GENERAL,
+  HOME_PRELOAD_GROUP_SECTIONS,
+  HOME_PRELOAD_GROUP_TOPIC,
+  HOME_PRELOAD_MODE_KEY,
+  HOME_PRELOAD_MODE_SECTIONS,
+  HOME_PRELOAD_MODE_TOPIC,
+  isHomePreloadEnabled
+} from '../../utils/HomePreloadGate'
 
 @Component
 export struct CachedRemoteImage {
@@ -7,9 +16,14 @@ export struct CachedRemoteImage {
   @Prop sources: string[] = []
   @Prop sharedId: string = ''
   @Prop priority: boolean = false
+  @Prop @Watch('onLoadEnabledChanged') loadEnabled: boolean = true
   @Prop pauseWhenHomeInactive: boolean = false
+  @Prop homePreloadGroup: string = HOME_PRELOAD_GROUP_GENERAL
   @StorageLink(HOME_PRELOAD_ENABLED_KEY) @Watch('onHomePreloadGateChanged')
   homePreloadEnabled: boolean = true
+  @StorageLink(HOME_PRELOAD_MODE_KEY) @Watch('onHomePreloadGateChanged')
+  homePreloadMode: string = HOME_PRELOAD_MODE_SECTIONS
+  @StorageLink('currentTab') @Watch('onHomePreloadGateChanged') currentTab: number = 0
   @Prop blurRadius: number = 0
   @Prop imageOpacity: number = 1
   @Prop cornerRadius: number = 12
@@ -33,7 +47,15 @@ export struct CachedRemoteImage {
     } else {
       this.requestSerial++
       this.requestKey = ''
-      this.currentSource = ''
+    }
+  }
+
+  private onLoadEnabledChanged(): void {
+    if (this.canLoadImage()) {
+      this.reloadSource(this.source)
+    } else {
+      this.requestSerial++
+      this.requestKey = ''
     }
   }
 
@@ -139,7 +161,23 @@ export struct CachedRemoteImage {
   }
 
   private canLoadImage(): boolean {
-    return !this.pauseWhenHomeInactive || (this.homePreloadEnabled && isHomePreloadEnabled())
+    if (!this.loadEnabled) {
+      return false
+    }
+    if (!this.pauseWhenHomeInactive) {
+      return true
+    }
+    if (!this.homePreloadEnabled || !isHomePreloadEnabled() || this.currentTab !== 0) {
+      return false
+    }
+    const mode = this.homePreloadMode
+    if (this.homePreloadGroup === HOME_PRELOAD_GROUP_SECTIONS && mode === HOME_PRELOAD_MODE_TOPIC) {
+      return false
+    }
+    if (this.homePreloadGroup === HOME_PRELOAD_GROUP_TOPIC && mode !== HOME_PRELOAD_MODE_TOPIC) {
+      return false
+    }
+    return true
   }
 
   private pushCandidate(candidates: string[], value: string): void {

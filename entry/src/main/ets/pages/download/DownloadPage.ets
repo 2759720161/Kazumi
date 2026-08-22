@@ -717,7 +717,10 @@ struct DownloadTaskCard {
 
   private buildStateText(task: VideoDownloadSnapshot): string {
     if (task.state === VideoDownloadState.QUEUED) return '排队中'
-    if (task.state === VideoDownloadState.PREPARING) return '准备中'
+    if (task.state === VideoDownloadState.PREPARING) {
+      if (task.errorMessage.indexOf('转封装') >= 0) return '转封装中'
+      return '准备中'
+    }
     if (task.state === VideoDownloadState.RUNNING) {
       if (task.isLive) return '直播录制中'
       return String(task.progressPercent) + '%'

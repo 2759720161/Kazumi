@@ -9,16 +9,24 @@ import {
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
-import { ADVANCED_OPTIONS_UNLOCKED_KEY } from '../../utils/AdvancedOptionsUnlock'
+import { RuleCatalogService } from '../../services/RuleCatalogService'
 
 @Entry
 @Component
 struct ThirdPartyPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
-  @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) advancedOptionsUnlocked: boolean = true
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @State showRuleRepository: boolean = false
   private scroller: Scroller = new Scroller()
+
+  aboutToAppear(): void {
+    this.loadRuleRepositoryVisibility()
+  }
+
+  onPageShow(): void {
+    this.loadRuleRepositoryVisibility()
+  }
 
   build() {
     HdsNavigation() {
@@ -41,7 +49,7 @@ struct ThirdPartyPage {
           )
 
           this.SectionHeader('服务')
-          if (this.advancedOptionsUnlocked) {
+          if (this.showRuleRepository) {
             this.LinkCard(
               'KazumiRules',
               '规则仓库',
@@ -74,6 +82,15 @@ struct ThirdPartyPage {
     .titleMode(HdsNavigationTitleMode.MINI)
     .backgroundColor(Color.Transparent)
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+  }
+
+  private async loadRuleRepositoryVisibility(): Promise<void> {
+    try {
+      const repositoryUrl = await RuleCatalogService.getSavedRepositoryUrl()
+      this.showRuleRepository = repositoryUrl.length > 0
+    } catch (_) {
+      this.showRuleRepository = false
+    }
   }
 
   @Builder

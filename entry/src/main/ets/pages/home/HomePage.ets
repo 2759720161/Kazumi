@@ -29,7 +29,15 @@ import {
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
-import { HOME_PRELOAD_ENABLED_KEY, isHomePreloadEnabled } from '../../utils/HomePreloadGate'
+import {
+  HOME_PRELOAD_ENABLED_KEY,
+  HOME_PRELOAD_MODE_SECTIONS,
+  HOME_PRELOAD_MODE_TOPIC,
+  isHomePreloadEnabled,
+  setHomePreloadEnabled,
+  setHomePreloadMode
+} from '../../utils/HomePreloadGate'
+import { RecommendSectionCache, RecommendSectionType } from '../../utils/RecommendSectionCache'
 import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
   getBottomTabHideDistance,
@@ -48,6 +56,7 @@ const HOME_STICKY_TAG_PIN_HYSTERESIS: number = 8
 const HOME_TAG_SWITCH_PIN_GUARD_MS: number = 450
 const HOME_STICKY_TAG_HEIGHT: number = 30
 const HIGH_SCORE_AUTO_PREFETCH_LIMIT: number = 200
+const HOME_SECTION_DISPLAY_LIMIT: number = 20
 
 @Component
 export struct HomePage {
@@ -92,21 +101,23 @@ export struct HomePage {
   private backgroundPrefetchRunToken: number = 0
 
   aboutToAppear(): void {
-    this.vm.setBackgroundPreloadEnabled(this.isHomeActive())
-    this.loadRecommend()
+    this.syncHomePreloadMode()
+    this.vm.setBackgroundPreloadEnabled(this.isSectionPreloadActive())
+    if (this.isHomeActive()) {
+      this.loadRecommend()
+    }
   }
 
   private onCurrentTabChanged(): void {
-    this.vm.setBackgroundPreloadEnabled(this.isHomeActive())
+    this.syncHomePreloadState()
   }
 
   private onHomePreloadGateChanged(): void {
-    this.vm.setBackgroundPreloadEnabled(this.isHomeActive())
+    this.syncHomePreloadState()
     if (!this.isHomeActive()) {
       this.backgroundPrefetchRunToken++
-    }
-    if (this.isHomeActive()) {
-      this.resumeBackgroundLoading()
+      this.tagRequestVersion++
+      this.tagLoading = false
     }
   }
 
@@ -114,15 +125,59 @@ export struct HomePage {
     return this.currentTab === 0 && this.homePreloadEnabled && isHomePreloadEnabled()
   }
 
-  private resumeBackgroundLoading(): void {
-    const token = this.loadToken
-    if (token <= 0 || this.isLoading || !this.isHomeActive()) {
+  private isSectionPreloadActive(): boolean {
+    return this.isHomeActive() && this.selectedTag.length === 0
+  }
+
+  private syncHomePreloadMode(): void {
+    setHomePreloadMode(this.selectedTag.length > 0 ? HOME_PRELOAD_MODE_TOPIC : HOME_PRELOAD_MODE_SECTIONS)
+  }
+
+  private syncHomePreloadState(): void {
+    this.syncHomePreloadMode()
+    this.vm.setBackgroundPreloadEnabled(this.isSectionPreloadActive())
+    if (!this.isHomeActive()) {
+      this.backgroundPrefetchRunToken++
+      this.tagRequestVersion++
+      this.tagLoading = false
+      if (this.isLoading) {
+        this.loadToken++
+        this.isLoading = false
+        this.seasonalLoading = false
+        this.highScoreLoading = false
+        logger.info('Home initial loading invalidated while inactive')
+      }
       return
     }
-    if (this.seasonalList.length === 0 && this.seasonalLoading) {
+    if (this.loadToken <= 0) {
+      this.loadRecommend()
+      return
+    }
+    if (!this.isLoading && this.heroList.length === 0 && this.trendingList.length === 0) {
+      logger.info('Home initial result was not committed, restart loading')
+      this.loadRecommend()
+      return
+    }
+    if (this.selectedTag.length > 0) {
+      if (!this.tagLoading) {
+        this.handleTagSelect(this.selectedTag)
+      }
+      return
+    }
+    this.resumeBackgroundLoading()
+  }
+
+  private resumeBackgroundLoading(): void {
+    const token = this.loadToken
+    if (token <= 0 || this.isLoading || !this.isSectionPreloadActive()) {
+      return
+    }
+    if (this.seasonalList.length === 0 && !this.seasonalLoading) {
+      this.seasonalLoading = true
       this.loadSeasonalSection(token)
     }
-    if (this.highScoreList.length === 0 && this.highScoreLoading) {
+    if (this.highScoreList.length === 0 && !this.highScoreLoading) {
+      this.highScoreLoading = true
       this.loadHighScoreSection(token)
     }
     this.startBackgroundSectionPrefetchIfReady(token)
@@ -184,8 +239,8 @@ export struct HomePage {
                 items: this.trendingList,
                 itemsVersion: this.trendingContentVersion,
                 showRank: false,
-                onNeedMore: () => {
-                  this.loadRemainingTrendingSection(this.loadToken)
+                onMoreClick: () => {
+                  this.openRecommendSection('pages/home/TrendingPage')
                 }
               })
             }
@@ -197,8 +252,8 @@ export struct HomePage {
                 items: this.seasonalList,
                 itemsVersion: this.seasonalContentVersion,
                 showRank: false,
-                onNeedMore: () => {
-                  this.loadRemainingSeasonalSection(this.loadToken)
+                onMoreClick: () => {
+                  this.openRecommendSection('pages/home/SeasonalPage')
                 }
               })
             } else if (this.seasonalLoading) {
@@ -212,8 +267,8 @@ export struct HomePage {
                 items: this.highScoreList,
                 itemsVersion: this.highScoreContentVersion,
                 showRank: true,
-                onNeedMore: () => {
-                  this.loadRemainingHighScoreSection(this.loadToken)
+                onMoreClick: () => {
+                  this.openRecommendSection('pages/home/HighScorePage')
                 }
               })
             } else if (this.highScoreLoading) {
@@ -303,12 +358,17 @@ export struct HomePage {
         logger.warn('buildHomeHeroFromTrending failed')
       }
 
-      if (token !== this.loadToken) {
+      if (token !== this.loadToken || !this.isHomeActive()) {
+        if (token === this.loadToken) {
+          this.seasonalLoading = false
+          this.highScoreLoading = false
+          logger.info('Home initial result discarded while inactive')
+        }
         return
       }
 
       this.heroList = [...hero]
-      this.trendingList = [...trending]
+      this.updateHomeSection(RecommendSectionType.TRENDING, trending)
       this.trendingContentVersion++
       this.heroVersion++
       this.hasLoadError = hero.length === 0 && trending.length === 0
@@ -332,15 +392,15 @@ export struct HomePage {
   }
 
   private async loadSeasonalSection(token: number): Promise<void> {
-    if (!this.isHomeActive()) {
+    if (!this.isSectionPreloadActive()) {
       return
     }
     try {
       const items = await this.vm.loadHomeSeasonal()
-      if (token !== this.loadToken) {
+      if (token !== this.loadToken || !this.isSectionPreloadActive()) {
         return
       }
-      this.seasonalList = [...items]
+      this.updateHomeSection(RecommendSectionType.SEASONAL, items)
       this.seasonalContentVersion++
       this.seasonLabel = this.vm.seasonLabel
     } catch (err) {
@@ -354,15 +414,15 @@ export struct HomePage {
   }
 
   private async loadHighScoreSection(token: number): Promise<void> {
-    if (!this.isHomeActive()) {
+    if (!this.isSectionPreloadActive()) {
       return
     }
     try {
       const items = await this.vm.loadHomeHighScore()
-      if (token !== this.loadToken) {
+      if (token !== this.loadToken || !this.isSectionPreloadActive()) {
         return
       }
-      this.highScoreList = [...items]
+      this.updateHomeSection(RecommendSectionType.HIGH_SCORE, items)
       this.highScoreContentVersion++
     } catch (err) {
       logger.warn('loadHomeHighScore failed')
@@ -375,7 +435,7 @@ export struct HomePage {
   }
 
   private startBackgroundSectionPrefetchIfReady(token: number): void {
-    if (!this.isHomeActive() || token !== this.loadToken || this.seasonalLoading || this.highScoreLoading || this.backgroundPrefetchInFlight) {
+    if (!this.isSectionPreloadActive() || token !== this.loadToken || this.seasonalLoading || this.highScoreLoading || this.backgroundPrefetchInFlight) {
       return
     }
     this.backgroundPrefetchInFlight = true
@@ -393,10 +453,10 @@ export struct HomePage {
       this.prefetchHighScoreSection(token)
     ])
     this.backgroundPrefetchInFlight = false
-    if (token === this.loadToken && runToken === this.backgroundPrefetchRunToken && this.isHomeActive()) {
+    if (token === this.loadToken && runToken === this.backgroundPrefetchRunToken && this.isSectionPreloadActive()) {
       logger.info('background section prefetch complete')
     }
-    if (token === this.loadToken && this.isHomeActive() && runToken !== this.backgroundPrefetchRunToken) {
+    if (token === this.loadToken && this.isSectionPreloadActive() && runToken !== this.backgroundPrefetchRunToken) {
       this.startBackgroundSectionPrefetchIfReady(token)
     }
   }
@@ -422,7 +482,7 @@ export struct HomePage {
   private async enrichHeroSection(token: number): Promise<void> {
     try {
       const items = await this.vm.enrichHomeHeroList()
-      if (token !== this.loadToken) {
+      if (token !== this.loadToken || !this.isSectionPreloadActive()) {
         return
       }
       this.heroList = [...items]
@@ -438,11 +498,11 @@ export struct HomePage {
     }
     this.trendingMoreLoading = true
     await this.vm.loadRemainingTrending((items: RecommendCardModel[]): void => {
-      if (token === this.loadToken) {
-        this.trendingList = items
+      if (token === this.loadToken && this.isSectionPreloadActive()) {
+        this.updateHomeSection(RecommendSectionType.TRENDING, items)
         this.trendingContentVersion++
       }
-    }, (): boolean => token === this.loadToken)
+    }, (): boolean => token === this.loadToken && this.isSectionPreloadActive())
     if (token === this.loadToken) {
       this.trendingMoreLoading = false
     }
@@ -454,11 +514,11 @@ export struct HomePage {
     }
     this.seasonalMoreLoading = true
     await this.vm.loadRemainingSeasonal((items: RecommendCardModel[]): void => {
-      if (token === this.loadToken) {
-        this.seasonalList = items
+      if (token === this.loadToken && this.isSectionPreloadActive()) {
+        this.updateHomeSection(RecommendSectionType.SEASONAL, items)
         this.seasonalContentVersion++
       }
-    }, (): boolean => token === this.loadToken)
+    }, (): boolean => token === this.loadToken && this.isSectionPreloadActive())
     if (token === this.loadToken) {
       this.seasonalMoreLoading = false
     }
@@ -470,11 +530,11 @@ export struct HomePage {
     }
     this.highScoreMoreLoading = true
     await this.vm.loadRemainingHighScore((items: RecommendCardModel[]): void => {
-      if (token === this.loadToken) {
-        this.highScoreList = items
+      if (token === this.loadToken && this.isSectionPreloadActive()) {
+        this.updateHomeSection(RecommendSectionType.HIGH_SCORE, items)
         this.highScoreContentVersion++
       }
-    }, (): boolean => token === this.loadToken, maxItems)
+    }, (): boolean => token === this.loadToken && this.isSectionPreloadActive(), maxItems)
     if (token === this.loadToken) {
       this.highScoreMoreLoading = false
     }
@@ -594,25 +654,30 @@ export struct HomePage {
       this.tagSwitchPinGuardUntil = Date.now() + HOME_TAG_SWITCH_PIN_GUARD_MS
     }
     this.selectedTag = tag
+    this.tagTopicList = []
+    this.syncHomePreloadMode()
 
     if (tag.length === 0) {
-      this.tagTopicList = []
       this.tagSwitchInProgress = false
       this.tagLoading = false
       this.tagSwitchPinGuardUntil = Date.now() + HOME_TAG_SWITCH_PIN_GUARD_MS
+      this.vm.setBackgroundPreloadEnabled(this.isSectionPreloadActive())
+      this.resumeBackgroundLoading()
       return
     }
 
+    this.backgroundPrefetchRunToken++
+    this.vm.setBackgroundPreloadEnabled(false)
     this.tagLoading = true
     try {
       await this.vm.loadByTag(tag, (items: RecommendCardModel[]): void => {
-        if (requestVersion === this.tagRequestVersion && this.selectedTag === tag) {
+        if (requestVersion === this.tagRequestVersion && this.selectedTag === tag && this.isHomeActive()) {
           this.tagTopicList = items
         }
       }, (): boolean => {
-        return requestVersion === this.tagRequestVersion && this.selectedTag === tag
+        return requestVersion === this.tagRequestVersion && this.selectedTag === tag && this.isHomeActive()
       })
-      if (requestVersion === this.tagRequestVersion && this.selectedTag === tag) {
+      if (requestVersion === this.tagRequestVersion && this.selectedTag === tag && this.isHomeActive()) {
         this.tagTopicList = this.vm.tagTopicList
       }
     } finally {
@@ -631,6 +696,33 @@ export struct HomePage {
       action: () => {
         router.pushUrl({ url: 'pages/search/SearchPage' })
       }
+    }
+  }
+
+  private openRecommendSection(url: string): void {
+    this.backgroundPrefetchRunToken++
+    this.vm.setBackgroundPreloadEnabled(false)
+    setHomePreloadEnabled(false)
+    router.pushUrl({ url: url }).catch((err: Error) => {
+      logger.warn('Open recommend section failed: %{public}s', err.message)
+      setHomePreloadEnabled(true)
+      this.syncHomePreloadState()
+    })
+  }
+
+  private updateHomeSection(sectionType: RecommendSectionType, items: RecommendCardModel[]): void {
+    RecommendSectionCache.set(sectionType, items)
+    const visibleItems: RecommendCardModel[] = []
+    const count = Math.min(HOME_SECTION_DISPLAY_LIMIT, items.length)
+    for (let i = 0; i < count; i++) {
+      visibleItems.push(RecommendCardModel.copyOf(items[i]))
+    }
+    if (sectionType === RecommendSectionType.TRENDING) {
+      this.trendingList = visibleItems
+    } else if (sectionType === RecommendSectionType.SEASONAL) {
+      this.seasonalList = visibleItems
+    } else {
+      this.highScoreList = visibleItems
     }
   }
 

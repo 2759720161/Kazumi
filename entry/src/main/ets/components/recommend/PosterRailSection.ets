@@ -1,6 +1,7 @@
 import { RecommendCardModel } from '../../models/RecommendCardModel'
 import { RecommendCard } from './RecommendCard'
 import { Logger } from '../../utils/Logger'
+import { HOME_PRELOAD_GROUP_SECTIONS } from '../../utils/HomePreloadGate'
 
 const logger = new Logger('PosterRailSection')
 
@@ -76,14 +77,16 @@ export struct PosterRailSection {
         .layoutWeight(1)
 
         if (this.onMoreClick !== undefined) {
-          Row({ space: 4 }) {
-            Text('更多')
-              .fontSize(13)
-              .fontColor($r('app.color.accent_blue'))
+          Row() {
             SymbolGlyph($r('sys.symbol.chevron_right'))
-              .fontSize(13)
-              .fontColor([$r('app.color.accent_blue')])
+              .fontSize(18)
+              .fontColor([$r('app.color.text_secondary')])
           }
+          .width(36)
+          .height(36)
+          // 点击热区保持 36vp，图标本体贴齐右侧 16vp 页面边距。
+          .justifyContent(FlexAlign.End)
+          .alignItems(VerticalAlign.Center)
           .onClick(() => {
             if (this.onMoreClick) {
               this.onMoreClick()
@@ -101,7 +104,8 @@ export struct PosterRailSection {
               RecommendCard({
                 item: item,
                 showRank: this.showRank,
-                cardWidth: this.getCardWidth()
+                cardWidth: this.getCardWidth(),
+                homePreloadGroup: HOME_PRELOAD_GROUP_SECTIONS
               })
             }
             .width(this.getCardWidth())

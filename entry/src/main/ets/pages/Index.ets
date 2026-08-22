@@ -14,8 +14,6 @@ import {
 import { promptAction, router, SymbolGlyphModifier, window } from '@kit.ArkUI'
 import { common } from '@kit.AbilityKit'
 import { Logger } from '../utils/Logger'
-import { PreferencesStore } from '../store/PreferencesStore'
-import { QixiAudioService } from '../services/QixiAudioService'
 import {
   BOTTOM_TAB_ANIMATION_HIDDEN_KEY,
   BOTTOM_TAB_ANIMATION_TOKEN_KEY,
@@ -35,11 +33,88 @@ import {
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../utils/HdsPageStyle'
 import { setHomePreloadEnabled } from '../utils/HomePreloadGate'
+import { PreferencesStore } from '../store/PreferencesStore'
+import {
+  THIRD_LAUNCH_NOTICE_ACKNOWLEDGED_PREF_KEY,
+  THIRD_LAUNCH_NOTICE_PENDING_KEY
+} from '../utils/ThirdLaunchNotice'
 
 const logger = new Logger('Index')
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady'
 const DOWNLOAD_NAVIGATION_TOKEN_KEY: string = 'downloadNavigationToken'
-const QIXI_AUDIO_PROMPT_HANDLED_KEY: string = 'qixiAudioPromptHandled_1_0_8'
+
+@CustomDialog
+struct ThirdLaunchSupportDialog {
+  controller?: CustomDialogController
+  onAcknowledge: () => void = (): void => {}
+  @State private remainingSeconds: number = 5
+  private countdownTimer: number = -1
+
+  aboutToAppear(): void {
+    this.remainingSeconds = 5
+    this.stopCountdown()
+    this.countdownTimer = setInterval((): void => {
+      if (this.remainingSeconds <= 1) {
+        this.remainingSeconds = 0
+        this.stopCountdown()
+        return
+      }
+      this.remainingSeconds -= 1
+    }, 1000)
+  }
+
+  aboutToDisappear(): void {
+    this.stopCountdown()
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownTimer >= 0) {
+      clearInterval(this.countdownTimer)
+      this.countdownTimer = -1
+    }
+  }
+
+  build() {
+    Column() {
+      Text('支持作者')
+        .fontSize(24)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .margin({ bottom: 18 })
+
+      Text('由于该应用无法上架应用商店（曾经上架过，但是被下架并封号），如果您对该应用感到满意，可以在应用市场下载“影匣”，并打开使用两分钟（可以的话，隔一两天打开一次）。影匣也会不断更新迭代，您的支持是对作者最大的鼓励。')
+        .fontSize(16)
+        .fontWeight(FontWeight.Regular)
+        .fontColor($r('app.color.text_body'))
+        .lineHeight(25)
+        .textAlign(TextAlign.Start)
+        .width('100%')
+
+      Button(this.remainingSeconds > 0 ? `我已知晓（${this.remainingSeconds}）` : '我已知晓')
+        .width('100%')
+        .height(48)
+        .margin({ top: 22 })
+        .borderRadius(24)
+        .fontSize(17)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_on_primary'))
+        .backgroundColor(this.remainingSeconds > 0 ? $r('app.color.status_default') : $r('app.color.accent_blue'))
+        .enabled(this.remainingSeconds === 0)
+        .onClick((): void => {
+          this.onAcknowledge()
+          this.controller?.close()
+        })
+    }
+    .width('86%')
+    .constraintSize({ maxWidth: 430 })
+    .padding({ left: 24, right: 24, top: 26, bottom: 24 })
+    .borderRadius(26)
+    .backgroundColor($r('app.color.card_background'))
+    .alignItems(HorizontalAlign.Center)
+  }
+}
 
 @Entry
 @Component
@@ -66,7 +141,8 @@ struct Index {
   appPreferencesReady: boolean = false
   @StorageLink(DOWNLOAD_NAVIGATION_TOKEN_KEY) @Watch('onDownloadNavigationTokenChanged')
   downloadNavigationToken: number = 0
-  @State private showQixiAudioDialog: boolean = false
+  @StorageLink(THIRD_LAUNCH_NOTICE_PENDING_KEY) @Watch('onThirdLaunchNoticePendingChanged')
+  thirdLaunchNoticePending: boolean = false
   @State private hdsImmersiveMaterialSupported: boolean = true
   private tabsController: HdsTabsController = new HdsTabsController()
   private bottomTabControllerHidden: boolean = false
@@ -77,9 +153,18 @@ struct Index {
   private handledContinuationRestoreToken: number = -1
   private pendingMainTabIndex: number = -1
   private handledDownloadNavigationToken: number = 0
-  private qixiAudioPromptChecked: boolean = false
-  private qixiAudioPromptHandling: boolean = false
-  private readonly qixiAudioService: QixiAudioService = QixiAudioService.getInstance()
+  private thirdLaunchNoticeOpening: boolean = false
+  private thirdLaunchNoticeController: CustomDialogController | null = new CustomDialogController({
+    builder: ThirdLaunchSupportDialog({
+      onAcknowledge: (): void => {
+        this.acknowledgeThirdLaunchNotice()
+      }
+    }),
+    customStyle: true,
+    autoCancel: false,
+    alignment: DialogAlignment.Center,
+    maskColor: $r('app.color.overlay_modal_bg')
+  })
 
   aboutToAppear(): void {
     setHomePreloadEnabled(true)
@@ -88,12 +173,13 @@ struct Index {
     ContinuationState.markIndex(this.currentTab)
     this.restoreContinuationIfNeeded()
     this.openDownloadPageIfNeeded()
-    this.checkQixiAudioPrompt()
+    this.openThirdLaunchNoticeIfNeeded()
   }
 
   onPageShow(): void {
     setHomePreloadEnabled(true)
     logger.info('Index page visible, resume home preload')
+    this.openThirdLaunchNoticeIfNeeded()
   }
 
   onPageHide(): void {
@@ -101,54 +187,48 @@ struct Index {
     logger.info('Index page hidden, pause home preload')
   }
 
-  private onAppPreferencesReadyChanged(): void {
-    this.checkQixiAudioPrompt()
-  }
-
-  private async checkQixiAudioPrompt(): Promise<void> {
-    if (!this.appPreferencesReady || this.qixiAudioPromptChecked || !this.isQixiAudioPromptAvailable()) {
-      return
-    }
-    this.qixiAudioPromptChecked = true
-    const handled = await PreferencesStore.getInstance().getBoolean(QIXI_AUDIO_PROMPT_HANDLED_KEY, false)
-    if (!handled) {
-      this.showQixiAudioDialog = true
-    }
-  }
-
-  private isQixiAudioPromptAvailable(): boolean {
-    const now = new Date()
-    const currentYear = now.getFullYear()
-    const currentMonth = now.getMonth() + 1
-    const currentDay = now.getDate()
-    if (currentYear !== 2026) {
-      return currentYear > 2026
-    }
-    if (currentMonth !== 8) {
-      return currentMonth > 8
-    }
-    return currentDay >= 19
-  }
-
-  private async handleQixiAudioPrompt(playAudio: boolean): Promise<void> {
-    if (this.qixiAudioPromptHandling) {
-      return
-    }
-    this.qixiAudioPromptHandling = true
-    this.showQixiAudioDialog = false
-    await PreferencesStore.getInstance().setBoolean(QIXI_AUDIO_PROMPT_HANDLED_KEY, true)
-    if (!playAudio) {
-      return
-    }
-    try {
-      await this.qixiAudioService.play(getContext(this) as common.UIAbilityContext)
-    } catch (_err) {
-      promptAction.showToast({ message: '音频播放失败' })
-    }
-  }
-
   private onDownloadNavigationTokenChanged(): void {
     this.openDownloadPageIfNeeded()
+  }
+
+  private onThirdLaunchNoticePendingChanged(): void {
+    this.openThirdLaunchNoticeIfNeeded()
+  }
+
+  private onAppPreferencesReadyChanged(): void {
+    this.openThirdLaunchNoticeIfNeeded()
+  }
+
+  private openThirdLaunchNoticeIfNeeded(): void {
+    if (!this.appPreferencesReady || !this.thirdLaunchNoticePending || this.thirdLaunchNoticeOpening) {
+      return
+    }
+    this.thirdLaunchNoticeOpening = true
+    setTimeout((): void => {
+      if (!this.thirdLaunchNoticePending) {
+        this.thirdLaunchNoticeOpening = false
+        return
+      }
+      try {
+        this.thirdLaunchNoticeController?.open()
+      } catch (err) {
+        this.thirdLaunchNoticeOpening = false
+        const msg = err instanceof Error ? err.message : String(err)
+        logger.warn('Open third-launch notice failed: %{public}s', msg)
+      }
+    }, 240)
+  }
+
+  private acknowledgeThirdLaunchNotice(): void {
+    this.thirdLaunchNoticePending = false
+    this.thirdLaunchNoticeOpening = false
+    PreferencesStore.getInstance().setBoolean(
+      THIRD_LAUNCH_NOTICE_ACKNOWLEDGED_PREF_KEY,
+      true
+    ).catch((err: Object): void => {
+      logger.warn('Persist third-launch notice acknowledgement failed: %{public}s',
+        err instanceof Error ? err.message : String(err))
+    })
   }
 
   private openDownloadPageIfNeeded(): void {
@@ -198,70 +278,8 @@ struct Index {
     }
   }
 
-  @Builder
-  private QixiAudioDialog(): void {
-    Column() {
-      Column() {
-        Text('七夕神秘小音频')
-          .fontSize(22)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .textAlign(TextAlign.Center)
-          .width('100%')
-        Text('注：取消后无法通过应用内再次打开播放')
-          .fontSize(15)
-          .fontColor($r('app.color.text_secondary'))
-          .textAlign(TextAlign.Center)
-          .width('100%')
-          .margin({ top: 14 })
-        Row() {
-          Text('取消')
-            .fontSize(17)
-            .fontColor($r('app.color.text_secondary'))
-            .textAlign(TextAlign.Center)
-            .layoutWeight(1)
-            .height(52)
-            .onClick(() => {
-              this.handleQixiAudioPrompt(false)
-            })
-          Divider()
-            .vertical(true)
-            .height(24)
-            .color($r('app.color.card_specular_border'))
-          Text('播放')
-            .fontSize(17)
-            .fontColor($r('app.color.tab_icon_selected'))
-            .fontWeight(FontWeight.Medium)
-            .textAlign(TextAlign.Center)
-            .layoutWeight(1)
-            .height(52)
-            .onClick(() => {
-              this.handleQixiAudioPrompt(true)
-            })
-        }
-        .width('100%')
-        .margin({ top: 22 })
-      }
-      .width('100%')
-      .padding({ left: 30, right: 30, top: 30, bottom: 20 })
-      .borderRadius(34)
-      .backgroundColor($r('app.color.card_background'))
-      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(0x66000000)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .padding({ left: 20, right: 20, bottom: 28 })
-    .onClick(() => {
-      // Keep the prompt open until the user explicitly chooses Cancel or Play.
-    })
-  }
-
   build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column() {
+    Column() {
       HdsTabs({
         controller: this.tabsController,
         index: this.currentTab
@@ -323,13 +341,6 @@ struct Index {
       .width('100%')
       .height(LayoutPolicy.matchParent)
       .backgroundColor($r('app.color.page_background'))
-
-      if (this.showQixiAudioDialog) {
-        this.QixiAudioDialog()
-      }
-    }
-    .width('100%')
-    .height(LayoutPolicy.matchParent)
   }
 
   private isWideHdsTabsLayout(): boolean {

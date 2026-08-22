@@ -3,7 +3,8 @@ import { RuleSource } from '../../models/RuleSource'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { SecurityPolicy } from '../../network/SecurityPolicy'
 import { RuleCatalogService } from '../../services/RuleCatalogService'
-import { common, ConfigurationConstant } from '@kit.AbilityKit'
+import { common, ConfigurationConstant, Want } from '@kit.AbilityKit'
+import { pasteboard } from '@kit.BasicServicesKit'
 import { Logger } from '../../utils/Logger'
 import { promptAction, router } from '@kit.ArkUI'
 import { RULE_SOURCE_VERSION_KEY } from '../../store/SettingsChangeSignal'
@@ -140,6 +141,131 @@ struct SponsorDialog {
   }
 }
 
+@CustomDialog
+struct PainlessSupportDialog {
+  controller?: CustomDialogController
+
+  build() {
+    Column() {
+      Text('支持说明')
+        .fontSize(24)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .textAlign(TextAlign.Center)
+        .width('100%')
+        .margin({ bottom: 18 })
+
+      Text('由于该应用无法上架应用商店（曾经上架过，但是被下架并封号），如果您对该应用感到满意，可以在应用市场下载“影匣”，并打开使用两分钟（可以的话，隔一两天打开一次）。影匣也会不断更新迭代，您的支持是对作者最大的鼓励。')
+        .fontSize(16)
+        .fontWeight(FontWeight.Regular)
+        .fontColor($r('app.color.text_body'))
+        .lineHeight(25)
+        .textAlign(TextAlign.Start)
+        .width('100%')
+
+      Button('我已知晓')
+        .width('100%')
+        .height(48)
+        .margin({ top: 22 })
+        .borderRadius(24)
+        .fontSize(17)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_on_primary'))
+        .backgroundColor($r('app.color.accent_blue'))
+        .onClick(() => {
+          this.controller?.close()
+        })
+    }
+    .width('86%')
+    .constraintSize({ maxWidth: 430 })
+    .padding({ left: 24, right: 24, top: 26, bottom: 24 })
+    .borderRadius(26)
+    .backgroundColor($r('app.color.card_background'))
+    .alignItems(HorizontalAlign.Center)
+  }
+}
+
+@CustomDialog
+struct QqGroupDialog {
+  controller?: CustomDialogController
+  onCopy: () => void = () => {}
+  onJoin: () => void = () => {}
+
+  build() {
+    Column() {
+      Text('QQ群')
+        .fontSize(26)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .textAlign(TextAlign.Start)
+        .margin({ bottom: 24 })
+
+      Text('626493332')
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .textAlign(TextAlign.Start)
+        .margin({ bottom: 26 })
+
+      Row() {
+        Text('复制')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+          .layoutWeight(1)
+          .height(48)
+          .onClick(() => {
+            this.controller?.close()
+            this.onCopy()
+          })
+          .stateStyles({
+            pressed: {
+              .opacity(0.55)
+            },
+            normal: {
+              .opacity(1)
+            }
+          })
+
+        Column()
+          .width(1)
+          .height(30)
+          .backgroundColor($r('app.color.divider_color'))
+
+        Text('加群')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.accent_blue'))
+          .textAlign(TextAlign.Center)
+          .layoutWeight(1)
+          .height(48)
+          .onClick(() => {
+            this.controller?.close()
+            this.onJoin()
+          })
+          .stateStyles({
+            pressed: {
+              .opacity(0.55)
+            },
+            normal: {
+              .opacity(1)
+            }
+          })
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('92%')
+    .constraintSize({ maxWidth: 460 })
+    .padding({ left: 28, right: 28, top: 28, bottom: 26 })
+    .borderRadius({ topLeft: 30, topRight: 30, bottomLeft: 30, bottomRight: 30 })
+    .backgroundColor($r('app.color.card_background'))
+  }
+}
+
 @Component
 export struct SettingsPage {
   @Prop standaloneDestination: string = ''
@@ -183,6 +309,27 @@ export struct SettingsPage {
   private playerEngineFirstTapTime: number = 0
   private sponsorDialogController: CustomDialogController | null = new CustomDialogController({
     builder: SponsorDialog(),
+    customStyle: true,
+    autoCancel: true,
+    alignment: DialogAlignment.Center,
+    maskColor: $r('app.color.overlay_modal_bg')
+  })
+  private painlessSupportDialogController: CustomDialogController | null = new CustomDialogController({
+    builder: PainlessSupportDialog(),
+    customStyle: true,
+    autoCancel: true,
+    alignment: DialogAlignment.Center,
+    maskColor: $r('app.color.overlay_modal_bg')
+  })
+  private qqGroupDialogController: CustomDialogController | null = new CustomDialogController({
+    builder: QqGroupDialog({
+      onCopy: () => {
+        this.copyQqGroup()
+      },
+      onJoin: () => {
+        this.openQqGroup()
+      }
+    }),
     customStyle: true,
     autoCancel: true,
     alignment: DialogAlignment.Center,
@@ -958,6 +1105,8 @@ export struct SettingsPage {
         this.ThirdPartyItem()
         this.ItemDivider()
         this.SponsorItem()
+        this.ItemDivider()
+        this.PainlessSupportItem()
       }
       .width('100%')
       .borderRadius(12)
@@ -1130,11 +1279,22 @@ export struct SettingsPage {
         .layoutWeight(1)
       Text('626493332')
         .fontSize(14)
-        .fontColor($r('app.color.text_primary'))
+        .fontColor($r('app.color.accent_blue'))
     }
     .width('100%')
     .height(64)
     .padding({ left: 16, right: 16 })
+    .onClick(() => {
+      this.openQqGroupDialog()
+    })
+    .stateStyles({
+      pressed: {
+        .backgroundColor($r('app.color.category_menu_item_selected'))
+      },
+      normal: {
+        .backgroundColor(Color.Transparent)
+      }
+    })
   }
 
   @Builder
@@ -1339,6 +1499,37 @@ export struct SettingsPage {
     .width(160)
     .fontColor($r('app.color.text_primary'))
     .radius(20)
+  }
+
+  @Builder
+  PainlessSupportItem(): void {
+    Row() {
+      this.SettingIcon($r('sys.symbol.star_fill'))
+      Text('无痛支持')
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('sys.color.icon_secondary')])
+    }
+    .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 16 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.openPainlessSupportDialog()
+    })
+    .stateStyles({
+      pressed: {
+        .backgroundColor($r('app.color.category_menu_item_selected'))
+      },
+      normal: {
+        .backgroundColor(Color.Transparent)
+      }
+    })
   }
 
   @Builder
@@ -1768,6 +1959,42 @@ export struct SettingsPage {
   private openSponsorDialog(): void {
     logger.info('Open sponsor dialog')
     this.sponsorDialogController?.open()
+  }
+
+  private openPainlessSupportDialog(): void {
+    logger.info('Open painless support dialog')
+    this.painlessSupportDialogController?.open()
+  }
+
+  private openQqGroupDialog(): void {
+    logger.info('Open QQ group dialog')
+    this.qqGroupDialogController?.open()
+  }
+
+  private async copyQqGroup(): Promise<void> {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, '626493332')
+      await pasteboard.getSystemPasteboard().setData(data)
+      promptAction.showToast({ message: 'QQ群号已复制' })
+    } catch (err) {
+      logger.warn('Copy QQ group failed: %{public}s', err instanceof Error ? err.message : String(err))
+      promptAction.showToast({ message: '复制失败' })
+    }
+  }
+
+  private async openQqGroup(): Promise<void> {
+    const qqGroupUri: string = 'mqqapi://card/show_pslcard?src_type=internal&version=1&uin=626493332&card_type=group&source=qrcode'
+    const want: Want = {
+      uri: qqGroupUri
+    }
+    try {
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext
+      await context.startAbility(want)
+      logger.info('QQ group link opened')
+    } catch (err) {
+      logger.warn('Open QQ group failed: %{public}s', err instanceof Error ? err.message : String(err))
+      promptAction.showToast({ message: '无法打开QQ，请先安装QQ' })
+    }
   }
 
   private async setPlayerEngine(engine: string): Promise<void> {

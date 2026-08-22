@@ -8,7 +8,7 @@ import { Logger } from '../utils/Logger'
 import { isHomePreloadEnabled } from '../utils/HomePreloadGate'
 
 const logger = new Logger('RecommendViewModel')
-const HOME_SECTION_PAGE_SIZE: number = 24
+const HOME_SECTION_PAGE_SIZE: number = 20
 
 export class RecommendViewModel {
   heroList: RecommendCardModel[] = []
@@ -21,6 +21,7 @@ export class RecommendViewModel {
   isInitialLoaded: boolean = false
   currentTag: string = ''
   seasonLabel: string = ''
+  private tagTopicLoadComplete: boolean = false
 
   private historyStore: HistoryStore = new HistoryStore()
   private trendingNextOffset: number = HOME_SECTION_PAGE_SIZE
@@ -71,13 +72,14 @@ export class RecommendViewModel {
 
   async loadByTag(tag: string, onProgress?: (items: RecommendCardModel[]) => void,
     shouldContinue?: () => boolean): Promise<void> {
-    if (tag === this.currentTag) {
+    if (tag === this.currentTag && this.tagTopicLoadComplete) {
       if (onProgress) {
         onProgress(this.copyList(this.tagTopicList))
       }
       return
     }
     this.currentTag = tag
+    this.tagTopicLoadComplete = false
     this.tagTopicList = []
     try {
       const options = new BangumiSearchProgressOptions()
@@ -96,6 +98,7 @@ export class RecommendViewModel {
         return
       }
       this.tagTopicList = this.buildRecommendModels(results)
+      this.tagTopicLoadComplete = true
       if (onProgress) {
         onProgress(this.copyList(this.tagTopicList))
       }

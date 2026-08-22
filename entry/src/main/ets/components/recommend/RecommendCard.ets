@@ -2,6 +2,7 @@ import { RecommendCardModel } from '../../models/RecommendCardModel'
 import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
 import { navigateToDetail } from '../../utils/DetailNavigation'
 import { CachedRemoteImage } from '../common/CachedRemoteImage'
+import { HOME_PRELOAD_GROUP_GENERAL } from '../../utils/HomePreloadGate'
 
 @Component
 export struct RecommendCard {
@@ -9,6 +10,9 @@ export struct RecommendCard {
   @Prop showRank: boolean = false
   @Prop cardWidth: number = 112
   @Prop sharedCoverIdPrefix: string = 'poster'
+  @Prop pauseWhenHomeInactive: boolean = true
+  @Prop homePreloadGroup: string = HOME_PRELOAD_GROUP_GENERAL
+  @Prop loadEnabled: boolean = true
   @State isPressed: boolean = false
 
   build() {
@@ -18,7 +22,9 @@ export struct RecommendCard {
           source: this.item.getGridCover(),
           sources: this.getCoverCandidates(),
           sharedId: this.getSharedCoverId(),
-          pauseWhenHomeInactive: true
+          loadEnabled: this.loadEnabled,
+          pauseWhenHomeInactive: this.pauseWhenHomeInactive,
+          homePreloadGroup: this.homePreloadGroup
         })
           .width('100%')
           .height('100%')

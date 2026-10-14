@@ -2,7 +2,7 @@ export class DanmakuItem {
   content: string = ''
   timeMs: number = 0
   color: string = '#FFFFFF'
-  fontSize: number = 25
+  fontSize: number = 16
   type: number = 0
   source: string = 'DanDan'
   trackIndex: number = -1

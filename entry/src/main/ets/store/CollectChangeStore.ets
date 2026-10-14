@@ -6,10 +6,6 @@ import { Logger } from '../utils/Logger'
 
 const logger = new Logger('CollectChangeStore')
 
-/**
- * [FROZEN] 冻结声明：当前仅做本地追番、不做同步，collect_change 无业务价值。
- * 禁止围绕此 Store 开发新功能。保留此 Store 仅为数据完整性，不得新增调用点。
- */
 export class CollectChangeStore {
   private rdbManager: RdbManager
 
@@ -17,15 +13,29 @@ export class CollectChangeStore {
     this.rdbManager = RdbManager.getInstance()
   }
 
-  async appendChange(bangumiId: number, action: number, type: number): Promise<void> {
+  async appendChange(bangumiId: number, action: number, type: number): Promise<CollectChangeRecord> {
+    const existing = await this.getAllChanges()
+    let maxId = 0
+    for (let i = 0; i < existing.length; i++) {
+      maxId = Math.max(maxId, existing[i].id)
+    }
+    const timestamp = Math.floor(Date.now() / 1000)
+    const id = Math.max(timestamp, maxId + 1)
     const values: relationalStore.ValuesBucket = {
-      id: Math.floor(Date.now() / 1000),
+      id: id,
       bangumi_id: bangumiId,
       action: action,
       type: type,
-      timestamp: Math.floor(Date.now() / 1000)
+      timestamp: timestamp
     }
     await this.rdbManager.insert(RdbConstants.TABLE_COLLECT_CHANGE, values)
+    const record = new CollectChangeRecord()
+    record.id = id
+    record.bangumiId = bangumiId
+    record.action = action
+    record.type = type
+    record.timestamp = timestamp
+    return record
   }
 
   async getAllChanges(): Promise<CollectChangeRecord[]> {
@@ -38,6 +48,29 @@ export class CollectChangeStore {
   async clearChanges(): Promise<void> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_COLLECT_CHANGE)
     await this.rdbManager.delete(predicates)
+  }
+
+  async replaceAllChanges(records: CollectChangeRecord[]): Promise<void> {
+    this.rdbManager.beginTransaction()
+    try {
+      const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_COLLECT_CHANGE)
+      await this.rdbManager.delete(predicates)
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i]
+        const values: relationalStore.ValuesBucket = {
+          id: record.id,
+          bangumi_id: record.bangumiId,
+          action: record.action,
+          type: record.type,
+          timestamp: record.timestamp
+        }
+        await this.rdbManager.insert(RdbConstants.TABLE_COLLECT_CHANGE, values)
+      }
+      this.rdbManager.commit()
+    } catch (err) {
+      this.rdbManager.rollBack()
+      throw new Error(err instanceof Error ? err.message : String(err))
+    }
   }
 
   private parseResultSet(resultSet: relationalStore.ResultSet): CollectChangeRecord[] {

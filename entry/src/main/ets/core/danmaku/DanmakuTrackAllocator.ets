@@ -4,7 +4,7 @@ import { Logger } from '../../utils/Logger'
 const logger = new Logger('DanmakuTrackAllocator')
 
 const TRACK_GAP = 4
-const DEFAULT_FONT_SIZE = 25
+const DEFAULT_FONT_SIZE = 16
 const LINE_HEIGHT_RATIO = 1.08
 const MIN_LINE_HEIGHT = 14
 const MIN_LINE_HEIGHT_RATIO = 1.0
@@ -14,6 +14,7 @@ const COMPACT_HEIGHT_THRESHOLD = 260
 const MIN_COMPACT_TRACKS = 5
 const MIN_NORMAL_TRACKS = 8
 const MIN_TRACK_FILL_RATIO = 0.75
+const TOP_TRACK_PADDING_RATIO = 0.2
 
 export class DanmakuTrackAllocator {
   private trackCount: number = 0
@@ -82,7 +83,9 @@ export class DanmakuTrackAllocator {
       return 0
     }
     const lineHeight = this.getLineHeight()
-    return trackIndex * lineHeight + Math.round(lineHeight / 2)
+    // Keep the glyph and its outline inside the Canvas instead of clipping the first row.
+    const topPadding = Math.max(3, Math.ceil(this.fontSize * TOP_TRACK_PADDING_RATIO))
+    return topPadding + trackIndex * lineHeight + Math.round(lineHeight / 2)
   }
 
   getTrackCount(): number {

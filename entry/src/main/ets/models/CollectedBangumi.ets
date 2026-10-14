@@ -1,3 +1,5 @@
+import { CollectType } from './CollectType'
+
 export class CollectedBangumi {
   id: number = -1
   animeId: string = ''
@@ -36,7 +38,7 @@ export class CollectedBangumi {
     if (json['animeUrl'] !== undefined) item.animeUrl = json['animeUrl'] as string
     if (json['sourceName'] !== undefined) item.sourceName = json['sourceName'] as string
     if (json['sourceId'] !== undefined) item.sourceId = json['sourceId'] as number
-    if (json['collectType'] !== undefined) item.collectType = json['collectType'] as number
+    if (json['collectType'] !== undefined) item.collectType = CollectType.normalize(json['collectType'] as number)
     if (json['createdAt'] !== undefined) item.createdAt = json['createdAt'] as number
     return item
   }

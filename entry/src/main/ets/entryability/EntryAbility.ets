@@ -1,4 +1,4 @@
-import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { display, window } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import type { Callback } from '@kit.BasicServicesKit';
@@ -6,6 +6,7 @@ import { preferences } from '@kit.ArkData';
 import { RdbManager } from '../store/RdbManager';
 
 import { PreferencesStore } from '../store/PreferencesStore';
+import { ImageNetworkSettings } from '../store/ImageNetworkSettings';
 import { FileStore } from '../store/FileStore';
 import { Logger } from '../utils/Logger';
 import { SettingsChangeSignal } from '../store/SettingsChangeSignal';
@@ -28,6 +29,10 @@ import {
   ADVANCED_OPTIONS_UNLOCKED_KEY,
   HIDE_LOCAL_PAGE_KEY,
   HIDE_LOCAL_PAGE_DEFAULT,
+  HIDE_TIMELINE_PAGE_KEY,
+  HIDE_TIMELINE_PAGE_DEFAULT,
+  HIDE_FAVORITE_PAGE_KEY,
+  HIDE_FAVORITE_PAGE_DEFAULT,
   PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY
 } from '../utils/AdvancedOptionsUnlock';
 import {
@@ -53,10 +58,10 @@ import {
   PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY
 } from '../utils/MpvSettings';
 import {
+  CONTINUATION_CURRENT_SECTION_KEY,
   CONTINUATION_PAYLOAD_KEY,
   CONTINUATION_RESTORE_PAYLOAD_KEY,
   CONTINUATION_RESTORE_TOKEN_KEY,
-  CONTINUATION_SUPPORT_PAGE_STACK_KEY,
   ContinuationState
 } from '../utils/ContinuationState';
 import {
@@ -65,6 +70,10 @@ import {
   THIRD_LAUNCH_NOTICE_PENDING_KEY,
   THIRD_LAUNCH_NOTICE_TRIGGER_COUNT
 } from '../utils/ThirdLaunchNotice';
+import {
+  COVER_LOADING_NOTICE_ACKNOWLEDGED_PREF_KEY,
+  COVER_LOADING_NOTICE_PENDING_KEY
+} from '../utils/CoverLoadingNotice';
 
 const logger = new Logger('EntryAbility');
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady';
@@ -75,6 +84,7 @@ export default class EntryAbility extends UIAbility {
   private displayDensity: number = 3.0;
   private pendingContinuationPayload: string = '';
   private storesInitialized: boolean = false;
+  private windowListenersRegistered: boolean = false;
   private readonly antiPeepService: AntiPeepService = AntiPeepService.getInstance();
 
 
@@ -106,14 +116,20 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(ADVANCED_OPTIONS_UNLOCKED_KEY, true);
     AppStorage.setOrCreate(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY, false);
     AppStorage.setOrCreate(HIDE_LOCAL_PAGE_KEY, HIDE_LOCAL_PAGE_DEFAULT);
+    AppStorage.setOrCreate(HIDE_TIMELINE_PAGE_KEY, HIDE_TIMELINE_PAGE_DEFAULT);
+    AppStorage.setOrCreate(HIDE_FAVORITE_PAGE_KEY, HIDE_FAVORITE_PAGE_DEFAULT);
     AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, '');
     AppStorage.setOrCreate(CONTINUATION_RESTORE_PAYLOAD_KEY, '');
     AppStorage.setOrCreate(CONTINUATION_RESTORE_TOKEN_KEY, 0);
+    AppStorage.setOrCreate(CONTINUATION_CURRENT_SECTION_KEY, 'home');
     AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED, MPV_DETAIL_ENHANCER_ENABLED_DEFAULT);
     AppStorage.setOrCreate(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY, MPV_DETAIL_ENHANCER_QUALITY_DEFAULT);
     AppStorage.setOrCreate(THIRD_LAUNCH_NOTICE_PENDING_KEY, false);
     SettingsChangeSignal.initDanmakuVersion();
-    this.captureContinuationPayload(want);
+    if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
+      this.captureContinuationPayload(want);
+      this.activateContinuation();
+    }
     this.handleDownloadWant(want);
 
     try {
@@ -148,22 +164,28 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     logger.info('Ability onNewWant launchReason: %{public}d', launchParam.launchReason ?? -1);
-    this.captureContinuationPayload(want);
-    this.handleDownloadWant(want);
-    if (this.pendingContinuationPayload.length > 0) {
-      ContinuationState.publishRestorePayload(this.pendingContinuationPayload);
-      this.pendingContinuationPayload = '';
+    if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
+      this.captureContinuationPayload(want);
+      this.activateContinuation();
     }
+    this.handleDownloadWant(want);
   }
 
   onContinue(wantParam: Record<string, Object>): AbilityConstant.OnContinueResult {
     logger.info('Ability onContinue');
     try {
-      const payload = ContinuationState.getPayloadJson();
-      if (payload.length > 0) {
-        wantParam[CONTINUATION_PAYLOAD_KEY] = payload;
+      let payload = ContinuationState.getTransferPayloadJson();
+      if (payload.length === 0) {
+        ContinuationState.markIndex(AppStorage.get<number>('currentTab') ?? 0);
+        payload = ContinuationState.getTransferPayloadJson();
       }
-      wantParam[CONTINUATION_SUPPORT_PAGE_STACK_KEY] = false;
+      if (payload.length === 0) {
+        logger.warn('Reject continuation because no valid payload is available');
+        return AbilityConstant.OnContinueResult.REJECT;
+      }
+      wantParam[CONTINUATION_PAYLOAD_KEY] = payload;
+      wantParam[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY] = false;
+      logger.info('Prepared continuation payload: %{public}d bytes', ContinuationState.getPayloadSizeBytes(payload));
       return AbilityConstant.OnContinueResult.AGREE;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -186,30 +208,33 @@ export default class EntryAbility extends UIAbility {
 
     this.updateDisplayMetricsAndOrientation(mainWindow);
     this.updateSystemSafeArea(mainWindow);
-    mainWindow.on('avoidAreaChange', (data: window.AvoidAreaOptions) => {
-      if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
-        AppStorage.setOrCreate('topSafeHeight', data.area.topRect.height / this.displayDensity);
-        AppStorage.setOrCreate('bottomSafeHeight', data.area.bottomRect.height / this.displayDensity);
-      } else if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
-        AppStorage.setOrCreate('keyboardAvoidHeight', data.area.bottomRect.height / this.displayDensity);
+    if (!this.windowListenersRegistered) {
+      mainWindow.on('avoidAreaChange', (data: window.AvoidAreaOptions) => {
+        if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
+          AppStorage.setOrCreate('topSafeHeight', data.area.topRect.height / this.displayDensity);
+          AppStorage.setOrCreate('bottomSafeHeight', data.area.bottomRect.height / this.displayDensity);
+        } else if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
+          AppStorage.setOrCreate('keyboardAvoidHeight', data.area.bottomRect.height / this.displayDensity);
+        }
+      });
+
+      try {
+        const foldCallback: Callback<display.FoldStatus> = (foldStatus: display.FoldStatus) => {
+          logger.info('Fold status changed: %{public}d', foldStatus);
+          this.updateDisplayMetricsAndOrientation(mainWindow);
+        };
+        display.on('foldStatusChange', foldCallback);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn('Failed to register foldStatusChange listener: %{public}s', msg);
       }
-    });
 
-    try {
-      const foldCallback: Callback<display.FoldStatus> = (foldStatus: display.FoldStatus) => {
-        logger.info('Fold status changed: %{public}d', foldStatus);
+      mainWindow.on('windowSizeChange', (data: window.Size) => {
+        logger.info('Window size changed: %{public}d x %{public}d', data.width, data.height);
         this.updateDisplayMetricsAndOrientation(mainWindow);
-      };
-      display.on('foldStatusChange', foldCallback);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn('Failed to register foldStatusChange listener: %{public}s', msg);
+      });
+      this.windowListenersRegistered = true;
     }
-
-    mainWindow.on('windowSizeChange', (data: window.Size) => {
-      logger.info('Window size changed: %{public}d x %{public}d', data.width, data.height);
-      this.updateDisplayMetricsAndOrientation(mainWindow);
-    });
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
@@ -261,6 +286,7 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     logger.info('Ability onForeground');
     AppStorage.setOrCreate('appInForeground', true);
+    this.activateContinuation();
     this.antiPeepService.start(this.context);
   }
 
@@ -275,9 +301,15 @@ export default class EntryAbility extends UIAbility {
     try {
       const prefs = await preferences.getPreferences(this.context, 'kazumi_settings');
       PreferencesStore.getInstance().init(prefs);
+      await ImageNetworkSettings.init();
       logger.info('Preferences initialized');
 
       await this.updateThirdLaunchNoticeState();
+      const coverNoticeAcknowledged = await PreferencesStore.getInstance().getBoolean(
+        COVER_LOADING_NOTICE_ACKNOWLEDGED_PREF_KEY,
+        false
+      );
+      AppStorage.setOrCreate(COVER_LOADING_NOTICE_PENDING_KEY, !coverNoticeAcknowledged);
 
       const savedColorMode = await PreferencesStore.getInstance().getNumber('colorMode', ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
       if (savedColorMode !== ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET) {
@@ -342,6 +374,16 @@ export default class EntryAbility extends UIAbility {
         HIDE_LOCAL_PAGE_DEFAULT
       );
       AppStorage.setOrCreate(HIDE_LOCAL_PAGE_KEY, hideLocalPage);
+      const hideTimelinePage = await PreferencesStore.getInstance().getBoolean(
+        HIDE_TIMELINE_PAGE_KEY,
+        HIDE_TIMELINE_PAGE_DEFAULT
+      );
+      AppStorage.setOrCreate(HIDE_TIMELINE_PAGE_KEY, hideTimelinePage);
+      const hideFavoritePage = await PreferencesStore.getInstance().getBoolean(
+        HIDE_FAVORITE_PAGE_KEY,
+        HIDE_FAVORITE_PAGE_DEFAULT
+      );
+      AppStorage.setOrCreate(HIDE_FAVORITE_PAGE_KEY, hideFavoritePage);
 
       const detailEnhancerEnabled = await PreferencesStore.getInstance().getBoolean(
         PREFS_KEY_MPV_DETAIL_ENHANCER_ENABLED,
@@ -430,6 +472,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   private captureContinuationPayload(want: Want): void {
+    this.pendingContinuationPayload = '';
     const params = want.parameters;
     if (params === undefined || params === null) {
       return;
@@ -438,6 +481,19 @@ export default class EntryAbility extends UIAbility {
     if (typeof payload === 'string' && payload.length > 0) {
       this.pendingContinuationPayload = payload;
       logger.info('Captured continuation payload');
+    }
+  }
+
+  private activateContinuation(): void {
+    try {
+      this.context.setMissionContinueState(AbilityConstant.ContinueState.ACTIVE, (result) => {
+        if (result !== undefined && result !== null && result.code !== 0) {
+          logger.warn('Set continuation state ACTIVE failed: %{public}d %{public}s', result.code, result.message);
+        }
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('Set continuation state ACTIVE failed: %{public}s', msg);
     }
   }
 

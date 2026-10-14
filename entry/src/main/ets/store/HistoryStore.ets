@@ -27,6 +27,16 @@ export class HistoryStore {
     return records;
   }
 
+  async getAllOnline(): Promise<HistoryRecord[]> {
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
+    predicates.equalTo(RdbConstants.COL_ENTRY_KIND, 'online');
+    predicates.orderByDesc(RdbConstants.COL_UPDATED_AT);
+    const resultSet = await this.rdbManager.query(predicates);
+    const records = this.parseResultSet(resultSet);
+    await this.fillSourceNames(records);
+    return records;
+  }
+
   async getByAnimeId(animeId: string): Promise<HistoryRecord | null> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
     predicates.equalTo(RdbConstants.COL_ANIME_ID, animeId);
@@ -41,6 +51,8 @@ export class HistoryStore {
 
   async upsert(record: HistoryRecord): Promise<number> {
     const existing = await this.getByAnimeId(record.animeId);
+    const updatedAt = Date.now();
+    this.prepareRecordForWrite(record, existing, updatedAt, true);
     if (existing !== null) {
       const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
       predicates.equalTo(RdbConstants.COL_ANIME_ID, record.animeId);
@@ -57,49 +69,10 @@ export class HistoryStore {
         duration_ms: record.durationMs,
         road_index: record.roadIndex,
         episode_index: record.episodeIndex,
-        updated_at: Date.now()
-      };
-      return await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
-    } else {
-      const values: relationalStore.ValuesBucket = {
-        anime_id: record.animeId,
-        anime_name: record.animeName,
-        anime_cover: record.animeCover,
-        anime_url: record.animeUrl,
-        bangumi_id: record.bangumiId,
-        source_id: record.sourceId,
-        source_name: record.sourceName,
-        episode_name: record.episodeName,
-        episode_url: record.episodeUrl,
-        position_ms: record.positionMs,
-        duration_ms: record.durationMs,
-        road_index: record.roadIndex,
-        episode_index: record.episodeIndex,
-        updated_at: Date.now()
-      };
-      return await this.rdbManager.insert(RdbConstants.TABLE_WATCH_HISTORY, values);
-    }
-  }
-
-  async upsertPreservingUpdatedAt(record: HistoryRecord): Promise<number> {
-    const existing = await this.getByAnimeId(record.animeId);
-    const updatedAt = record.updatedAt > 0 ? record.updatedAt : Date.now();
-    if (existing !== null) {
-      const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
-      predicates.equalTo(RdbConstants.COL_ANIME_ID, record.animeId);
-      const values: relationalStore.ValuesBucket = {
-        anime_name: record.animeName,
-        anime_cover: record.animeCover,
-        anime_url: record.animeUrl,
-        bangumi_id: record.bangumiId,
-        source_id: record.sourceId,
-        source_name: record.sourceName,
-        episode_name: record.episodeName,
-        episode_url: record.episodeUrl,
-        position_ms: record.positionMs,
-        duration_ms: record.durationMs,
-        road_index: record.roadIndex,
-        episode_index: record.episodeIndex,
+        entry_kind: record.entryKind,
+        episode_page_url: record.episodePageUrl,
+        progresses_json: record.progressesToJSONString(),
+        bangumi_item_json: record.bangumiItemJSON,
         updated_at: updatedAt
       };
       return await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
@@ -118,6 +91,62 @@ export class HistoryStore {
         duration_ms: record.durationMs,
         road_index: record.roadIndex,
         episode_index: record.episodeIndex,
+        entry_kind: record.entryKind,
+        episode_page_url: record.episodePageUrl,
+        progresses_json: record.progressesToJSONString(),
+        bangumi_item_json: record.bangumiItemJSON,
+        updated_at: updatedAt
+      };
+      return await this.rdbManager.insert(RdbConstants.TABLE_WATCH_HISTORY, values);
+    }
+  }
+
+  async upsertPreservingUpdatedAt(record: HistoryRecord, mergeExistingState: boolean = true): Promise<number> {
+    const existing = await this.getByAnimeId(record.animeId);
+    const updatedAt = record.updatedAt > 0 ? record.updatedAt : Date.now();
+    this.prepareRecordForWrite(record, existing, updatedAt, false, mergeExistingState);
+    if (existing !== null) {
+      const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
+      predicates.equalTo(RdbConstants.COL_ANIME_ID, record.animeId);
+      const values: relationalStore.ValuesBucket = {
+        anime_name: record.animeName,
+        anime_cover: record.animeCover,
+        anime_url: record.animeUrl,
+        bangumi_id: record.bangumiId,
+        source_id: record.sourceId,
+        source_name: record.sourceName,
+        episode_name: record.episodeName,
+        episode_url: record.episodeUrl,
+        position_ms: record.positionMs,
+        duration_ms: record.durationMs,
+        road_index: record.roadIndex,
+        episode_index: record.episodeIndex,
+        entry_kind: record.entryKind,
+        episode_page_url: record.episodePageUrl,
+        progresses_json: record.progressesToJSONString(),
+        bangumi_item_json: record.bangumiItemJSON,
+        updated_at: updatedAt
+      };
+      return await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
+    } else {
+      const values: relationalStore.ValuesBucket = {
+        anime_id: record.animeId,
+        anime_name: record.animeName,
+        anime_cover: record.animeCover,
+        anime_url: record.animeUrl,
+        bangumi_id: record.bangumiId,
+        source_id: record.sourceId,
+        source_name: record.sourceName,
+        episode_name: record.episodeName,
+        episode_url: record.episodeUrl,
+        position_ms: record.positionMs,
+        duration_ms: record.durationMs,
+        road_index: record.roadIndex,
+        episode_index: record.episodeIndex,
+        entry_kind: record.entryKind,
+        episode_page_url: record.episodePageUrl,
+        progresses_json: record.progressesToJSONString(),
+        bangumi_item_json: record.bangumiItemJSON,
         updated_at: updatedAt
       };
       return await this.rdbManager.insert(RdbConstants.TABLE_WATCH_HISTORY, values);
@@ -141,6 +170,9 @@ export class HistoryStore {
       return result;
     }
 
+    const existingOld: HistoryRecord | null = await this.getByAnimeId(oldAnimeId);
+    this.prepareRecordForWrite(record, existingOld, record.updatedAt > 0 ? record.updatedAt : Date.now(), false);
+
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_WATCH_HISTORY);
     predicates.equalTo(RdbConstants.COL_ANIME_ID, oldAnimeId);
     const values: relationalStore.ValuesBucket = {
@@ -157,6 +189,10 @@ export class HistoryStore {
       duration_ms: record.durationMs,
       road_index: record.roadIndex,
       episode_index: record.episodeIndex,
+      entry_kind: record.entryKind,
+      episode_page_url: record.episodePageUrl,
+      progresses_json: record.progressesToJSONString(),
+      bangumi_item_json: record.bangumiItemJSON,
       updated_at: record.updatedAt > 0 ? record.updatedAt : Date.now()
     };
     const updated = await this.rdbManager.update(RdbConstants.TABLE_WATCH_HISTORY, values, predicates);
@@ -215,7 +251,15 @@ export class HistoryStore {
           record.durationMs = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_DURATION_MS));
           record.roadIndex = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_ROAD_INDEX));
           record.episodeIndex = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_EPISODE_INDEX));
+          record.entryKind = HistoryRecord.normalizeEntryKind(
+            resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_ENTRY_KIND)));
+          record.episodePageUrl = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_EPISODE_PAGE_URL));
+          record.readProgressesJSON(resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_PROGRESSES_JSON)));
+          record.bangumiItemJSON = resultSet.getString(resultSet.getColumnIndex(RdbConstants.COL_BANGUMI_ITEM_JSON));
           record.updatedAt = resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_UPDATED_AT));
+          if (record.progresses.size === 0 && record.positionMs > 0) {
+            record.ensureCurrentProgress();
+          }
           list.push(record);
         } while (resultSet.goToNextRow());
       }
@@ -285,6 +329,12 @@ export class HistoryStore {
     if (primary.episodeUrl.length === 0) {
       primary.episodeUrl = fallback.episodeUrl;
     }
+    if (primary.episodePageUrl.length === 0) {
+      primary.episodePageUrl = fallback.episodePageUrl;
+    }
+    if (primary.bangumiItemJSON.length === 0) {
+      primary.bangumiItemJSON = fallback.bangumiItemJSON;
+    }
     if (primary.positionMs <= 0) {
       primary.positionMs = fallback.positionMs;
     }
@@ -297,6 +347,24 @@ export class HistoryStore {
     if (primary.episodeIndex < 0) {
       primary.episodeIndex = fallback.episodeIndex;
     }
+    primary.entryKind = HistoryRecord.normalizeEntryKind(primary.entryKind);
+    primary.mergeProgressesFrom(fallback);
     return primary;
+  }
+
+  private prepareRecordForWrite(record: HistoryRecord, existing: HistoryRecord | null, updatedAt: number,
+    updateCurrentProgress: boolean, mergeExistingState: boolean = true): void {
+    record.updatedAt = updatedAt;
+    record.entryKind = HistoryRecord.normalizeEntryKind(record.entryKind);
+    if (mergeExistingState && existing !== null && record.bangumiItemJSON.length === 0) {
+      record.bangumiItemJSON = existing.bangumiItemJSON;
+    }
+    if (mergeExistingState && record.episodePageUrl.length === 0) record.episodePageUrl = record.episodeUrl;
+    if (updateCurrentProgress) {
+      record.updateCurrentProgress();
+    } else if (mergeExistingState) {
+      record.ensureCurrentProgress();
+    }
+    if (mergeExistingState && existing !== null) record.mergeProgressesFrom(existing);
   }
 }

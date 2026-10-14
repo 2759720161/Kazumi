@@ -1,4 +1,4 @@
-import { VideoAspectMode, VideoAspectModeHelper } from '../../core/player/IPlayerEngine'
+import { VideoAspectMode } from '../../core/player/IPlayerEngine'
 
 class AspectModeItem {
   mode: VideoAspectMode = VideoAspectMode.contain
@@ -30,25 +30,20 @@ export struct AspectModePanel {
   }
 
   build() {
-    Column() {
+    Menu() {
       ForEach(this.modeItems, (item: AspectModeItem) => {
-        Row() {
-          Text(item.label)
-            .fontSize(15)
-            .fontWeight(this.currentMode === item.mode ? FontWeight.Bold : FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
-            .layoutWeight(1)
-
-          if (this.currentMode === item.mode) {
-            SymbolGlyph($r('sys.symbol.checkmark'))
-              .fontSize(18)
-              .fontColor([$r('sys.color.brand')])
+        MenuItem() {
+          Row() {
+            Text(item.label)
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.currentMode === item.mode ?
+                $r('app.color.accent_blue') : $r('app.color.text_primary'))
+              .layoutWeight(1)
           }
+          .width('100%')
+          .height(44)
         }
-        .width('100%')
-        .height(44)
-        .padding({ left: 16, right: 16 })
-        .borderRadius(8)
         .backgroundColor(Color.Transparent)
         .onClick(() => {
           if (this.onSelectMode) {
@@ -58,12 +53,6 @@ export struct AspectModePanel {
       })
     }
     .width(160)
-    .padding({ top: 8, bottom: 8 })
     .borderRadius(16)
-    .clip(true)
-    .backgroundColor($r('app.color.speed_menu_surface'))
-    .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
-    .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
-    .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
   }
 }

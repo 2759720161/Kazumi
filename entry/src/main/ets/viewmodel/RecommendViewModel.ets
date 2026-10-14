@@ -228,7 +228,7 @@ export class RecommendViewModel {
 
   private async loadContinueWatching(): Promise<void> {
     try {
-      this.continueWatching = await this.historyStore.getAll()
+      this.continueWatching = await this.historyStore.getAllOnline()
     } catch (err) {
       this.continueWatching = []
     }
@@ -236,7 +236,7 @@ export class RecommendViewModel {
 
   async refreshContinueWatching(): Promise<void> {
     try {
-      this.continueWatching = await this.historyStore.getAll()
+      this.continueWatching = await this.historyStore.getAllOnline()
     } catch (err) {
       this.continueWatching = []
     }

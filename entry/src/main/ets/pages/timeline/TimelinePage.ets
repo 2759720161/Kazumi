@@ -2,6 +2,7 @@ import { AnimeItem } from '../../models/AnimeItem'
 import { BangumiApi } from '../../core/api/BangumiApi'
 import { AnimeSeason, YearQuarterItem, QuarterItem } from '../../core/utils/AnimeSeason'
 import { TimelineAnimeCard } from '../../components/timeline/TimelineAnimeCard'
+import { TopicTagButton } from '../../components/recommend/TopicTagButton'
 import { TIMELINE_WEEKDAY_LABELS } from '../../components/timeline/TimelineWeekdayHdsTabs'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
@@ -14,8 +15,7 @@ import {
   TitleBarStyleOptions,
   TitleBarContentOptions,
   HdsNavigationIconOptions,
-  HdsNavigationMenuContentOptions,
-  HdsTabs
+  HdsNavigationMenuContentOptions
 } from '@kit.UIDesignKit'
 import {
   MINI_TITLE_BAR_CONTENT_HEIGHT,
@@ -23,7 +23,6 @@ import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle,
-  buildAdaptiveMaterialEffect,
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
@@ -195,10 +194,6 @@ export struct TimelinePage {
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
 
-      if (!this.isError) {
-        this.WeekdayTabBar()
-      }
-
       if (this.showSeasonSideBar) {
         this.SeasonSideBarOverlay()
       }
@@ -345,23 +340,22 @@ export struct TimelinePage {
           ForEach(this.getAllWeekdayIndices(), (weekdayIndex: number) => {
             ListItem() {
               Column() {
-                WeekdayTabItem({
-                  label: TIMELINE_WEEKDAY_LABELS[weekdayIndex],
-                  index: weekdayIndex,
-                selectedIndex: this.selectedWeekdayIndex,
-                tabWidth: WEEKDAY_TAB_ITEM_MAX_WIDTH,
-                onSelected: (selectedIndex: number) => {
-                  const nextWindowStart = this.resolveWeekdayTabWindowStart(selectedIndex)
-                  this.getUIContext().animateTo({
-                    duration: 250,
-                    curve: curves.springMotion()
-                  }, () => {
-                      this.selectedWeekdayIndex = selectedIndex
+                TopicTagButton({
+                  tag: TIMELINE_WEEKDAY_LABELS[weekdayIndex],
+                  selectedTag: TIMELINE_WEEKDAY_LABELS[this.selectedWeekdayIndex],
+                  chipWidth: this.getWeekdayTabWidth(),
+                  onSelected: () => {
+                    const nextWindowStart = this.resolveWeekdayTabWindowStart(weekdayIndex)
+                    this.getUIContext().animateTo({
+                      duration: 250,
+                      curve: curves.springMotion()
+                    }, () => {
+                      this.selectedWeekdayIndex = weekdayIndex
                       this.weekdayTabWindowStart = nextWindowStart
                     })
                     this.scrollWeekdayTabWindowToStart(nextWindowStart)
                     this.contentScroller.scrollToIndex(0)
-                    this.enrichSelectedWeekdayInBackground(selectedIndex)
+                    this.enrichSelectedWeekdayInBackground(weekdayIndex)
                   }
                 })
               }
@@ -395,7 +389,6 @@ export struct TimelinePage {
     }
     .width('100%')
     .height(WEEKDAY_TAB_BAR_HEIGHT)
-    .margin({ top: getTopSpacerHeight(this.topSafeHeight) })
     .zIndex(30)
   }
 
@@ -633,7 +626,15 @@ export struct TimelinePage {
   private buildTimelineTitleBarContent(): TitleBarContentOptions {
     return {
       backIcon: this.buildSeasonIcon(),
-      title: this.buildTimelineTitle()
+      title: this.buildTimelineTitle(),
+      bottomBuilder: {
+        height: this.isError ? 0 : WEEKDAY_TAB_BAR_HEIGHT,
+        builder: (): void => {
+          if (!this.isError) {
+            this.WeekdayTabBar()
+          }
+        }
+      }
     }
   }
 
@@ -889,101 +890,5 @@ export struct TimelinePage {
       result.push(clonedDay)
     }
     return result
-  }
-}
-
-@Component
-struct WeekdayTabItem {
-  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
-  @Prop label: string = ''
-  @Prop index: number = 0
-  @Prop selectedIndex: number = 0
-  @Prop tabWidth: number = 100
-  onSelected?: (index: number) => void
-
-  build() {
-    Column() {
-      HdsTabs() {
-        TabContent()
-          .clip(false)
-          .tabBar(this.tabBarContentBuilder())
-          .width('100%')
-          .height('100%')
-          .backgroundColor(Color.Transparent)
-          .hitTestBehavior(HitTestMode.None)
-      }
-      .clip(false)
-      .hitTestBehavior(HitTestMode.None)
-      .align(Alignment.Center)
-      .width(this.tabWidth)
-      .height(WEEKDAY_TAB_BAR_HEIGHT)
-      .enabled(false)
-      .barWidth(this.tabWidth)
-      .barHeight(WEEKDAY_TAB_BAR_HEIGHT)
-      .barOverlap(true)
-      .barPosition(BarPosition.End)
-      .vertical(false)
-      .backgroundColor(Color.Transparent)
-      .shadow(undefined)
-      .barFloatingStyle({
-        barWidth: {
-          smallWidth: this.tabWidth,
-          mediumWidth: this.tabWidth,
-          largeWidth: this.tabWidth
-        },
-        gradientMask: {
-          maskColor: Color.Transparent
-        },
-        barBottomMargin: 0,
-        barSideMargin: 0,
-        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-        lightColor: Color.Transparent
-      })
-    }
-    .backgroundColor(Color.Transparent)
-    .clip(true)
-    .borderRadius(WEEKDAY_TAB_BAR_HEIGHT / 2)
-    .width(this.tabWidth)
-    .height(WEEKDAY_TAB_BAR_HEIGHT)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-    .onClick(() => {
-      this.selectTab()
-    })
-  }
-
-  @Builder
-  tabBarContentBuilder() {
-    Stack({ alignContent: Alignment.Center }) {
-      Column() {
-        Text(this.label)
-          .fontSize(14)
-          .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-          .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Clip })
-          .textAlign(TextAlign.Center)
-          .width('100%')
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(Color.Transparent)
-    .shadow(undefined)
-    .hitTestBehavior(HitTestMode.Transparent)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-  }
-
-  private selectTab(): void {
-    this.onSelected?.(this.index)
-  }
-
-  private isSelected(): boolean {
-    return this.selectedIndex === this.index
   }
 }

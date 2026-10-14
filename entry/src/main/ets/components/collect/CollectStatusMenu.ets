@@ -2,15 +2,15 @@ import { CollectType } from '../../models/CollectType'
 
 @Component
 export struct CollectStatusMenu {
-  @Prop currentType: number = 1
-  @Link isVisible: boolean
+  @Prop currentType: number = CollectType.none
   onSelect?: (type: number) => void
+  onDismiss?: () => void
 
-  private readonly menuItems: string[] = ['未收藏', '收藏']
+  private readonly menuItems: string[] = ['未追', '在看', '想看', '搁置', '看过', '抛弃']
 
   build() {
     Column() {
-      Text('收藏')
+      Text('追番状态')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
@@ -50,7 +50,7 @@ export struct CollectStatusMenu {
           if ((index ?? 0) !== CollectType.normalize(this.currentType) && this.onSelect) {
             this.onSelect!(index ?? 0)
           }
-          this.isVisible = false
+          this.onDismiss?.()
         })
       }, (label: string, index?: number) => `status_${index}`)
     }

@@ -7,9 +7,9 @@ import {
   HdsNavigationIconOptions,
   HdsNavigationMenuContentOptions,
   HdsNavigationTitle,
-  TitleBarContentOptions,
-  HdsTabs
+  TitleBarContentOptions
 } from '@kit.UIDesignKit'
+import { TopicTagButton } from '../../components/recommend/TopicTagButton'
 import { LocalFilePicker } from '../../services/LocalFilePicker'
 import { LocalVideoThumbnailStore } from '../../services/LocalVideoThumbnailStore'
 import { LocalVideoRecord } from '../../models/LocalVideoRecord'
@@ -21,7 +21,6 @@ import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
   buildTitleBarOptions,
-  buildAdaptiveMaterialEffect,
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
@@ -210,8 +209,6 @@ export struct LocalPage {
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
 
-      this.LocalTabBar()
-
       if (this.showDeleteSheet) {
         this.DeleteConfirmDialog()
       }
@@ -233,27 +230,23 @@ export struct LocalPage {
     Column() {
       Row({ space: 8 }) {
         ForEach(LOCAL_TAB_LABELS, (label: string, index?: number) => {
-          Column() {
-            LocalSegmentTabItem({
-              label: label,
-              index: index ?? 0,
-              selectedIndex: this.selectedLocalTabIndex,
-              tabWidth: LOCAL_TAB_ITEM_WIDTH,
-              onSelected: (selectedIndex: number) => {
-                this.getUIContext().animateTo({
-                  duration: 220,
-      curve: curves.springMotion()
-                }, () => {
-                  this.selectedLocalTabIndex = selectedIndex
-                })
-                this.scroller.scrollToIndex(0)
-                if (this.isEditMode) {
-                  this.exitEditMode()
-                }
+          TopicTagButton({
+            tag: label,
+            selectedTag: LOCAL_TAB_LABELS[this.selectedLocalTabIndex],
+            chipWidth: LOCAL_TAB_ITEM_WIDTH,
+            onSelected: () => {
+              this.getUIContext().animateTo({
+                duration: 220,
+                curve: curves.springMotion()
+              }, () => {
+                this.selectedLocalTabIndex = index ?? 0
+              })
+              this.scroller.scrollToIndex(0)
+              if (this.isEditMode) {
+                this.exitEditMode()
               }
-            })
-          }
-          .width(LOCAL_TAB_ITEM_WIDTH)
+            }
+          })
         }, (label: string, index?: number) => `local_tab_${index}_${label}`)
       }
       .width('100%')
@@ -261,10 +254,9 @@ export struct LocalPage {
       .alignItems(VerticalAlign.Center)
       .justifyContent(FlexAlign.Start)
       .padding({ left: 12, right: 12 })
-      }
+    }
     .width('100%')
     .height(LOCAL_TAB_BAR_HEIGHT)
-    .margin({ top: getTopSpacerHeight(this.topSafeHeight) })
     .zIndex(30)
   }
 
@@ -1472,7 +1464,13 @@ export struct LocalPage {
   private buildLocalTitleBarContent(): TitleBarContentOptions {
     return {
       title: this.buildLocalTitle(),
-      menu: this.buildLocalMenu()
+      menu: this.buildLocalMenu(),
+      bottomBuilder: {
+        height: LOCAL_TAB_BAR_HEIGHT,
+        builder: (): void => {
+          this.LocalTabBar()
+        }
+      }
     }
   }
 
@@ -1480,10 +1478,10 @@ export struct LocalPage {
     const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('下载视频', this.hdsMaterialLevel)
     base.content = this.buildLocalTitleBarContent()
     if (base.style?.originalStyle?.backgroundStyle) {
-      base.style.originalStyle.backgroundStyle.maskExtraHeight = LOCAL_TAB_BAR_HEIGHT
+      base.style.originalStyle.backgroundStyle.maskExtraHeight = 0
     }
     if (base.style?.scrollEffectStyle?.backgroundStyle) {
-      base.style.scrollEffectStyle.backgroundStyle.maskExtraHeight = LOCAL_TAB_BAR_HEIGHT
+      base.style.scrollEffectStyle.backgroundStyle.maskExtraHeight = 0
     }
     return base
   }
@@ -1642,90 +1640,5 @@ export struct LocalPage {
 
   private pad2(value: number): string {
     return value < 10 ? '0' + value : String(value)
-  }
-}
-
-@Component
-struct LocalSegmentTabItem {
-  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
-  @Prop label: string = ''
-  @Prop index: number = 0
-  @Prop selectedIndex: number = 0
-  @Prop tabWidth: number = LOCAL_TAB_ITEM_WIDTH
-  onSelected?: (index: number) => void
-
-  build() {
-    Column() {
-      HdsTabs() {
-        TabContent()
-          .clip(false)
-          .tabBar(this.tabBarContentBuilder())
-          .width('100%')
-          .height('100%')
-          .backgroundColor(Color.Transparent)
-          .hitTestBehavior(HitTestMode.None)
-      }
-      .clip(false)
-      .hitTestBehavior(HitTestMode.None)
-      .align(Alignment.Center)
-      .height(LOCAL_TAB_BAR_HEIGHT)
-      .barWidth(this.tabWidth)
-      .barHeight(LOCAL_TAB_BAR_HEIGHT)
-      .barOverlap(true)
-      .barPosition(BarPosition.End)
-      .vertical(false)
-      .backgroundColor(Color.Transparent)
-      .shadow(undefined)
-      .barFloatingStyle({
-        barWidth: {
-          smallWidth: this.tabWidth,
-          mediumWidth: this.tabWidth,
-          largeWidth: this.tabWidth
-        },
-        gradientMask: {
-          maskColor: Color.Transparent
-        },
-        barBottomMargin: 0,
-        barSideMargin: 0,
-        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-        lightColor: Color.Transparent
-      })
-    }
-    .backgroundColor(Color.Transparent)
-    .clip(false)
-    .width(this.tabWidth)
-    .height(LOCAL_TAB_BAR_HEIGHT)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-  }
-
-  @Builder
-  tabBarContentBuilder(): void {
-    Stack({ alignContent: Alignment.Center }) {
-      Text(this.label)
-        .fontSize(14)
-        .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Clip })
-        .textAlign(TextAlign.Center)
-        .width('100%')
-    }
-    .width('100%')
-    .height('100%')
-    .hitTestBehavior(HitTestMode.Transparent)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-    .onClick(() => {
-      this.selectTab()
-    })
-  }
-
-  private selectTab(): void {
-    this.onSelected?.(this.index)
-  }
-
-  private isSelected(): boolean {
-    return this.selectedIndex === this.index
   }
 }

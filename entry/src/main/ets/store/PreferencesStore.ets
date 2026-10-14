@@ -50,6 +50,12 @@ export class PreferencesStore {
     }
   }
 
+  async setStringOrThrow(key: string, value: string): Promise<void> {
+    await this.getPrefs().put(key, value);
+    await this.getPrefs().flush();
+    this.notifySettingChanged(key);
+  }
+
   async getNumber(key: string, defaultValue: number = 0): Promise<number> {
     try {
       return await this.getPrefs().get(key, defaultValue) as number;

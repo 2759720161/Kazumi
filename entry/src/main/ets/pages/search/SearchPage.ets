@@ -1,27 +1,29 @@
 import { AnimeItem } from '../../models/AnimeItem'
 import { AnimeCard } from '../../components/common/AnimeCard'
+import { TopicTagButton } from '../../components/recommend/TopicTagButton'
 import { BangumiApi, BangumiSearchProgressOptions } from '../../core/api/BangumiApi'
 import { SearchHistoryStore } from '../../store/SearchHistoryStore'
 import { SearchHistory } from '../../models/SearchHistory'
 import { Logger } from '../../utils/Logger'
 import { router, curves } from '@kit.ArkUI'
 import { DetailNavigationParams, navigateToDetail } from '../../utils/DetailNavigation'
-import { deviceInfo } from '@kit.BasicServicesKit'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
-  HdsNavigationTitleBarOptions,
-  HdsTabs,
-  HdsTabsController
+  HdsNavigationTitleBarOptions
 } from '@kit.UIDesignKit'
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle,
-  buildAdaptiveMaterialEffect,
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
+import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE
+} from '../../utils/ImmersiveMaterial'
+import { ImmersiveSearchModifier } from '../../utils/ImmersiveSearchModifier'
 
 const logger = new Logger('SearchPage')
 const SEARCH_BAR_HEIGHT: number = 42
@@ -54,7 +56,7 @@ export struct SearchPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
-  @StorageLink('isHdsTabsEnabled') isHdsTabsEnabled: boolean = true
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State searchKeyword: string = ''
   @State submittedKeyword: string = ''
@@ -63,14 +65,9 @@ export struct SearchPage {
   @State isSearching: boolean = false
   @State isLoadingMoreSearchResults: boolean = false
   @State hasSearched: boolean = false
-  @State searchGlowOpacity: number = 0
-  @State searchGlowScale: number = 0.82
-  @State searchGlowOffsetX: number = 0
-  @State searchGlowOffsetY: number = 0
   @State selectedSearchTabIndex: number = 0
 
   private scroller: Scroller = new Scroller()
-  private searchBarTabsController: HdsTabsController = new HdsTabsController()
   private searchHistoryStore: SearchHistoryStore = new SearchHistoryStore()
   private searchRequestSerial: number = 0
   private routeParamsApplied: boolean = false
@@ -113,10 +110,6 @@ export struct SearchPage {
           [$r('app.color.page_background'), 1]
         ]
       })
-
-      if (this.shouldShowSearchTabs()) {
-        this.SearchTabBar()
-      }
     }
     .width('100%')
     .height('100%')
@@ -148,11 +141,7 @@ export struct SearchPage {
   @Builder
   private SearchBottomBar() {
     Row() {
-      if (this.shouldUseHdsSearchField()) {
-        this.HdsSearchField()
-      } else {
-        this.FallbackSearchField()
-      }
+      this.NativeSearchField()
     }
     .width('100%')
     .height(SEARCH_BOTTOM_BAR_HEIGHT)
@@ -161,23 +150,35 @@ export struct SearchPage {
   }
 
   @Builder
+  private SearchHeaderControls() {
+    Column() {
+      this.SearchBottomBar()
+      if (this.shouldShowSearchTabs()) {
+        this.SearchTabBar()
+      }
+    }
+    .width('100%')
+    .height(this.getSearchTopControlsHeight())
+    .justifyContent(FlexAlign.Start)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
   private SearchTabBar() {
     Row({ space: 8 }) {
       ForEach(SEARCH_TAB_LABELS, (label: string, index?: number) => {
-        SearchSegmentTabItem({
-          label: label,
-          index: index ?? 0,
-          selectedIndex: this.selectedSearchTabIndex,
-          tabWidth: SEARCH_TAB_ITEM_WIDTH,
-          onSelected: (selectedIndex: number) => {
-            this.selectSearchTab(selectedIndex)
+        TopicTagButton({
+          tag: label,
+          selectedTag: SEARCH_TAB_LABELS[this.selectedSearchTabIndex],
+          chipWidth: SEARCH_TAB_ITEM_WIDTH,
+          onSelected: () => {
+            this.selectSearchTab(index ?? 0)
           }
         })
       }, (label: string, index?: number) => `search_tab_${index}_${label}`)
     }
     .width('100%')
     .height(SEARCH_TAB_BAR_HEIGHT)
-    .margin({ top: getTopSpacerHeight(this.topSafeHeight) + SEARCH_BOTTOM_BAR_HEIGHT })
     .padding({ left: 12, right: 12 })
     .alignItems(VerticalAlign.Center)
     .justifyContent(FlexAlign.Start)
@@ -185,155 +186,32 @@ export struct SearchPage {
   }
 
   @Builder
-  private MiniBarPlaceholder() {
-    Row()
-      .width(this.getSearchBarWidth())
-      .height(SEARCH_BAR_HEIGHT)
-      .backgroundColor(Color.Transparent)
-      .borderRadius(SEARCH_BAR_HEIGHT / 2)
-      .hitTestBehavior(HitTestMode.None)
-  }
-
-  @Builder
-  private HdsSearchField() {
-    Stack({ alignContent: Alignment.Center }) {
-      this.HdsSearchFieldMaterial()
-      this.SearchInputContent(true)
-    }
-    .width(this.getSearchBarWidth())
+  private NativeSearchField() {
+    Search({ value: this.searchKeyword, placeholder: this.getSearchPlaceholder() })
+    .width('100%')
     .height(SEARCH_BAR_HEIGHT)
-    .clip(false)
-  }
-
-  @Builder
-  private HdsSearchFieldMaterial() {
-    HdsTabs({ controller: this.searchBarTabsController }) {
-      TabContent()
-        .clip(false)
-        .backgroundColor(Color.Transparent)
-    }
-    .width(this.getSearchBarWidth())
-    .height(SEARCH_BAR_HEIGHT)
-    .clip(false)
-    .barWidth(this.getSearchBarWidth())
-    .barHeight(SEARCH_BAR_HEIGHT)
-    .barOverlap(true)
-    .barPosition(BarPosition.End)
-    .backgroundColor(Color.Transparent)
-    .vertical(false)
-    .barFloatingStyle({
-      barWidth: {
-        smallWidth: this.getSearchBarWidth(),
-        mediumWidth: this.getSearchBarWidth(),
-        largeWidth: this.getSearchBarWidth()
-      },
-      gradientMask: {
-        maskColor: Color.Transparent
-      },
-      barBottomMargin: 0,
-      barSideMargin: 0,
-      systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-      miniBar: {
-        miniBarBuilder: (): void => {
-          this.MiniBarPlaceholder()
-        },
-        miniBarStyle: 1
-      },
-      lightColor: Color.Transparent
+    .textFont({ size: 15 })
+    .placeholderFont({ size: 15 })
+    .fontColor($r('app.color.text_primary'))
+    .placeholderColor($r('app.color.text_secondary'))
+    .searchIcon({ size: 18, color: $r('app.color.text_secondary') })
+    .cancelButton({
+      style: CancelButtonStyle.INPUT,
+      icon: { size: 18, color: $r('app.color.text_secondary') }
     })
-    .hitTestBehavior(HitTestMode.None)
-  }
-
-  @Builder
-  private FallbackSearchField() {
-    Stack({ alignContent: Alignment.Center }) {
-      this.SearchInputContent(false)
-    }
-    .width('100%')
-    .height(SEARCH_BAR_HEIGHT)
-    .backgroundColor($r('app.color.surface_button_bg'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-    .border({ width: 0.5, color: $r('app.color.border_light') })
-    .borderRadius(SEARCH_BAR_HEIGHT / 2)
-    .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
-  }
-
-  @Builder
-  private SearchInputContent(enableGlow: boolean) {
-    Stack({ alignContent: Alignment.Center }) {
-      if (enableGlow) {
-        Circle()
-          .width(this.getSearchGlowBoxSize())
-          .height(this.getSearchGlowBoxSize())
-          .radialGradient({
-            center: ['50%', '50%'],
-            radius: '50%',
-            colors: this.getSearchGlowGradientColors()
-          })
-          .opacity(this.clampOpacity(this.searchGlowOpacity))
-          .scale({ x: this.searchGlowScale, y: this.searchGlowScale })
-          .offset({ x: this.searchGlowOffsetX, y: this.searchGlowOffsetY })
-          .blendMode(BlendMode.SCREEN)
-          .hitTestBehavior(HitTestMode.None)
-      }
-
-      Row() {
-        SymbolGlyph($r('sys.symbol.magnifyingglass'))
-          .fontSize(18)
-          .fontColor([$r('app.color.text_secondary')])
-          .margin({ left: 14, right: 4 })
-
-        TextInput({ placeholder: this.getSearchPlaceholder(), text: this.searchKeyword })
-          .layoutWeight(1)
-          .height(SEARCH_BAR_HEIGHT)
-          .fontSize(15)
-          .fontColor($r('app.color.text_primary'))
-          .backgroundColor(Color.Transparent)
-          .borderRadius(0)
-          .padding({ left: 4, right: 4 })
-          .onChange((value: string) => {
-            this.searchKeyword = value
-          })
-          .onSubmit(() => {
-            this.doSearch()
-          })
-
-        if (this.searchKeyword.length > 0) {
-          Row() {
-            SymbolGlyph($r('sys.symbol.xmark_circle_fill'))
-              .fontSize(18)
-              .fontColor([$r('app.color.text_secondary')])
-          }
-          .width(38)
-          .height(SEARCH_BAR_HEIGHT)
-          .justifyContent(FlexAlign.Center)
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => {
-            this.searchRequestSerial += 1
-            this.searchKeyword = ''
-            this.searchResults = []
-            this.isSearching = false
-            this.isLoadingMoreSearchResults = false
-            this.hasSearched = false
-            this.submittedKeyword = ''
-            this.selectedSearchTabIndex = 0
-          })
-        }
-      }
-      .width('100%')
-      .height('100%')
-      .borderRadius(SEARCH_BAR_HEIGHT / 2)
-      .clip(true)
-      .border({ width: 0.5, color: $r('app.color.border_specular') })
-    }
-    .width('100%')
-    .height('100%')
     .clip(false)
     .borderRadius(SEARCH_BAR_HEIGHT / 2)
-    .onTouch((event: TouchEvent) => {
-      if (enableGlow) {
-        this.handleSearchGlowTouch(event)
+    .attributeModifier(new ImmersiveSearchModifier(this.api26MaterialStyle))
+    .onChange((value: string) => {
+      if (value.length === 0 && this.searchKeyword.length > 0) {
+        this.clearSearch()
+      } else {
+        this.searchKeyword = value
       }
+    })
+    .onSubmit((value: string) => {
+      this.searchKeyword = value
+      this.doSearch()
     })
   }
 
@@ -527,6 +405,11 @@ export struct SearchPage {
               .width(SEARCH_RESULT_GAP)
             this.SearchResultSlot(row, 3)
           }
+          if (this.getResultColumnsCount() >= 5) {
+            Blank()
+              .width(SEARCH_RESULT_GAP)
+            this.SearchResultSlot(row, 4)
+          }
         }
         .width('100%')
         .margin({ bottom: SEARCH_RESULT_GAP })
@@ -601,18 +484,19 @@ export struct SearchPage {
           mainTitle: '搜索'
         },
         bottomBuilder: {
+          height: this.getSearchTopControlsHeight(),
           builder: (): void => {
-            this.SearchBottomBar()
+            this.SearchHeaderControls()
           }
         }
       },
       style: buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     }
     if (options.style?.originalStyle?.backgroundStyle) {
-      options.style.originalStyle.backgroundStyle.maskExtraHeight = this.shouldShowSearchTabs() ? SEARCH_TAB_BAR_HEIGHT : 0
+      options.style.originalStyle.backgroundStyle.maskExtraHeight = 0
     }
     if (options.style?.scrollEffectStyle?.backgroundStyle) {
-      options.style.scrollEffectStyle.backgroundStyle.maskExtraHeight = this.shouldShowSearchTabs() ? SEARCH_TAB_BAR_HEIGHT : 0
+      options.style.scrollEffectStyle.backgroundStyle.maskExtraHeight = 0
     }
     return options
   }
@@ -809,10 +693,6 @@ export struct SearchPage {
     return getBottomSpacerHeight(this.bottomSafeHeight)
   }
 
-  private shouldUseHdsSearchField(): boolean {
-    return this.isHdsTabsEnabled && deviceInfo.distributionOSApiVersion >= 60100
-  }
-
   private getSearchTopControlsHeight(): number {
     return SEARCH_BOTTOM_BAR_HEIGHT + (this.shouldShowSearchTabs() ? SEARCH_TAB_BAR_HEIGHT : 0)
   }
@@ -845,76 +725,25 @@ export struct SearchPage {
     }
   }
 
-  private getSearchBarWidth(): number {
-    const rawWidth = this.screenWidthVp > 0 ?
-      this.screenWidthVp - SEARCH_BAR_HORIZONTAL_PADDING * 2 : 324
-    return Math.max(220, rawWidth)
-  }
-
-  private getSearchGlowBoxSize(): number {
-    return Math.max(SEARCH_BAR_HEIGHT * 3.8, 160)
-  }
-
-  private getSearchGlowGradientColors(): [ResourceColor, number][] {
-    return [
-      ['#FFFFFFFF', 0.0],
-      ['#E6FFFFFF', 0.20],
-      ['#80FFFFFF', 0.42],
-      ['#26FFFFFF', 0.64],
-      ['#08FFFFFF', 0.84],
-      ['#00FFFFFF', 0.96],
-      ['#00FFFFFF', 1.0]
-    ]
-  }
-
-  private clampOpacity(value: number): number {
-    return Math.max(0, Math.min(1, value))
-  }
-
-  private updateSearchGlowPosition(touch: TouchObject): void {
-    this.searchGlowOffsetX = touch.x - this.getSearchBarWidth() / 2
-    this.searchGlowOffsetY = touch.y - SEARCH_BAR_HEIGHT / 2
-  }
-
-  private handleSearchGlowTouch(event: TouchEvent): void {
-    if (!event.touches || event.touches.length === 0) {
-      if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseOut }, () => {
-          this.searchGlowScale = 1.18
-          this.searchGlowOpacity = 0
-        })
-      }
-      return
-    }
-
-    const touch = event.touches[0]
-    if (event.type === TouchType.Down) {
-      this.updateSearchGlowPosition(touch)
-      this.searchGlowScale = 0.82
-      this.searchGlowOpacity = 0.04
-      this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseOut }, () => {
-        this.searchGlowScale = 1.06
-        this.searchGlowOpacity = 0.46
-      })
-    } else if (event.type === TouchType.Move) {
-      this.updateSearchGlowPosition(touch)
-    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      this.updateSearchGlowPosition(touch)
-      this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, () => {
-        this.searchGlowScale = 1.2
-        this.searchGlowOpacity = 0
-      })
-    }
+  private clearSearch(): void {
+    this.searchRequestSerial += 1
+    this.searchKeyword = ''
+    this.searchResults = []
+    this.isSearching = false
+    this.isLoadingMoreSearchResults = false
+    this.hasSearched = false
+    this.submittedKeyword = ''
+    this.selectedSearchTabIndex = 0
   }
 
   private getResultColumnsCount(): number {
     if (this.screenWidthVp >= 900) {
-      return 4
+      return 5
     }
     if (this.screenWidthVp >= 600) {
-      return 3
+      return 4
     }
-    return 2
+    return 3
   }
 
   private getSearchResultRows(): AnimeItem[][] {
@@ -939,90 +768,5 @@ export struct SearchPage {
       return `id_${item.bangumiId}`
     }
     return `name_${item.name}_${item.originalName}_${item.airDate}`
-  }
-}
-
-@Component
-struct SearchSegmentTabItem {
-  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
-  @Prop label: string = ''
-  @Prop index: number = 0
-  @Prop selectedIndex: number = 0
-  @Prop tabWidth: number = SEARCH_TAB_ITEM_WIDTH
-  onSelected?: (index: number) => void
-
-  build() {
-    Column() {
-      HdsTabs() {
-        TabContent()
-          .clip(false)
-          .tabBar(this.tabBarContentBuilder())
-          .width('100%')
-          .height('100%')
-          .backgroundColor(Color.Transparent)
-          .hitTestBehavior(HitTestMode.None)
-      }
-      .clip(false)
-      .hitTestBehavior(HitTestMode.None)
-      .align(Alignment.Center)
-      .height(SEARCH_TAB_BAR_HEIGHT)
-      .barWidth(this.tabWidth)
-      .barHeight(SEARCH_TAB_BAR_HEIGHT)
-      .barOverlap(true)
-      .barPosition(BarPosition.End)
-      .vertical(false)
-      .backgroundColor(Color.Transparent)
-      .shadow(undefined)
-      .barFloatingStyle({
-        barWidth: {
-          smallWidth: this.tabWidth,
-          mediumWidth: this.tabWidth,
-          largeWidth: this.tabWidth
-        },
-        gradientMask: {
-          maskColor: Color.Transparent
-        },
-        barBottomMargin: 0,
-        barSideMargin: 0,
-        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-        lightColor: Color.Transparent
-      })
-    }
-    .backgroundColor(Color.Transparent)
-    .clip(false)
-    .width(this.tabWidth)
-    .height(SEARCH_TAB_BAR_HEIGHT)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-  }
-
-  @Builder
-  tabBarContentBuilder(): void {
-    Stack({ alignContent: Alignment.Center }) {
-      Text(this.label)
-        .fontSize(14)
-        .fontWeight(this.isSelected() ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Clip })
-        .textAlign(TextAlign.Center)
-        .width('100%')
-    }
-    .width('100%')
-    .height('100%')
-    .hitTestBehavior(HitTestMode.Transparent)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-    .onClick(() => {
-      this.selectTab()
-    })
-  }
-
-  private selectTab(): void {
-    this.onSelected?.(this.index)
-  }
-
-  private isSelected(): boolean {
-    return this.selectedIndex === this.index
   }
 }

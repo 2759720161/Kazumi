@@ -1,5 +1,6 @@
 import { image } from '@kit.ImageKit'
 import { ImageCacheStore } from '../store/ImageCacheStore'
+import { BangumiConfig } from '../core/api/BangumiConfig'
 import { Logger, extractErrorMsg } from '../utils/Logger'
 
 const logger = new Logger('ThemeColorStore')
@@ -120,7 +121,12 @@ export class ThemeColorStore {
       if (url.startsWith('file://') || url.startsWith('/')) {
         return url
       }
-      normalized.push(url)
+      const candidates = BangumiConfig.getImageCandidates(url)
+      for (let j = 0; j < candidates.length; j++) {
+        if (normalized.indexOf(candidates[j]) < 0) {
+          normalized.push(candidates[j])
+        }
+      }
     }
     if (normalized.length === 0) {
       return ''

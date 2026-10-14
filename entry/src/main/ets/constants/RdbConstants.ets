@@ -1,6 +1,6 @@
 export class RdbConstants {
   static readonly DB_NAME: string = 'kazumi_main.db'
-  static readonly DB_VERSION: number = 13
+  static readonly DB_VERSION: number = 15
   static readonly DB_SECURITY_LEVEL: number = 1
 
   static readonly TABLE_RULE_SOURCE: string = 'rule_source'
@@ -9,6 +9,7 @@ export class RdbConstants {
   static readonly TABLE_SEARCH_HISTORY: string = 'search_history'
   static readonly TABLE_COLLECT_CHANGE: string = 'collect_change'
   static readonly TABLE_LOCAL_VIDEO_HISTORY: string = 'local_video_history'
+  static readonly TABLE_HISTORY_SYNC_EVENT: string = 'history_sync_event'
 
   static readonly COL_ID: string = 'id'
   static readonly COL_NAME: string = 'name'
@@ -57,6 +58,10 @@ export class RdbConstants {
   static readonly COL_COVER_FALLBACK: string = 'cover_fallback'
   static readonly COL_ROAD_INDEX: string = 'road_index'
   static readonly COL_EPISODE_INDEX: string = 'episode_index'
+  static readonly COL_ENTRY_KIND: string = 'entry_kind'
+  static readonly COL_EPISODE_PAGE_URL: string = 'episode_page_url'
+  static readonly COL_PROGRESSES_JSON: string = 'progresses_json'
+  static readonly COL_BANGUMI_ITEM_JSON: string = 'bangumi_item_json'
   static readonly COL_ACTION: string = 'action'
   static readonly COL_FILE_KEY: string = 'file_key'
   static readonly COL_FILE_URI: string = 'file_uri'
@@ -72,4 +77,6 @@ export class RdbConstants {
   static readonly COL_DRM_SCHEME: string = 'drm_scheme'
   static readonly COL_DRM_PLUGIN_NAME: string = 'drm_plugin_name'
   static readonly COL_DRM_OFFLINE_KEY_ID: string = 'drm_offline_key_id'
+  static readonly COL_EVENT_ID: string = 'event_id'
+  static readonly COL_PAYLOAD: string = 'payload'
 }

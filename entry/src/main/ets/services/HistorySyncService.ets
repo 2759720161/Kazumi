@@ -1,4 +1,4 @@
-import { HistoryRecord } from '../models/HistoryRecord'
+import { HistoryEpisodeProgress, HistoryRecord } from '../models/HistoryRecord'
 import { HistoryStore } from '../store/HistoryStore'
 import { PreferencesStore } from '../store/PreferencesStore'
 import { RuleSourceStore } from '../store/RuleSourceStore'
@@ -8,6 +8,15 @@ import { Logger } from '../utils/Logger'
 import { BangumiConfig } from '../core/api/BangumiConfig'
 import { BangumiApi } from '../core/api/BangumiApi'
 import { AnimeItem } from '../models/AnimeItem'
+import { CollectSyncService, CollectSyncResult } from './CollectSyncService'
+import { HistorySyncEventStore } from '../store/HistorySyncEventStore'
+import { KazumiHiveCollectCodec } from './KazumiHiveCollectCodec'
+import {
+  KazumiHistoryItem,
+  KazumiHistorySyncEvent,
+  KazumiHistorySyncSnapshot,
+  KazumiHistorySyncState
+} from './KazumiHistorySyncProtocol'
 
 const logger = new Logger('HistorySyncService')
 
@@ -18,27 +27,18 @@ export const WEBDAV_SYNC_USERNAME_KEY: string = 'webdav_sync_username'
 export const WEBDAV_SYNC_PASSWORD_KEY: string = 'webdav_sync_password'
 export const WEBDAV_SYNC_REMOTE_DIR_KEY: string = 'webdav_sync_remote_dir'
 export const WEBDAV_SYNC_LAST_TIME_KEY: string = 'webdav_sync_last_time'
-const WEBDAV_SYNC_DELETED_KEY: string = 'webdav_sync_deleted_history'
+export const WEBDAV_SYNC_COLLECT_KEY: string = 'webdav_sync_collect'
 const WEBDAV_SYNC_DEVICE_ID_KEY: string = 'webdav_sync_device_id'
-const HISTORY_FILE_NAME: string = 'watch_history.json'
+const WEBDAV_SYNC_SEQUENCE_KEY: string = 'webdav_sync_sequence'
+const WEBDAV_SYNC_HISTORY_SNAPSHOT_INITIALIZED_KEY: string = 'webdav_sync_history_snapshot_initialized'
+const LEGACY_PRIVATE_HISTORY_FILE_NAME: string = 'watch_history.json'
+const LEGACY_UPSTREAM_HISTORY_PATH: string = '/kazumiSync/histories.tmp'
 const UPSTREAM_SYNC_ROOT_PATH: string = '/kazumiSync'
 const UPSTREAM_HISTORY_ROOT_PATH: string = '/kazumiSync/history'
 const UPSTREAM_HISTORY_CHANGES_PATH: string = '/kazumiSync/history/changes'
 const UPSTREAM_HISTORY_SNAPSHOT_PATH: string = '/kazumiSync/history/snapshot.json'
 const AUTO_UPLOAD_DELAY_MS: number = 15000
-
-export class HistorySyncDeletedItem {
-  animeId: string = ''
-  deletedAt: number = 0
-}
-
-export class HistorySyncPayload {
-  schemaVersion: number = 1
-  app: string = 'FanPlayer-HarmonyOS'
-  updatedAt: number = 0
-  records: HistoryRecord[] = []
-  deleted: HistorySyncDeletedItem[] = []
-}
+const HISTORY_CHECKPOINT_THRESHOLD: number = 1024 * 1024
 
 export class HistorySyncResult {
   success: boolean = false
@@ -46,21 +46,30 @@ export class HistorySyncResult {
   localCount: number = 0
   remoteCount: number = 0
   mergedCount: number = 0
+  collectLocalCount: number = 0
+  collectRemoteCount: number = 0
+  collectMergedCount: number = 0
 }
 
-class UpstreamProgress {
-  episode: number = 1
-  road: number = 0
-  progressMs: number = 0
+class CanonicalHistoryReadResult {
+  snapshot: KazumiHistorySyncSnapshot = KazumiHistorySyncSnapshot.empty()
+  events: KazumiHistorySyncEvent[] = []
+  ownEvents: KazumiHistorySyncEvent[] = []
+  snapshotExists: boolean = false
+  snapshotValid: boolean = true
+  eventLogsValid: boolean = true
 }
 
 export class HistorySyncService {
   private static sharedInstance: HistorySyncService = new HistorySyncService()
   private historyStore: HistoryStore = new HistoryStore()
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
+  private eventStore: HistorySyncEventStore = new HistorySyncEventStore()
   private autoUploadTimer: number = -1
   private autoUploadRunning: boolean = false
   private autoUploadPending: boolean = false
+  private activeSync: Promise<HistorySyncResult> | null = null
+  private sequenceQueue: Promise<number> = Promise.resolve(0)
 
   static getInstance(): HistorySyncService {
     return HistorySyncService.sharedInstance
@@ -84,54 +93,144 @@ export class HistorySyncService {
 
   async saveConfig(config: WebDavConfig): Promise<void> {
     const prefs = PreferencesStore.getInstance()
+    const previousServerUrl = await prefs.getString(WEBDAV_SYNC_SERVER_URL_KEY, '')
+    const previousUsername = await prefs.getString(WEBDAV_SYNC_USERNAME_KEY, '')
+    const previousRemoteDir = await prefs.getString(WEBDAV_SYNC_REMOTE_DIR_KEY, '/FanPlayer/')
+    const normalizedServerUrl = config.serverUrl.trim()
+    const normalizedRemoteDir = this.normalizeRemoteDir(config.remoteDir)
     await prefs.setBoolean(WEBDAV_SYNC_ENABLED_KEY, config.enabled)
     await prefs.setBoolean(WEBDAV_SYNC_AUTO_KEY, config.autoSync)
-    await prefs.setString(WEBDAV_SYNC_SERVER_URL_KEY, config.serverUrl.trim())
+    await prefs.setString(WEBDAV_SYNC_SERVER_URL_KEY, normalizedServerUrl)
     await prefs.setString(WEBDAV_SYNC_USERNAME_KEY, config.username)
     await prefs.setString(WEBDAV_SYNC_PASSWORD_KEY, config.password)
-    await prefs.setString(WEBDAV_SYNC_REMOTE_DIR_KEY, this.normalizeRemoteDir(config.remoteDir))
+    await prefs.setString(WEBDAV_SYNC_REMOTE_DIR_KEY, normalizedRemoteDir)
+    if (previousServerUrl !== normalizedServerUrl || previousUsername !== config.username ||
+      this.normalizeRemoteDir(previousRemoteDir) !== normalizedRemoteDir) {
+      await prefs.setBoolean(WEBDAV_SYNC_HISTORY_SNAPSHOT_INITIALIZED_KEY, false)
+    }
   }
 
   async testConnection(config?: WebDavConfig): Promise<void> {
     await this.ensureWebDavFeatureUnlocked()
     const actual = config !== undefined ? config : await this.getConfig()
     this.validateConfig(actual)
-    const ok = await new WebDavClient(actual).testConnection()
+    const client = new WebDavClient(actual)
+    const ok = await client.testConnection()
     if (!ok) {
       throw new Error('WebDAV 连接失败，请检查地址和账号')
     }
+    await client.ensureRemoteDirAtPath(UPSTREAM_SYNC_ROOT_PATH)
   }
 
   async syncNow(): Promise<HistorySyncResult> {
+    if (this.activeSync !== null) {
+      return await this.activeSync
+    }
+    this.activeSync = this.performSync()
+    try {
+      return await this.activeSync
+    } finally {
+      this.activeSync = null
+    }
+  }
+
+  private async performSync(): Promise<HistorySyncResult> {
     await this.ensureWebDavFeatureUnlocked()
     const config = await this.getConfig()
     this.validateConfig(config)
     const client = new WebDavClient(config)
-    const localPayload = await this.buildLocalPayload()
-    const remoteText = await client.downloadText(HISTORY_FILE_NAME)
-    const legacyPayload = this.parsePayload(remoteText)
-    const upstreamPayload = await this.readUpstreamHistoryPayload(client)
-    const remotePayload = this.mergePayloads(legacyPayload, upstreamPayload)
-    const mergedPayload = this.mergePayloads(localPayload, remotePayload)
-    await this.enrichRuleSourceInfo(mergedPayload.records)
-    await this.enrichMissingBangumiCovers(mergedPayload.records)
-    logger.info('History sync merge counts local=%{public}d legacy=%{public}d upstream=%{public}d remote=%{public}d merged=%{public}d',
-      localPayload.records.length, legacyPayload.records.length, upstreamPayload.records.length,
-      remotePayload.records.length, mergedPayload.records.length)
+    await client.ensureRemoteDirAtPath(UPSTREAM_SYNC_ROOT_PATH)
+    await client.ensureRemoteDirAtPath(UPSTREAM_HISTORY_ROOT_PATH)
+    await client.ensureRemoteDirAtPath(UPSTREAM_HISTORY_CHANGES_PATH)
+    const deviceId = await this.getDeviceId()
+    const localRecords = await this.historyStore.getAll()
+    await this.enrichRuleSourceInfo(localRecords)
+    const remoteRead = await this.readCanonicalHistory(client, deviceId)
+    const state = KazumiHistorySyncState.fromSnapshot(remoteRead.snapshot)
+    state.applyAll(remoteRead.events)
 
-    await this.applyMergedPayload(mergedPayload)
-    mergedPayload.updatedAt = Date.now()
-    await client.uploadText(HISTORY_FILE_NAME, JSON.stringify(this.payloadToJSON(mergedPayload)))
-    await this.writeUpstreamHistoryPayload(client, mergedPayload)
-    await this.saveDeletedItems(mergedPayload.deleted)
-    await PreferencesStore.getInstance().setNumber(WEBDAV_SYNC_LAST_TIME_KEY, mergedPayload.updatedAt)
+    const pendingEvents = await this.eventStore.getAll()
+    state.applyAll(pendingEvents)
+    const localStateEvents = this.buildLocalStateEvents(localRecords)
+    state.applyAll(localStateEvents)
+
+    let importedLegacyHistory = false
+    const canonicalHistoryEmpty = this.isEmptyCanonicalHistory(remoteRead.snapshot) && remoteRead.events.length === 0
+    if (canonicalHistoryEmpty) {
+      const legacyUpstreamBytes = await client.downloadBytesAtPath(LEGACY_UPSTREAM_HISTORY_PATH)
+      if (legacyUpstreamBytes !== null && legacyUpstreamBytes.length > 0) {
+        try {
+          const legacyHistories = KazumiHiveCollectCodec.decodeHistories(legacyUpstreamBytes)
+          state.applyAll(this.buildImportedHistoryEvents(legacyHistories))
+          importedLegacyHistory = legacyHistories.length > 0
+        } catch (err) {
+          logger.warn('Import Kazumi legacy histories.tmp failed: %{public}s',
+            err instanceof Error ? err.message : String(err))
+          try {
+            await client.moveAtPath(LEGACY_UPSTREAM_HISTORY_PATH,
+              '/kazumiSync/histories.invalid.' + String(Date.now()) + '.tmp')
+          } catch (_moveErr) {
+            logger.warn('Quarantine invalid Kazumi histories.tmp failed')
+          }
+        }
+      }
+    }
+    if (!remoteRead.snapshotExists && remoteRead.events.length === 0 && !importedLegacyHistory) {
+        const legacyText = await client.downloadText(LEGACY_PRIVATE_HISTORY_FILE_NAME)
+        const legacyRecords = this.parseLegacyPrivateHistory(legacyText)
+        if (legacyRecords.length > 0) {
+          await this.enrichRuleSourceInfo(legacyRecords)
+          state.applyAll(this.buildLocalStateEvents(legacyRecords))
+          importedLegacyHistory = true
+        }
+    }
+
+    const mergedSnapshot = state.toSnapshot()
+    const projectedRecords = await this.applyCanonicalSnapshot(mergedSnapshot, localRecords)
+    const uploadEvents = this.mergeEventLists(remoteRead.ownEvents, pendingEvents)
+    if (remoteRead.ownEvents.length > 0) {
+      // Keep the same durable active-log semantics as upstream. Events remain
+      // local until a checkpoint has safely incorporated them into snapshot.json.
+      await this.eventStore.appendAll(remoteRead.ownEvents)
+    }
+    const uploadText = this.eventsToJsonLines(uploadEvents)
+    const snapshotInitialized = await PreferencesStore.getInstance().getBoolean(
+      WEBDAV_SYNC_HISTORY_SNAPSHOT_INITIALIZED_KEY, false)
+    const shouldCheckpoint = !snapshotInitialized || !remoteRead.snapshotExists || !remoteRead.snapshotValid ||
+      !remoteRead.eventLogsValid || importedLegacyHistory || this.utf8Length(uploadText) > HISTORY_CHECKPOINT_THRESHOLD
+    if (shouldCheckpoint) {
+      await this.writeCanonicalSnapshot(client, mergedSnapshot, deviceId)
+      await client.deleteAtPath(UPSTREAM_HISTORY_CHANGES_PATH + '/' + deviceId + '.jsonl')
+      await PreferencesStore.getInstance().setBoolean(WEBDAV_SYNC_HISTORY_SNAPSHOT_INITIALIZED_KEY, true)
+    } else if (uploadText.length > 0) {
+      await this.writeDeviceEventLog(client, deviceId, uploadText)
+    }
+    if (shouldCheckpoint) {
+      const checkpointedIds: string[] = []
+      for (let i = 0; i < uploadEvents.length; i++) checkpointedIds.push(uploadEvents[i].eventId)
+      await this.eventStore.deleteByIds(checkpointedIds)
+    }
+    logger.info('History sync protocol merged local=%{public}d upstream=%{public}d merged=%{public}d events=%{public}d checkpoint=%{public}s',
+      localRecords.length, remoteRead.snapshot.histories.length, projectedRecords.length, remoteRead.events.length,
+      String(shouldCheckpoint))
+    let collectResult = new CollectSyncResult()
+    const collectSyncEnabled = await PreferencesStore.getInstance().getBoolean(WEBDAV_SYNC_COLLECT_KEY, true)
+    if (collectSyncEnabled) {
+      collectResult = await new CollectSyncService().sync(client)
+    }
+    const completedAt = Date.now()
+    await PreferencesStore.getInstance().setNumber(WEBDAV_SYNC_LAST_TIME_KEY, completedAt)
 
     const result = new HistorySyncResult()
     result.success = true
-    result.message = '同步完成'
-    result.localCount = localPayload.records.length
-    result.remoteCount = remotePayload.records.length
-    result.mergedCount = mergedPayload.records.length
+    result.message = collectSyncEnabled ? `同步完成：历史 ${projectedRecords.length}，收藏 ${collectResult.mergedCount}` :
+      `同步完成：历史 ${projectedRecords.length}`
+    result.localCount = localRecords.length
+    result.remoteCount = remoteRead.snapshot.histories.length
+    result.mergedCount = projectedRecords.length
+    result.collectLocalCount = collectResult.localCount
+    result.collectRemoteCount = collectResult.remoteCount
+    result.collectMergedCount = collectResult.mergedCount
     return result
   }
 
@@ -150,30 +249,55 @@ export class HistorySyncService {
     }, delayMs)
   }
 
-  async recordDeleted(animeId: string): Promise<void> {
+  async recordProgress(record: HistoryRecord): Promise<void> {
     if (!await this.isWebDavFeatureUnlocked()) {
       return
     }
-    if (animeId.length === 0) {
-      return
-    }
-    const deleted = await this.loadDeletedItems()
-    let found = false
-    const now = Date.now()
-    for (let i = 0; i < deleted.length; i++) {
-      if (deleted[i].animeId === animeId) {
-        deleted[i].deletedAt = now
-        found = true
-        break
+    if (!this.isValidUpstreamAdapterName(record.sourceName) && record.sourceId >= 0) {
+      const rule = await this.ruleSourceStore.getById(record.sourceId)
+      if (rule !== null) {
+        record.sourceName = rule.name
       }
     }
-    if (!found) {
-      const item = new HistorySyncDeletedItem()
-      item.animeId = animeId
-      item.deletedAt = now
-      deleted.push(item)
+    if (!this.isUpstreamExportable(record)) {
+      return
     }
-    await this.saveDeletedItems(deleted)
+    const updatedAt = record.updatedAt > 0 ? record.updatedAt : Date.now()
+    const progress = await this.createRecordEvent(record, 'upsertProgress', updatedAt)
+    const watchState = await this.createRecordEvent(record, 'upsertWatchState', updatedAt)
+    await this.eventStore.appendAll([progress, watchState])
+    this.scheduleAutoUploadAfterLocalChange()
+  }
+
+  async recordDeleted(record: HistoryRecord): Promise<void> {
+    if (!await this.isWebDavFeatureUnlocked()) return
+    if (record.bangumiId <= 0) return
+    if (!this.isValidUpstreamAdapterName(record.sourceName) && record.sourceId >= 0) {
+      const rule = await this.ruleSourceStore.getById(record.sourceId)
+      if (rule !== null) record.sourceName = rule.name
+    }
+    if (!this.isValidUpstreamAdapterName(record.sourceName)) return
+    const event = new KazumiHistorySyncEvent()
+    event.deviceId = await this.getDeviceId()
+    event.seq = await this.nextSequence()
+    event.eventId = event.deviceId + ':' + String(event.seq)
+    event.op = 'deleteHistory'
+    event.updatedAt = Date.now()
+    event.entityKey = this.getUpstreamEntityKey(record)
+    await this.eventStore.append(event)
+    this.scheduleAutoUploadAfterLocalChange()
+  }
+
+  async recordCleared(): Promise<void> {
+    if (!await this.isWebDavFeatureUnlocked()) return
+    const event = new KazumiHistorySyncEvent()
+    event.deviceId = await this.getDeviceId()
+    event.seq = await this.nextSequence()
+    event.eventId = event.deviceId + ':' + String(event.seq)
+    event.op = 'clearAll'
+    event.updatedAt = Date.now()
+    await this.eventStore.append(event)
+    this.scheduleAutoUploadAfterLocalChange()
   }
 
   private async runScheduledAutoUpload(): Promise<void> {
@@ -202,12 +326,283 @@ export class HistorySyncService {
     }
   }
 
-  private async buildLocalPayload(): Promise<HistorySyncPayload> {
-    const payload = new HistorySyncPayload()
-    payload.updatedAt = Date.now()
-    payload.records = await this.historyStore.getAll()
-    payload.deleted = await this.loadDeletedItems()
-    return payload
+  private async readCanonicalHistory(client: WebDavClient, deviceId: string): Promise<CanonicalHistoryReadResult> {
+    const result = new CanonicalHistoryReadResult()
+    const snapshotText = await client.downloadTextAtPath(UPSTREAM_HISTORY_SNAPSHOT_PATH)
+    if (snapshotText !== null) {
+      result.snapshotExists = true
+      const parsed = KazumiHistorySyncSnapshot.fromText(snapshotText)
+      if (parsed === null) {
+        result.snapshotValid = false
+        logger.warn('Kazumi history snapshot is malformed; rebuilding from valid device logs')
+      } else {
+        result.snapshot = parsed
+      }
+    }
+    const fileNames = await client.listFileNamesAtPath(UPSTREAM_HISTORY_CHANGES_PATH)
+    for (let i = 0; i < fileNames.length; i++) {
+      if (!fileNames[i].endsWith('.jsonl')) continue
+      const text = await client.downloadTextAtPath(UPSTREAM_HISTORY_CHANGES_PATH + '/' + fileNames[i])
+      if (text === null || text.trim().length === 0) continue
+      const events = this.parseCanonicalEventLines(text)
+      if (events === null) {
+        result.eventLogsValid = false
+        logger.warn('Ignore malformed Kazumi history device log: %{public}s', fileNames[i])
+        try {
+          const sourcePath = UPSTREAM_HISTORY_CHANGES_PATH + '/' + fileNames[i]
+          await client.moveAtPath(sourcePath, sourcePath + '.invalid.' + String(Date.now()))
+        } catch (_err) {
+          logger.warn('Quarantine malformed Kazumi history device log failed: %{public}s', fileNames[i])
+        }
+        continue
+      }
+      for (let j = 0; j < events.length; j++) result.events.push(events[j])
+      if (fileNames[i] === deviceId + '.jsonl') {
+        for (let j = 0; j < events.length; j++) result.ownEvents.push(events[j])
+      }
+    }
+    return result
+  }
+
+  private isEmptyCanonicalHistory(snapshot: KazumiHistorySyncSnapshot): boolean {
+    return snapshot.histories.length === 0 && snapshot.itemVersions.size === 0 &&
+      snapshot.progressVersions.size === 0 && snapshot.deletedVersions.size === 0 &&
+      snapshot.clearVersion.length === 0
+  }
+
+  private parseCanonicalEventLines(text: string): KazumiHistorySyncEvent[] | null {
+    const events: KazumiHistorySyncEvent[] = []
+    const lines = text.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim()
+      if (line.length === 0) continue
+      try {
+        const event = KazumiHistorySyncEvent.fromJSON(JSON.parse(line) as Record<string, Object>)
+        if (event === null) return null
+        events.push(event)
+      } catch (_err) {
+        return null
+      }
+    }
+    return events
+  }
+
+  private buildLocalStateEvents(records: HistoryRecord[]): KazumiHistorySyncEvent[] {
+    const events: KazumiHistorySyncEvent[] = []
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]
+      if (!this.isUpstreamExportable(record)) continue
+      const updatedAt = record.updatedAt > 0 ? record.updatedAt : Date.now()
+      const entityKey = this.getUpstreamEntityKey(record)
+      const episodes = Array.from(record.progresses.keys())
+      for (let j = 0; j < episodes.length; j++) {
+        const stored = record.progresses.get(episodes[j])
+        if (stored === undefined) continue
+        const progressUpdatedAt = stored.updatedAtMs > 0 ? stored.updatedAtMs : updatedAt
+        const progress = this.createStateEvent(record, 'upsertProgress', progressUpdatedAt,
+          'local-state:' + entityKey + ':' + String(stored.episode) + ':' + String(stored.road))
+        progress.episode = stored.episode
+        progress.road = stored.road
+        progress.progressMs = stored.progressMs
+        events.push(progress)
+      }
+      const watchState = this.createStateEvent(record, 'upsertWatchState', updatedAt,
+        'local-state:' + entityKey + ':watch-state')
+      events.push(watchState)
+    }
+    return events
+  }
+
+  private buildImportedHistoryEvents(histories: KazumiHistoryItem[]): KazumiHistorySyncEvent[] {
+    const events: KazumiHistorySyncEvent[] = []
+    for (let i = 0; i < histories.length; i++) {
+      const history = histories[i]
+      const episodes = Array.from(history.progresses.keys())
+      for (let j = 0; j < episodes.length; j++) {
+        const progress = history.progresses.get(episodes[j])
+        if (progress === undefined) continue
+        const event = new KazumiHistorySyncEvent()
+        event.eventId = 'legacy-import:' + history.entityKey + ':' + String(progress.episode)
+        event.deviceId = 'legacy-import'
+        event.op = 'upsertProgress'
+        event.updatedAt = progress.updatedAtMs > 0 ? progress.updatedAtMs : history.lastWatchTime
+        event.entityKey = history.entityKey
+        event.bangumiItem = history.bangumiItem
+        event.adapterName = history.adapterName
+        event.episode = progress.episode
+        event.road = progress.road
+        event.progressMs = progress.progressMs
+        event.entryKind = history.entryKind
+        event.episodePageUrl = history.episodePageUrl
+        events.push(event)
+      }
+      const watchState = new KazumiHistorySyncEvent()
+      watchState.eventId = 'legacy-import:' + history.entityKey + ':watch-state'
+      watchState.deviceId = 'legacy-import'
+      watchState.op = 'upsertWatchState'
+      watchState.updatedAt = history.lastWatchTime
+      watchState.entityKey = history.entityKey
+      watchState.bangumiItem = history.bangumiItem
+      watchState.adapterName = history.adapterName
+      watchState.episode = history.lastWatchEpisode
+      watchState.lastSrc = history.lastSrc
+      watchState.lastWatchEpisodeName = history.lastWatchEpisodeName
+      watchState.entryKind = history.entryKind
+      watchState.episodePageUrl = history.episodePageUrl
+      watchState.carriesWatchState = true
+      events.push(watchState)
+    }
+    return events
+  }
+
+  private createStateEvent(record: HistoryRecord, op: string, updatedAt: number,
+    eventId: string): KazumiHistorySyncEvent {
+    const event = new KazumiHistorySyncEvent()
+    event.eventId = eventId
+    event.deviceId = 'local-state'
+    event.seq = 0
+    event.op = op
+    event.updatedAt = updatedAt
+    event.entityKey = this.getUpstreamEntityKey(record)
+    event.bangumiItem = this.upstreamBangumiItemToJSON(record)
+    event.adapterName = this.getUpstreamAdapterName(record)
+    event.episode = this.getUpstreamEpisode(record)
+    event.road = record.roadIndex >= 0 ? record.roadIndex : 0
+    event.progressMs = Math.max(0, record.positionMs)
+    event.lastSrc = record.animeUrl
+    event.lastWatchEpisodeName = record.episodeName
+    event.entryKind = HistoryRecord.normalizeEntryKind(record.entryKind)
+    event.episodePageUrl = record.episodePageUrl.length > 0 ? record.episodePageUrl : record.episodeUrl
+    event.carriesWatchState = op === 'upsertWatchState'
+    return event
+  }
+
+  private async createRecordEvent(record: HistoryRecord, op: string,
+    updatedAt: number): Promise<KazumiHistorySyncEvent> {
+    const deviceId = await this.getDeviceId()
+    const seq = await this.nextSequence()
+    return this.createDeviceEvent(record, op, updatedAt, deviceId, seq)
+  }
+
+  private createDeviceEvent(record: HistoryRecord, op: string, updatedAt: number,
+    deviceId: string, seq: number): KazumiHistorySyncEvent {
+    const event = this.createStateEvent(record, op, updatedAt, deviceId + ':' + String(seq))
+    event.deviceId = deviceId
+    event.seq = seq
+    event.carriesWatchState = op === 'upsertWatchState'
+    if (op === 'upsertProgress') {
+      event.lastSrc = ''
+      event.lastWatchEpisodeName = ''
+    }
+    return event
+  }
+
+  private async nextSequence(): Promise<number> {
+    const operation = this.sequenceQueue.then(async (_previous: number): Promise<number> => {
+      const prefs = PreferencesStore.getInstance()
+      const current = await prefs.getNumber(WEBDAV_SYNC_SEQUENCE_KEY, 0)
+      const next = Math.floor(current) + 1
+      await prefs.setNumber(WEBDAV_SYNC_SEQUENCE_KEY, next)
+      return next
+    })
+    this.sequenceQueue = operation.catch((_err: Error): number => 0)
+    return await operation
+  }
+
+  private mergeEventLists(first: KazumiHistorySyncEvent[], second: KazumiHistorySyncEvent[]): KazumiHistorySyncEvent[] {
+    const eventMap: Map<string, KazumiHistorySyncEvent> = new Map()
+    this.putEvents(eventMap, first)
+    this.putEvents(eventMap, second)
+    const result = Array.from(eventMap.values())
+    result.sort((a: KazumiHistorySyncEvent, b: KazumiHistorySyncEvent) => {
+      if (a.version < b.version) return -1
+      if (a.version > b.version) return 1
+      return 0
+    })
+    return result
+  }
+
+  private putEvents(target: Map<string, KazumiHistorySyncEvent>, events: KazumiHistorySyncEvent[]): void {
+    for (let i = 0; i < events.length; i++) target.set(events[i].eventId, events[i])
+  }
+
+  private eventsToJsonLines(events: KazumiHistorySyncEvent[]): string {
+    if (events.length === 0) return ''
+    const lines: string[] = []
+    for (let i = 0; i < events.length; i++) lines.push(JSON.stringify(events[i].toJSON()))
+    return lines.join('\n') + '\n'
+  }
+
+  private utf8Length(value: string): number {
+    let byteLength = 0
+    for (let i = 0; i < value.length; i++) {
+      const codeUnit = value.charCodeAt(i)
+      if (codeUnit <= 0x7F) {
+        byteLength += 1
+      } else if (codeUnit <= 0x7FF) {
+        byteLength += 2
+      } else if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF && i + 1 < value.length) {
+        const nextCodeUnit = value.charCodeAt(i + 1)
+        if (nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+          byteLength += 4
+          i += 1
+        } else {
+          byteLength += 3
+        }
+      } else {
+        byteLength += 3
+      }
+    }
+    return byteLength
+  }
+
+  private async writeDeviceEventLog(client: WebDavClient, deviceId: string, content: string): Promise<void> {
+    const target = UPSTREAM_HISTORY_CHANGES_PATH + '/' + deviceId + '.jsonl'
+    const temporary = target + '.cache'
+    await client.replaceTextAtPath(target, temporary, content)
+  }
+
+  private async writeCanonicalSnapshot(client: WebDavClient, snapshot: KazumiHistorySyncSnapshot,
+    deviceId: string): Promise<void> {
+    const temporary = UPSTREAM_HISTORY_SNAPSHOT_PATH + '.' + deviceId + '.cache'
+    await client.replaceTextAtPath(UPSTREAM_HISTORY_SNAPSHOT_PATH, temporary, JSON.stringify(snapshot.toJSON()))
+  }
+
+  private async applyCanonicalSnapshot(snapshot: KazumiHistorySyncSnapshot,
+    localRecords: HistoryRecord[]): Promise<HistoryRecord[]> {
+    const localByEntity: Map<string, HistoryRecord> = new Map()
+    for (let i = 0; i < localRecords.length; i++) {
+      if (localRecords[i].bangumiId > 0 && this.isValidUpstreamAdapterName(localRecords[i].sourceName)) {
+        const entityKey = this.getUpstreamEntityKey(localRecords[i])
+        if (!localByEntity.has(entityKey)) localByEntity.set(entityKey, localRecords[i])
+      }
+    }
+    const projected: HistoryRecord[] = []
+    const keepEntities: Set<string> = new Set()
+    for (let i = 0; i < snapshot.histories.length; i++) {
+      const item = snapshot.histories[i]
+      const record = this.historyRecordFromUpstreamHistory(item.toJSON())
+      if (record === null) continue
+      const existing = localByEntity.get(item.entityKey)
+      if (existing !== undefined) this.combineHistoryRecords(record, existing)
+      projected.push(record)
+      keepEntities.add(item.entityKey)
+    }
+    await this.enrichRuleSourceInfo(projected)
+    await this.enrichMissingBangumiCovers(projected)
+    for (let i = 0; i < projected.length; i++) {
+      await this.historyStore.upsertPreservingUpdatedAt(projected[i], false)
+    }
+    for (let i = 0; i < localRecords.length; i++) {
+      const record = localRecords[i]
+      if (record.bangumiId <= 0 || !this.isValidUpstreamAdapterName(record.sourceName)) continue
+      if (!keepEntities.has(this.getUpstreamEntityKey(record))) {
+        await this.historyStore.deleteByAnimeId(record.animeId)
+      }
+    }
+    await this.deleteMergedDuplicateLocalRecords(projected)
+    projected.sort((a: HistoryRecord, b: HistoryRecord) => b.updatedAt - a.updatedAt)
+    return projected
   }
 
   private async isWebDavFeatureUnlocked(): Promise<boolean> {
@@ -220,54 +615,6 @@ export class HistorySyncService {
     }
   }
 
-  private mergePayloads(local: HistorySyncPayload, remote: HistorySyncPayload): HistorySyncPayload {
-    const result = new HistorySyncPayload()
-    const recordMap: Map<string, HistoryRecord> = new Map()
-    const deletedMap: Map<string, number> = new Map()
-
-    this.mergeDeletedIntoMap(deletedMap, local.deleted)
-    this.mergeDeletedIntoMap(deletedMap, remote.deleted)
-    this.mergeRecordsIntoMap(recordMap, local.records)
-    this.mergeRecordsIntoMap(recordMap, remote.records)
-
-    const ids = Array.from(recordMap.keys())
-    for (let i = 0; i < ids.length; i++) {
-      const record = recordMap.get(ids[i])
-      if (record === undefined) {
-        continue
-      }
-      const deletedAt = deletedMap.get(record.animeId)
-      if (deletedAt !== undefined && deletedAt > record.updatedAt) {
-        recordMap.delete(ids[i])
-      }
-    }
-
-    const deletedIds = Array.from(deletedMap.keys())
-    for (let i = 0; i < deletedIds.length; i++) {
-      const item = new HistorySyncDeletedItem()
-      item.animeId = deletedIds[i]
-      item.deletedAt = deletedMap.get(deletedIds[i]) ?? 0
-      result.deleted.push(item)
-    }
-    result.records = Array.from(recordMap.values())
-    result.records.sort((a: HistoryRecord, b: HistoryRecord) => b.updatedAt - a.updatedAt)
-    result.updatedAt = Math.max(local.updatedAt, remote.updatedAt, Date.now())
-    return result
-  }
-
-  private mergeRecordsIntoMap(recordMap: Map<string, HistoryRecord>, records: HistoryRecord[]): void {
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i]
-      if (record.animeId.length === 0) {
-        continue
-      }
-      const mergeKey = this.getHistoryMergeKey(record)
-      const existing = recordMap.get(mergeKey)
-      if (existing === undefined || record.updatedAt >= existing.updatedAt) {
-        recordMap.set(mergeKey, this.combineHistoryRecords(record, existing))
-      }
-    }
-  }
 
   private combineHistoryRecords(winner: HistoryRecord, existing: HistoryRecord | undefined): HistoryRecord {
     if (existing === undefined) {
@@ -280,20 +627,18 @@ export class HistorySyncService {
         winner.animeId = existing.animeId
       }
     }
-    if (winner.animeUrl.length === 0) {
-      winner.animeUrl = existing.animeUrl
-    }
-    if (winner.episodeUrl.length === 0) {
-      winner.episodeUrl = existing.episodeUrl
-    }
     if (winner.animeCover.length === 0) {
       winner.animeCover = existing.animeCover
+    }
+    if (winner.animeName.length === 0) {
+      winner.animeName = existing.animeName
     }
     if (winner.sourceId < 0) {
       winner.sourceId = existing.sourceId
     }
-    if (winner.sourceName.length === 0) {
-      winner.sourceName = existing.sourceName
+    if (winner.durationMs <= 0 && winner.episodeIndex === existing.episodeIndex &&
+      winner.roadIndex === existing.roadIndex) {
+      winner.durationMs = existing.durationMs
     }
     return winner
   }
@@ -303,7 +648,8 @@ export class HistorySyncService {
       const sourceKey = record.sourceName.length > 0 ? record.sourceName :
         (record.sourceId >= 0 ? 'source_' + String(record.sourceId) : '')
       if (sourceKey.length > 0) {
-        return 'bangumi:' + sourceKey + ':' + String(record.bangumiId)
+        return 'bangumi:' + sourceKey + ':' + String(record.bangumiId) + ':' +
+          HistoryRecord.normalizeEntryKind(record.entryKind)
       }
       if (record.animeUrl.length > 0) {
         return 'bangumi-url:' + String(record.bangumiId) + ':' + record.animeUrl
@@ -320,48 +666,12 @@ export class HistorySyncService {
     return record.animeId === String(record.sourceId) + '_' + record.animeUrl
   }
 
-  private mergeDeletedIntoMap(deletedMap: Map<string, number>, deleted: HistorySyncDeletedItem[]): void {
-    for (let i = 0; i < deleted.length; i++) {
-      const item = deleted[i]
-      if (item.animeId.length === 0) {
-        continue
-      }
-      const existing = deletedMap.get(item.animeId)
-      if (existing === undefined || item.deletedAt > existing) {
-        deletedMap.set(item.animeId, item.deletedAt)
-      }
-    }
-  }
-
-  private async applyMergedPayload(payload: HistorySyncPayload): Promise<void> {
-    const deletedMap: Map<string, number> = new Map()
-    this.mergeDeletedIntoMap(deletedMap, payload.deleted)
-    for (let i = 0; i < payload.records.length; i++) {
-      const record = payload.records[i]
-      const deletedAt = deletedMap.get(record.animeId)
-      if (deletedAt !== undefined && deletedAt > record.updatedAt) {
-        await this.historyStore.deleteByAnimeId(record.animeId)
-      } else {
-        await this.historyStore.upsertPreservingUpdatedAt(record)
-      }
-    }
-    const deletedIds = Array.from(deletedMap.keys())
-    for (let i = 0; i < deletedIds.length; i++) {
-      const local = await this.historyStore.getByAnimeId(deletedIds[i])
-      const deletedAt = deletedMap.get(deletedIds[i]) ?? 0
-      if (local !== null && deletedAt > local.updatedAt) {
-        await this.historyStore.deleteByAnimeId(deletedIds[i])
-      }
-    }
-    await this.deleteMergedDuplicateLocalRecords(payload)
-  }
-
-  private async deleteMergedDuplicateLocalRecords(payload: HistorySyncPayload): Promise<void> {
+  private async deleteMergedDuplicateLocalRecords(records: HistoryRecord[]): Promise<void> {
     const keepAnimeIds: Set<string> = new Set()
     const keepMergeKeys: Set<string> = new Set()
-    for (let i = 0; i < payload.records.length; i++) {
-      keepAnimeIds.add(payload.records[i].animeId)
-      keepMergeKeys.add(this.getHistoryMergeKey(payload.records[i]))
+    for (let i = 0; i < records.length; i++) {
+      keepAnimeIds.add(records[i].animeId)
+      keepMergeKeys.add(this.getHistoryMergeKey(records[i]))
     }
     const localRecords = await this.historyStore.getAll()
     for (let i = 0; i < localRecords.length; i++) {
@@ -373,52 +683,6 @@ export class HistorySyncService {
         await this.historyStore.deleteByAnimeId(record.animeId)
       }
     }
-  }
-
-  private async readUpstreamHistoryPayload(client: WebDavClient): Promise<HistorySyncPayload> {
-    const payload = new HistorySyncPayload()
-    try {
-      const snapshotText = await client.downloadTextAtPath(UPSTREAM_HISTORY_SNAPSHOT_PATH)
-      if (snapshotText !== null && snapshotText.trim().length > 0) {
-        const snapshotPayload = this.parseUpstreamSnapshot(snapshotText)
-        logger.info('Read upstream history snapshot records=%{public}d', snapshotPayload.records.length)
-        this.mergeRecordsIntoMapFromPayload(payload, snapshotPayload)
-      }
-    } catch (err) {
-      logger.warn('Read upstream history snapshot failed: %{public}s', err instanceof Error ? err.message : String(err))
-    }
-
-    try {
-      const fileNames = await client.listFileNamesAtPath(UPSTREAM_HISTORY_CHANGES_PATH)
-      const events: Record<string, Object>[] = []
-      for (let i = 0; i < fileNames.length; i++) {
-        const fileName = fileNames[i]
-        if (!fileName.endsWith('.jsonl')) {
-          continue
-        }
-        const text = await client.downloadTextAtPath(UPSTREAM_HISTORY_CHANGES_PATH + '/' + fileName)
-        if (text !== null) {
-          const parsedEvents = this.parseUpstreamEventLines(text)
-          for (let j = 0; j < parsedEvents.length; j++) {
-            events.push(parsedEvents[j])
-          }
-        }
-      }
-      logger.info('Read upstream history change files=%{public}d events=%{public}d', fileNames.length, events.length)
-      this.applyUpstreamEvents(payload, events)
-    } catch (err) {
-      logger.warn('Read upstream history changes failed: %{public}s', err instanceof Error ? err.message : String(err))
-    }
-    await this.enrichRuleSourceInfo(payload.records)
-    payload.records.sort((a: HistoryRecord, b: HistoryRecord) => b.updatedAt - a.updatedAt)
-    return payload
-  }
-
-  private mergeRecordsIntoMapFromPayload(target: HistorySyncPayload, source: HistorySyncPayload): void {
-    const merged = this.mergePayloads(target, source)
-    target.records = merged.records
-    target.deleted = merged.deleted
-    target.updatedAt = Math.max(target.updatedAt, source.updatedAt)
   }
 
   private async enrichRuleSourceInfo(records: HistoryRecord[]): Promise<void> {
@@ -504,7 +768,8 @@ export class HistorySyncService {
   }
 
   private canonicalizeLocalAnimeId(record: HistoryRecord): void {
-    if (record.sourceId >= 0 && record.animeUrl.length > 0) {
+    if (HistoryRecord.normalizeEntryKind(record.entryKind) === 'online' &&
+      record.sourceId >= 0 && record.animeUrl.length > 0) {
       record.animeId = String(record.sourceId) + '_' + record.animeUrl
     }
   }
@@ -522,159 +787,6 @@ export class HistorySyncService {
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : -1
   }
 
-  private parseUpstreamSnapshot(text: string): HistorySyncPayload {
-    const payload = new HistorySyncPayload()
-    try {
-      const parsed = JSON.parse(text) as Record<string, Object>
-      const generatedAt = parsed['generatedAt']
-      if (typeof generatedAt === 'number') {
-        payload.updatedAt = generatedAt
-      }
-      const historiesObj = parsed['histories']
-      if (historiesObj instanceof Array) {
-        const histories = historiesObj as Record<string, Object>[]
-        for (let i = 0; i < histories.length; i++) {
-          const record = this.historyRecordFromUpstreamHistory(histories[i])
-          if (record !== null) {
-            payload.records.push(record)
-          }
-        }
-      }
-      const deletedVersionsObj = parsed['deletedVersions']
-      if (deletedVersionsObj !== undefined) {
-        this.parseUpstreamDeletedVersions(payload, deletedVersionsObj as Record<string, Object>)
-      }
-    } catch (err) {
-      logger.warn('Parse upstream history snapshot failed: %{public}s', err instanceof Error ? err.message : String(err))
-    }
-    return payload
-  }
-
-  private parseUpstreamDeletedVersions(payload: HistorySyncPayload, deletedVersions: Record<string, Object>): void {
-    const keys = Object.keys(deletedVersions)
-    for (let i = 0; i < keys.length; i++) {
-      const item = new HistorySyncDeletedItem()
-      item.animeId = keys[i]
-      item.deletedAt = this.updatedAtFromVersion(String(deletedVersions[keys[i]]))
-      payload.deleted.push(item)
-    }
-  }
-
-  private parseUpstreamEventLines(text: string): Record<string, Object>[] {
-    const events: Record<string, Object>[] = []
-    const lines = text.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim()
-      if (line.length === 0) {
-        continue
-      }
-      try {
-        events.push(JSON.parse(line) as Record<string, Object>)
-      } catch (err) {
-        logger.warn('Parse upstream history event line failed: %{public}s', err instanceof Error ? err.message : String(err))
-      }
-    }
-    events.sort((a: Record<string, Object>, b: Record<string, Object>) => {
-      const aVersion = this.versionOfEvent(a)
-      const bVersion = this.versionOfEvent(b)
-      if (aVersion < bVersion) return -1
-      if (aVersion > bVersion) return 1
-      return 0
-    })
-    return events
-  }
-
-  private applyUpstreamEvents(payload: HistorySyncPayload, events: Record<string, Object>[]): void {
-    const recordMap: Map<string, HistoryRecord> = new Map()
-    this.mergeRecordsIntoMap(recordMap, payload.records)
-    const deletedMap: Map<string, number> = new Map()
-    this.mergeDeletedIntoMap(deletedMap, payload.deleted)
-    let clearAt = 0
-
-    for (let i = 0; i < events.length; i++) {
-      const event = events[i]
-      const op = String(event['op'] ?? '')
-      const updatedAt = this.numberValue(event['updatedAt'], 0)
-      if (op === 'clearAll') {
-        if (updatedAt >= clearAt) {
-          recordMap.clear()
-          deletedMap.clear()
-          clearAt = updatedAt
-        }
-        continue
-      }
-      const entityKey = String(event['entityKey'] ?? '')
-      if (entityKey.length === 0 || updatedAt < clearAt) {
-        continue
-      }
-      if (op === 'deleteHistory') {
-        const existing = this.findRecordByUpstreamEntityKey(recordMap, entityKey)
-        if (existing !== null && updatedAt >= existing.updatedAt) {
-          recordMap.delete(this.getHistoryMergeKey(existing))
-        }
-        const deletedExisting = deletedMap.get(entityKey)
-        if (deletedExisting === undefined || updatedAt > deletedExisting) {
-          deletedMap.set(entityKey, updatedAt)
-        }
-        continue
-      }
-      if (op === 'upsertProgress') {
-        const record = this.historyRecordFromUpstreamEvent(event)
-        if (record === null) {
-          continue
-        }
-        const deletedAt = deletedMap.get(entityKey)
-        if (deletedAt !== undefined && deletedAt > record.updatedAt) {
-          continue
-        }
-        this.mergeRecordsIntoMap(recordMap, [record])
-        deletedMap.delete(entityKey)
-      }
-    }
-
-    payload.records = Array.from(recordMap.values())
-    payload.deleted = []
-    const deletedKeys = Array.from(deletedMap.keys())
-    for (let i = 0; i < deletedKeys.length; i++) {
-      const item = new HistorySyncDeletedItem()
-      item.animeId = deletedKeys[i]
-      item.deletedAt = deletedMap.get(deletedKeys[i]) ?? 0
-      payload.deleted.push(item)
-    }
-  }
-
-  private findRecordByUpstreamEntityKey(recordMap: Map<string, HistoryRecord>, entityKey: string): HistoryRecord | null {
-    const values = Array.from(recordMap.values())
-    for (let i = 0; i < values.length; i++) {
-      if (this.getUpstreamEntityKey(values[i]) === entityKey || values[i].animeId === entityKey) {
-        return values[i]
-      }
-    }
-    return null
-  }
-
-  private historyRecordFromUpstreamEvent(event: Record<string, Object>): HistoryRecord | null {
-    const bangumiItem = event['bangumiItem']
-    if (bangumiItem === undefined) {
-      return null
-    }
-    const historyJson: Record<string, Object> = {}
-    historyJson['bangumiItem'] = bangumiItem
-    historyJson['adapterName'] = String(event['adapterName'] ?? '')
-    historyJson['lastWatchEpisode'] = this.numberValue(event['episode'], 1)
-    historyJson['lastWatchTime'] = this.numberValue(event['updatedAt'], Date.now())
-    historyJson['lastSrc'] = String(event['lastSrc'] ?? '')
-    historyJson['lastWatchEpisodeName'] = String(event['lastWatchEpisodeName'] ?? '')
-    const progresses: Record<string, Object> = {}
-    const progress: Record<string, Object> = {}
-    progress['episode'] = this.numberValue(event['episode'], 1)
-    progress['road'] = this.numberValue(event['road'], 0)
-    progress['progressMs'] = this.numberValue(event['progressMs'], 0)
-    progresses[String(progress['episode'])] = progress
-    historyJson['progresses'] = progresses
-    return this.historyRecordFromUpstreamHistory(historyJson)
-  }
-
   private historyRecordFromUpstreamHistory(history: Record<string, Object>): HistoryRecord | null {
     const bangumiObject = history['bangumiItem']
     if (bangumiObject === undefined) {
@@ -690,7 +802,9 @@ export class HistorySyncService {
     const record = new HistoryRecord()
     record.bangumiId = bangumiId
     record.sourceName = adapterName
-    record.animeId = adapterName + String(bangumiId)
+    record.entryKind = HistoryRecord.normalizeEntryKind(String(history['entryKind'] ?? 'online'))
+    record.animeId = adapterName + String(bangumiId) + '::' + record.entryKind
+    record.bangumiItemJSON = JSON.stringify(bangumiItem)
     record.animeName = this.resolveUpstreamAnimeName(bangumiItem)
     record.animeCover = this.resolveUpstreamCover(bangumiItem)
     const lastSrc = String(history['lastSrc'] ?? '')
@@ -699,17 +813,30 @@ export class HistorySyncService {
     if (record.episodeName.length === 0) {
       record.episodeName = '第' + String(lastWatchEpisode) + '集'
     }
-    record.episodeUrl = lastSrc
+    const episodePageUrl = String(history['episodePageUrl'] ?? '')
+    record.episodePageUrl = episodePageUrl
+    record.episodeUrl = episodePageUrl.length > 0 ? episodePageUrl : lastSrc
     record.updatedAt = this.numberValue(history['lastWatchTime'], Date.now())
     record.episodeIndex = Math.max(0, lastWatchEpisode - 1)
+    const progressesObj = history['progresses']
+    if (progressesObj !== undefined && progressesObj !== null) {
+      const progresses = progressesObj as Record<string, Object>
+      const episodes = Object.keys(progresses)
+      for (let i = 0; i < episodes.length; i++) {
+        const progress = this.progressFromUpstreamJson(progresses[episodes[i]] as Record<string, Object>)
+        const episodeFromKey = Number(episodes[i])
+        if (Number.isFinite(episodeFromKey)) progress.episode = episodeFromKey
+        if (progress.episode > 0) record.progresses.set(progress.episode, progress)
+      }
+    }
     const progress = this.resolveUpstreamProgress(history, lastWatchEpisode)
     record.roadIndex = progress.road
     record.positionMs = progress.progressMs
     return record
   }
 
-  private resolveUpstreamProgress(history: Record<string, Object>, episode: number): UpstreamProgress {
-    const fallback = new UpstreamProgress()
+  private resolveUpstreamProgress(history: Record<string, Object>, episode: number): HistoryEpisodeProgress {
+    const fallback = new HistoryEpisodeProgress()
     const progressesObj = history['progresses']
     if (progressesObj === undefined) {
       return fallback
@@ -717,20 +844,17 @@ export class HistorySyncService {
     const progresses = progressesObj as Record<string, Object>
     const progressObj = progresses[String(episode)]
     if (progressObj === undefined) {
-      const keys = Object.keys(progresses)
-      if (keys.length === 0) {
-        return fallback
-      }
-      return this.progressFromUpstreamJson(progresses[keys[0]] as Record<string, Object>)
+      return fallback
     }
     return this.progressFromUpstreamJson(progressObj as Record<string, Object>)
   }
 
-  private progressFromUpstreamJson(json: Record<string, Object>): UpstreamProgress {
-    const progress = new UpstreamProgress()
+  private progressFromUpstreamJson(json: Record<string, Object>): HistoryEpisodeProgress {
+    const progress = new HistoryEpisodeProgress()
     progress.episode = this.numberValue(json['episode'], 1)
     progress.road = this.numberValue(json['road'], 0)
     progress.progressMs = this.numberValue(json['progressMs'], 0)
+    progress.updatedAtMs = this.numberValue(json['updatedAtMs'], 0)
     return progress
   }
 
@@ -804,82 +928,14 @@ export class HistorySyncService {
     }
   }
 
-  private async writeUpstreamHistoryPayload(client: WebDavClient, payload: HistorySyncPayload): Promise<void> {
-    try {
-      await client.ensureRemoteDirAtPath(UPSTREAM_SYNC_ROOT_PATH)
-      await client.ensureRemoteDirAtPath(UPSTREAM_HISTORY_ROOT_PATH)
-      await client.ensureRemoteDirAtPath(UPSTREAM_HISTORY_CHANGES_PATH)
-      const snapshot = this.upstreamSnapshotToJSON(payload)
-      await client.uploadTextAtPath(UPSTREAM_HISTORY_SNAPSHOT_PATH, JSON.stringify(snapshot))
-      const deviceId = await this.getDeviceId()
-      const events = this.upstreamEventsFromPayload(payload, deviceId)
-      const eventLines = this.upstreamEventsToJsonLines(events)
-      if (eventLines.length > 0) {
-        await client.uploadTextAtPath(UPSTREAM_HISTORY_CHANGES_PATH + '/' + deviceId + '.jsonl', eventLines)
-      }
-    } catch (err) {
-      logger.warn('Write upstream history payload failed: %{public}s', err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  private upstreamSnapshotToJSON(payload: HistorySyncPayload): Record<string, Object> {
-    const result: Record<string, Object> = {}
-    result['schemaVersion'] = 1
-    result['generatedAt'] = payload.updatedAt > 0 ? payload.updatedAt : Date.now()
-    const histories: Record<string, Object>[] = []
-    const itemVersions: Record<string, Object> = {}
-    const progressVersions: Record<string, Object> = {}
-    const deletedVersions: Record<string, Object> = {}
-
-    for (let i = 0; i < payload.records.length; i++) {
-      const record = payload.records[i]
-      if (!this.isUpstreamExportable(record)) {
-        continue
-      }
-      const historyJson = this.upstreamHistoryToJSON(record)
-      const entityKey = this.getUpstreamEntityKey(record)
-      const eventId = 'local-import:' + entityKey
-      const version = this.versionOf(record.updatedAt, eventId)
-      histories.push(historyJson)
-      itemVersions[entityKey] = version
-      const episodeVersions: Record<string, Object> = {}
-      episodeVersions[String(this.getUpstreamEpisode(record))] = version
-      progressVersions[entityKey] = episodeVersions
-    }
-
-    for (let i = 0; i < payload.deleted.length; i++) {
-      const deleted = payload.deleted[i]
-      if (deleted.animeId.length > 0) {
-        deletedVersions[deleted.animeId] = this.versionOf(deleted.deletedAt, 'delete:' + deleted.animeId)
-      }
-    }
-    result['histories'] = histories
-    result['itemVersions'] = itemVersions
-    result['progressVersions'] = progressVersions
-    result['deletedVersions'] = deletedVersions
-    return result
-  }
-
-  private upstreamHistoryToJSON(record: HistoryRecord): Record<string, Object> {
-    const result: Record<string, Object> = {}
-    const episode = this.getUpstreamEpisode(record)
-    result['bangumiItem'] = this.upstreamBangumiItemToJSON(record)
-    result['lastWatchEpisode'] = episode
-    result['adapterName'] = this.getUpstreamAdapterName(record)
-    result['lastWatchTime'] = record.updatedAt > 0 ? record.updatedAt : Date.now()
-    result['lastSrc'] = this.getUpstreamLastSrc(record)
-    result['lastWatchEpisodeName'] = record.episodeName
-    const progresses: Record<string, Object> = {}
-    const progress: Record<string, Object> = {}
-    progress['episode'] = episode
-    progress['road'] = record.roadIndex >= 0 ? record.roadIndex : 0
-    progress['progressMs'] = Math.max(0, record.positionMs)
-    progresses[String(episode)] = progress
-    result['progresses'] = progresses
-    return result
-  }
-
   private upstreamBangumiItemToJSON(record: HistoryRecord): Record<string, Object> {
+    if (record.bangumiItemJSON.length > 0) {
+      try {
+        return JSON.parse(record.bangumiItemJSON) as Record<string, Object>
+      } catch (_err) {
+        logger.warn('Ignore malformed local Bangumi history payload')
+      }
+    }
     const images: Record<string, Object> = {}
     images['large'] = record.animeCover
     images['common'] = record.animeCover
@@ -905,50 +961,13 @@ export class HistorySyncService {
     return item
   }
 
-  private upstreamEventsFromPayload(payload: HistorySyncPayload, deviceId: string): Record<string, Object>[] {
-    const events: Record<string, Object>[] = []
-    for (let i = 0; i < payload.records.length; i++) {
-      const record = payload.records[i]
-      if (!this.isUpstreamExportable(record)) {
-        continue
-      }
-      const event: Record<string, Object> = {}
-      event['eventId'] = deviceId + ':' + String(i + 1)
-      event['deviceId'] = deviceId
-      event['seq'] = i + 1
-      event['op'] = 'upsertProgress'
-      event['updatedAt'] = record.updatedAt > 0 ? record.updatedAt : Date.now()
-      event['entityKey'] = this.getUpstreamEntityKey(record)
-      event['bangumiItem'] = this.upstreamBangumiItemToJSON(record)
-      event['adapterName'] = this.getUpstreamAdapterName(record)
-      event['episode'] = this.getUpstreamEpisode(record)
-      event['road'] = record.roadIndex >= 0 ? record.roadIndex : 0
-      event['progressMs'] = Math.max(0, record.positionMs)
-      event['lastSrc'] = this.getUpstreamLastSrc(record)
-      event['lastWatchEpisodeName'] = record.episodeName
-      events.push(event)
-    }
-    return events
-  }
-
-  private upstreamEventsToJsonLines(events: Record<string, Object>[]): string {
-    const lines: string[] = []
-    for (let i = 0; i < events.length; i++) {
-      lines.push(JSON.stringify(events[i]))
-    }
-    return lines.length === 0 ? '' : lines.join('\n') + '\n'
-  }
-
   private getUpstreamEntityKey(record: HistoryRecord): string {
-    return this.getUpstreamAdapterName(record) + String(record.bangumiId)
+    return KazumiHistoryItem.scopedKey(this.getUpstreamAdapterName(record), record.bangumiId,
+      HistoryRecord.normalizeEntryKind(record.entryKind))
   }
 
   private isUpstreamExportable(record: HistoryRecord): boolean {
-    return record.bangumiId > 0 && this.isValidUpstreamAdapterName(record.sourceName) && record.animeUrl.length > 0
-  }
-
-  private getUpstreamLastSrc(record: HistoryRecord): string {
-    return record.animeUrl
+    return record.bangumiId > 0 && this.isValidUpstreamAdapterName(record.sourceName)
   }
 
   private isValidUpstreamAdapterName(name: string): boolean {
@@ -1011,101 +1030,26 @@ export class HistorySyncService {
     return defaultValue
   }
 
-  private versionOfEvent(event: Record<string, Object>): string {
-    return this.versionOf(this.numberValue(event['updatedAt'], 0), String(event['eventId'] ?? ''))
-  }
-
-  private versionOf(updatedAt: number, eventId: string): string {
-    return Math.max(0, Math.floor(updatedAt)).toString().padStart(16, '0') + '|' + eventId
-  }
-
-  private updatedAtFromVersion(version: string): number {
-    const delimiterIndex = version.indexOf('|')
-    const timestamp = delimiterIndex >= 0 ? version.substring(0, delimiterIndex) : version
-    const parsed = Number(timestamp)
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-
-  private parsePayload(text: string | null): HistorySyncPayload {
-    const payload = new HistorySyncPayload()
+  private parseLegacyPrivateHistory(text: string | null): HistoryRecord[] {
+    const result: HistoryRecord[] = []
     if (text === null || text.trim().length === 0) {
-      return payload
+      return result
     }
     try {
       const parsed = JSON.parse(text) as Record<string, Object>
-      const updatedAt = parsed['updatedAt']
-      if (typeof updatedAt === 'number') {
-        payload.updatedAt = updatedAt
-      }
       const recordsObj = parsed['records']
       if (recordsObj instanceof Array) {
         const records = recordsObj as Record<string, Object>[]
         for (let i = 0; i < records.length; i++) {
           const record = HistoryRecord.fromJSON(records[i])
           this.normalizeHistoryRecordCover(record)
-          payload.records.push(record)
-        }
-      }
-      const deletedObj = parsed['deleted']
-      if (deletedObj instanceof Array) {
-        const deleted = deletedObj as Record<string, Object>[]
-        for (let i = 0; i < deleted.length; i++) {
-          const item = new HistorySyncDeletedItem()
-          const animeId = deleted[i]['animeId']
-          const deletedAt = deleted[i]['deletedAt']
-          if (typeof animeId === 'string') {
-            item.animeId = animeId
-          }
-          if (typeof deletedAt === 'number') {
-            item.deletedAt = deletedAt
-          }
-          if (item.animeId.length > 0) {
-            payload.deleted.push(item)
-          }
+          result.push(record)
         }
       }
     } catch (err) {
       logger.warn('Parse remote history payload failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
-    return payload
-  }
-
-  private payloadToJSON(payload: HistorySyncPayload): Record<string, Object> {
-    const result: Record<string, Object> = {}
-    result['schemaVersion'] = payload.schemaVersion
-    result['app'] = payload.app
-    result['updatedAt'] = payload.updatedAt
-    const records: Record<string, Object>[] = []
-    for (let i = 0; i < payload.records.length; i++) {
-      records.push(payload.records[i].toJSON())
-    }
-    const deleted: Record<string, Object>[] = []
-    for (let i = 0; i < payload.deleted.length; i++) {
-      const item: Record<string, Object> = {}
-      item['animeId'] = payload.deleted[i].animeId
-      item['deletedAt'] = payload.deleted[i].deletedAt
-      deleted.push(item)
-    }
-    result['records'] = records
-    result['deleted'] = deleted
     return result
-  }
-
-  private async loadDeletedItems(): Promise<HistorySyncDeletedItem[]> {
-    const raw = await PreferencesStore.getInstance().getString(WEBDAV_SYNC_DELETED_KEY, '[]')
-    const payload = this.parsePayload('{"deleted":' + raw + '}')
-    return payload.deleted
-  }
-
-  private async saveDeletedItems(items: HistorySyncDeletedItem[]): Promise<void> {
-    const jsonItems: Record<string, Object>[] = []
-    for (let i = 0; i < items.length; i++) {
-      const item: Record<string, Object> = {}
-      item['animeId'] = items[i].animeId
-      item['deletedAt'] = items[i].deletedAt
-      jsonItems.push(item)
-    }
-    await PreferencesStore.getInstance().setString(WEBDAV_SYNC_DELETED_KEY, JSON.stringify(jsonItems))
   }
 
   private validateConfig(config: WebDavConfig): void {

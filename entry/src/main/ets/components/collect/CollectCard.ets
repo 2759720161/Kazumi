@@ -1,13 +1,14 @@
 import { CollectedBangumi } from '../../models/CollectedBangumi'
 import { CachedRemoteImage } from '../common/CachedRemoteImage'
 import { DetailNavigationParams, navigateToDetail } from '../../utils/DetailNavigation'
+import { CollectType } from '../../models/CollectType'
 
 @Component
 export struct CollectCard {
   @Prop collectedBangumi: CollectedBangumi
   @Prop isEditMode: boolean = false
   @State isPressed: boolean = false
-  onRemove?: () => void
+  onEditStatus?: () => void
 
   build() {
     Column({ space: 8 }) {
@@ -51,7 +52,7 @@ export struct CollectCard {
     .animation({ duration: 150 })
     .onClick(() => {
       if (this.isEditMode) {
-        this.requestRemove()
+        this.requestStatusEdit()
       } else {
         const params = new DetailNavigationParams()
         params.animeName = this.collectedBangumi.animeName
@@ -81,7 +82,7 @@ export struct CollectCard {
   private StatusBadge(): void {
     Row() {
       Row() {
-        SymbolGlyph($r('sys.symbol.heart_fill'))
+        SymbolGlyph(CollectType.getIcon(this.collectedBangumi.collectType))
           .fontSize(12)
           .fontColor([$r('app.color.text_on_primary')])
       }
@@ -102,7 +103,7 @@ export struct CollectCard {
   private StatusButton(): void {
     Row() {
       Row() {
-        SymbolGlyph($r('sys.symbol.heart_slash'))
+        SymbolGlyph(CollectType.getIcon(this.collectedBangumi.collectType))
           .fontSize(16)
           .fontColor([$r('app.color.text_on_primary')])
       }
@@ -112,7 +113,7 @@ export struct CollectCard {
       .backgroundColor($r('app.color.button_primary_bg'))
       .justifyContent(FlexAlign.Center)
       .onClick(() => {
-        this.requestRemove()
+        this.requestStatusEdit()
       })
     }
     .width('100%')
@@ -140,8 +141,8 @@ export struct CollectCard {
     }
   }
 
-  private requestRemove(): void {
-    this.onRemove?.()
+  private requestStatusEdit(): void {
+    this.onEditStatus?.()
   }
 
   private getSharedCoverId(): string {

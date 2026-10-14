@@ -53,6 +53,8 @@ import {
 import {
   ADVANCED_OPTIONS_UNLOCKED_KEY,
   HIDE_LOCAL_PAGE_KEY,
+  HIDE_TIMELINE_PAGE_KEY,
+  HIDE_FAVORITE_PAGE_KEY,
   PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY,
   PLAYER_DEBUG_OPTIONS_UNLOCK_TAP_COUNT,
   PLAYER_DEBUG_OPTIONS_UNLOCK_WINDOW_MS
@@ -61,6 +63,7 @@ import { AppConstants } from '../../constants/AppConstants'
 import { RuleShopPageContent } from './RuleShopPage'
 import { DanmakuSettingsPageContent } from './DanmakuSettingsPage'
 import { WebDavSyncPageContent } from './WebDavSyncPage'
+import { ImageProxySettingsPageContent } from './ImageProxySettingsPage'
 import { HistoryPageContent } from '../history/HistoryPage'
 import {
   ANTI_PEEP_ENABLED_DEFAULT,
@@ -79,6 +82,16 @@ import {
   isImmersiveMaterialSupported,
   normalizeApi26MaterialStyle
 } from '../../utils/ImmersiveMaterial'
+import { createMenuImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import { ImmersiveButtonModifier } from '../../utils/ImmersiveButtonModifier'
+import {
+  PLAYER_GESTURE_DEFAULT,
+  PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS,
+  PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP,
+  PREFS_KEY_PLAYER_GESTURE_LONG_PRESS,
+  PREFS_KEY_PLAYER_GESTURE_SEEK,
+  PREFS_KEY_PLAYER_GESTURE_VOLUME
+} from '../../utils/PlayerGestureSettings'
 
 const logger = new Logger('SettingsPage')
 const SETTINGS_DESTINATION_RULE_SHOP: string = 'settings_rule_shop'
@@ -86,6 +99,7 @@ const SETTINGS_DESTINATION_DANMAKU: string = 'settings_danmaku'
 const SETTINGS_DESTINATION_DOWNLOAD: string = 'settings_download'
 const SETTINGS_DESTINATION_HISTORY: string = 'settings_history'
 const SETTINGS_DESTINATION_WEBDAV: string = 'settings_webdav'
+const SETTINGS_DESTINATION_IMAGE_PROXY: string = 'settings_image_proxy'
 const SETTINGS_DESTINATION_PLAYER: string = 'settings_player'
 const SETTINGS_DESTINATION_APP: string = 'settings_app'
 const SETTINGS_DESTINATION_ABOUT: string = 'settings_about'
@@ -287,6 +301,11 @@ export struct SettingsPage {
   @StorageLink(PREFS_KEY_MPV_DETAIL_ENHANCER_QUALITY) mpvDetailEnhancerQuality: number = MPV_DETAIL_ENHANCER_QUALITY_DEFAULT
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP) playerGestureDoubleTap: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_LONG_PRESS) playerGestureLongPress: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_SEEK) playerGestureSeek: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS) playerGestureBrightness: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_VOLUME) playerGestureVolume: boolean = PLAYER_GESTURE_DEFAULT
   @StorageLink(PREFS_KEY_ANTI_PEEP_ENABLED) antiPeepEnabled: boolean = ANTI_PEEP_ENABLED_DEFAULT
   @State snifferTimeout: number = 15
   @State rules: RuleSource[] = []
@@ -304,6 +323,8 @@ export struct SettingsPage {
   @State showMpvHwdecMenu: boolean = false
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) showAdvancedPlayerOptions: boolean = true
   @StorageLink(HIDE_LOCAL_PAGE_KEY) hideLocalPage: boolean = false
+  @StorageLink(HIDE_TIMELINE_PAGE_KEY) hideTimelinePage: boolean = false
+  @StorageLink(HIDE_FAVORITE_PAGE_KEY) hideFavoritePage: boolean = false
   @StorageLink(PLAYER_DEBUG_OPTIONS_UNLOCKED_KEY) playerDebugOptionsUnlocked: boolean = false
   @State playerEngineTapCount: number = 0
   private playerEngineFirstTapTime: number = 0
@@ -508,8 +529,8 @@ export struct SettingsPage {
           this.ItemDivider()
           this.SettingsRouteItem(
             $r('sys.symbol.arrow_2_circlepath'),
-            '观看历史同步',
-            '通过 WebDAV 同步多设备观看记录',
+            'WebDAV 同步',
+            '跨设备同步历史、进度与收藏',
             SETTINGS_DESTINATION_WEBDAV,
             () => {
               this.openSettingsRouteDestination(SETTINGS_DESTINATION_WEBDAV, 'pages/settings/WebDavSyncPage')
@@ -517,6 +538,16 @@ export struct SettingsPage {
           )
         }
 
+        this.ItemDivider()
+        this.SettingsRouteItem(
+          $r('sys.symbol.externaldrive_3'),
+          this.getUIContext().getHostContext()?.resourceManager.getStringSync($r('app.string.image_proxy_title').id) ?? '',
+          this.getUIContext().getHostContext()?.resourceManager.getStringSync($r('app.string.image_proxy_settings_desc').id) ?? '',
+          SETTINGS_DESTINATION_IMAGE_PROXY,
+          () => {
+            this.openSettingsRouteDestination(SETTINGS_DESTINATION_IMAGE_PROXY, 'pages/settings/ImageProxySettingsPage')
+          }
+        )
         this.ItemDivider()
         this.SettingsCategoryItem(
           $r('sys.symbol.play_round_rectangle'),
@@ -637,6 +668,8 @@ export struct SettingsPage {
         HistoryPageContent({ embedded: true })
       } else if (name === SETTINGS_DESTINATION_WEBDAV) {
         WebDavSyncPageContent({ embedded: true })
+      } else if (name === SETTINGS_DESTINATION_IMAGE_PROXY) {
+        ImageProxySettingsPageContent({ embedded: true })
       } else {
         Scroll(this.getSettingsDetailScroller(name)) {
           Column() {
@@ -845,8 +878,8 @@ export struct SettingsPage {
 
           this.NavigationItem(
             $r('sys.symbol.arrow_2_circlepath'),
-            '观看历史同步',
-            '通过 WebDAV 同步多设备观看记录',
+            'WebDAV 同步',
+            '跨设备同步历史、进度与收藏',
             '',
             () => {
               router.pushUrl({ url: 'pages/settings/WebDavSyncPage' })
@@ -871,6 +904,7 @@ export struct SettingsPage {
       if (showHeader) {
         this.SectionHeader('播放器')
       }
+      this.PlayerSectionTitle('基础播放')
       Column() {
         Row() {
           this.SettingIcon($r('sys.symbol.play_round_rectangle'))
@@ -904,10 +938,19 @@ export struct SettingsPage {
             this.setPlayerAutoPiP(isOn)
           }
         )
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
 
-        if (this.defaultPlayerEngine === 'mpv') {
-          this.ItemDivider()
+      this.PlayerGestureSection()
 
+      if (this.defaultPlayerEngine === 'mpv') {
+        this.PlayerSectionTitle('高级播放')
+        Column() {
           Row() {
             this.SettingIcon($r('sys.symbol.gearshape'))
             this.SettingTitle('硬件解码模式', '优先使用系统解码能力')
@@ -920,47 +963,121 @@ export struct SettingsPage {
           if (this.showAdvancedPlayerOptions) {
             this.ItemDivider()
           }
-        }
 
-        if (this.defaultPlayerEngine === 'mpv' && this.showAdvancedPlayerOptions) {
-          this.ToggleItem($r('sys.symbol.play'), 'HLS 广告跳过', '跳过常见 HLS 广告分片', this.mpvHlsAdFilter, (isOn: boolean) => {
-            this.setMpvHlsAdFilter(isOn)
-          })
+          if (this.showAdvancedPlayerOptions) {
+            this.ToggleItem($r('sys.symbol.play'), 'HLS 广告跳过', '跳过常见 HLS 广告分片', this.mpvHlsAdFilter, (isOn: boolean) => {
+              this.setMpvHlsAdFilter(isOn)
+            })
 
-          this.ItemDivider()
+            this.ItemDivider()
 
-          this.ToggleItem($r('sys.symbol.doc_text'), '伪装分片处理', '允许图片扩展名的视频分片', this.mpvSegAllowImg, (isOn: boolean) => {
-            this.setMpvSegAllowImg(isOn)
-          })
+            this.ToggleItem($r('sys.symbol.doc_text'), '伪装分片处理', '允许图片扩展名的视频分片', this.mpvSegAllowImg, (isOn: boolean) => {
+              this.setMpvSegAllowImg(isOn)
+            })
 
-          this.ItemDivider()
-
-          Row() {
-            this.SettingIcon($r('sys.symbol.wand_and_stars'))
-            this.SettingTitle('视频画质增强', 'AI 细节增强与超分辨率缩放')
-
-            Toggle({ type: ToggleType.Switch, isOn: this.mpvDetailEnhancerEnabled })
-              .onChange((isOn: boolean) => {
-                this.setDetailEnhancerEnabled(isOn)
-              })
-          }
-          .width('100%')
-          .height(64)
-          .padding({ left: 16, right: 16 })
-
-          if (this.mpvDetailEnhancerEnabled) {
             this.ItemDivider()
 
             Row() {
-              this.SettingIcon($r('sys.symbol.gearshape'))
-              this.SettingTitle('画质增强档位', '档位越高效果越好，性能消耗越大')
-              this.DetailEnhancerPicker()
+              this.SettingIcon($r('sys.symbol.wand_and_stars'))
+              this.SettingTitle('视频画质增强', 'AI 细节增强与超分辨率缩放')
+
+              Toggle({ type: ToggleType.Switch, isOn: this.mpvDetailEnhancerEnabled })
+                .onChange((isOn: boolean) => {
+                  this.setDetailEnhancerEnabled(isOn)
+                })
             }
             .width('100%')
-            .height(56)
+            .height(64)
             .padding({ left: 16, right: 16 })
+
+            if (this.mpvDetailEnhancerEnabled) {
+              this.ItemDivider()
+
+              Row() {
+                this.SettingIcon($r('sys.symbol.gearshape'))
+                this.SettingTitle('画质增强档位', '档位越高效果越好，性能消耗越大')
+                this.DetailEnhancerPicker()
+              }
+              .width('100%')
+              .height(56)
+              .padding({ left: 16, right: 16 })
+            }
           }
         }
+        .width('100%')
+        .borderRadius(12)
+        .clip(true)
+        .backgroundColor($r('app.color.card_background'))
+        .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+        .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+      }
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  private PlayerGestureSection(): void {
+    Column() {
+      this.PlayerSectionTitle('手势控制')
+      Column() {
+        this.ToggleItem(
+          $r('sys.symbol.play_fill'),
+          '双击播放或暂停',
+          '双击视频切换播放和暂停状态',
+          this.playerGestureDoubleTap,
+          (isOn: boolean) => {
+            this.setPlayerGestureDoubleTap(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.speed_200percent'),
+          '长按临时加速',
+          '长按视频时临时使用 2x 速度',
+          this.playerGestureLongPress,
+          (isOn: boolean) => {
+            this.setPlayerGestureLongPress(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.arrow_2_circlepath'),
+          '横向滑动调节进度',
+          '左右滑动视频预览并调整播放进度',
+          this.playerGestureSeek,
+          (isOn: boolean) => {
+            this.setPlayerGestureSeek(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.sun_max'),
+          '左侧上下滑调节亮度',
+          '在视频左侧上下滑动调节屏幕亮度',
+          this.playerGestureBrightness,
+          (isOn: boolean) => {
+            this.setPlayerGestureBrightness(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.speaker_wave_3'),
+          '右侧上下滑调节音量',
+          '在视频右侧上下滑动调节媒体音量',
+          this.playerGestureVolume,
+          (isOn: boolean) => {
+            this.setPlayerGestureVolume(isOn)
+          }
+        )
       }
       .width('100%')
       .borderRadius(12)
@@ -974,11 +1091,45 @@ export struct SettingsPage {
   }
 
   @Builder
+  private PlayerSectionTitle(title: string, extra: string = ''): void {
+    Row() {
+      Text(title)
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+        .layoutWeight(1)
+
+      if (extra.length > 0) {
+        Text(extra)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+      }
+    }
+    .width('100%')
+    .padding({ left: 6, right: 6, top: 18, bottom: 6 })
+  }
+
+  @Builder
   AppSection(showHeader: boolean = true): void {
     Column() {
       if (showHeader) {
         this.SectionHeader('外观动效')
       }
+      this.AppearanceThemeSection()
+      this.AppearanceProtectionSection()
+      this.AppearanceBottomTabSection()
+      this.HiddenPagesSection()
+      if (this.showAdvancedPlayerOptions) {
+        this.AppearanceNetworkSection()
+      }
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private AppearanceThemeSection(): void {
+    Column() {
+      this.PlayerSectionTitle('主题与材质')
       Column() {
         Row() {
           this.SettingIcon($r('sys.symbol.moon'))
@@ -1010,9 +1161,23 @@ export struct SettingsPage {
         .width('100%')
         .height(56)
         .padding({ left: 16, right: 16 })
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
 
-        this.ItemDivider()
-
+  @Builder
+  private AppearanceProtectionSection(): void {
+    Column() {
+      this.PlayerSectionTitle('系统保护')
+      Column() {
         this.ToggleItem(
           $r('sys.symbol.lock'),
           '防窥模式',
@@ -1022,9 +1187,23 @@ export struct SettingsPage {
             this.setAntiPeepEnabled(isOn)
           }
         )
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
 
-        this.ItemDivider()
-
+  @Builder
+  private AppearanceBottomTabSection(): void {
+    Column() {
+      this.PlayerSectionTitle('底部页签')
+      Column() {
         this.ToggleItem(
           $r('sys.symbol.arrow_down_right_and_arrow_up_left'),
           '滑动隐藏底栏',
@@ -1046,39 +1225,90 @@ export struct SettingsPage {
             this.setBottomTabShowAnimation(isOn)
           }
         )
-        if (this.showAdvancedPlayerOptions) {
-          this.ItemDivider()
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
 
-          Row() {
-            SymbolGlyph($r('sys.symbol.lock_open'))
-              .fontSize(24)
-              .fontColor([$r('app.color.status_warning')])
-              .width(34)
-              .margin({ right: 12 })
-            this.SettingTitle('允许非 HTTPS 请求', '兼容部分旧规则源，可能降低连接安全性')
-
-            Toggle({ type: ToggleType.Switch, isOn: this.allowHttpRequests })
-              .onChange((isOn: boolean) => {
-                this.allowHttpRequests = isOn
-                SecurityPolicy.getInstance().setAllowHttpRequests(isOn)
-              })
+  @Builder
+  private HiddenPagesSection(): void {
+    Column() {
+      this.PlayerSectionTitle('隐藏页面')
+      Column() {
+        this.ToggleItem(
+          $r('sys.symbol.calendar'),
+          '隐藏时间表',
+          '隐藏底部悬浮页签中的时间表',
+          this.hideTimelinePage,
+          (isOn: boolean) => {
+            this.setHideTimelinePage(isOn)
           }
-          .width('100%')
-          .height(64)
-          .padding({ left: 16, right: 16 })
+        )
 
-          this.ItemDivider()
+        this.ItemDivider()
 
-          this.ToggleItem(
-            $r('sys.symbol.eye_slash'),
-            '隐藏下载页面',
-            '隐藏底部悬浮页签中的下载页',
-            this.hideLocalPage,
-            (isOn: boolean) => {
-              this.setHideLocalPage(isOn)
-            }
-          )
+        this.ToggleItem(
+          $r('sys.symbol.heart'),
+          '隐藏收藏',
+          '隐藏底部悬浮页签中的收藏页',
+          this.hideFavoritePage,
+          (isOn: boolean) => {
+            this.setHideFavoritePage(isOn)
+          }
+        )
+
+        this.ItemDivider()
+
+        this.ToggleItem(
+          $r('sys.symbol.eye_slash'),
+          '隐藏下载页面',
+          '隐藏底部悬浮页签中的下载页',
+          this.hideLocalPage,
+          (isOn: boolean) => {
+            this.setHideLocalPage(isOn)
+          }
+        )
+      }
+      .width('100%')
+      .borderRadius(12)
+      .clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+      .shadow({ radius: 10, color: $r('app.color.shadow_surface'), offsetY: 3 })
+    }
+    .width('100%')
+    .margin({ bottom: 8 })
+  }
+
+  @Builder
+  private AppearanceNetworkSection(): void {
+    Column() {
+      this.PlayerSectionTitle('网络兼容')
+      Column() {
+        Row() {
+          SymbolGlyph($r('sys.symbol.lock_open'))
+            .fontSize(24)
+            .fontColor([$r('app.color.status_warning')])
+            .width(34)
+            .margin({ right: 12 })
+          this.SettingTitle('允许非 HTTPS 请求', '兼容部分旧规则源，可能降低连接安全性')
+
+          Toggle({ type: ToggleType.Switch, isOn: this.allowHttpRequests })
+            .onChange((isOn: boolean) => {
+              this.allowHttpRequests = isOn
+              SecurityPolicy.getInstance().setAllowHttpRequests(isOn)
+            })
         }
+        .width('100%')
+        .height(64)
+        .padding({ left: 16, right: 16 })
       }
       .width('100%')
       .borderRadius(12)
@@ -1343,27 +1573,30 @@ export struct SettingsPage {
 
   @Builder
   PlayerEnginePicker(): void {
-    Row() {
-      Text(this.defaultPlayerEngine === 'mpv' ? 'mpv' : 'AVPlayer')
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.End)
-        .layoutWeight(1)
-
-      if (this.playerDebugOptionsUnlocked) {
-        Text('▼')
-          .fontSize(12)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Text(this.defaultPlayerEngine === 'mpv' ? 'mpv' : 'AVPlayer')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .margin({ left: 8 })
-      }
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
+
+        if (this.playerDebugOptionsUnlocked) {
+          Text('▼')
+            .fontSize(12)
+            .fontColor($r('app.color.text_primary'))
+            .margin({ left: 8 })
+        }
+      }.width('100%')
     }
     .width(112)
     .height(38)
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
     .onClick(() => {
       if (!this.playerDebugOptionsUnlocked) {
         this.handlePlayerEngineDebugTap()
@@ -1372,6 +1605,7 @@ export struct SettingsPage {
       this.showPlayerEngineMenu = true
     })
     .bindMenu(this.playerDebugOptionsUnlocked && this.showPlayerEngineMenu, this.PlayerEngineMenuContent, {
+      systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
       placement: Placement.Bottom,
       showInSubWindow: false,
       onDisappear: () => {
@@ -1382,27 +1616,30 @@ export struct SettingsPage {
 
   @Builder
   MpvHwdecPicker(): void {
-    Row() {
-      Text(this.mpvHwdecMode === 'auto' ? '自动' : (this.mpvHwdecMode === 'no' ? '关闭' : '打开'))
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.End)
-        .layoutWeight(1)
-
-      if (this.playerDebugOptionsUnlocked) {
-        Text('▼')
-          .fontSize(12)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Text(this.mpvHwdecMode === 'auto' ? '自动' : (this.mpvHwdecMode === 'no' ? '关闭' : '打开'))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .margin({ left: 8 })
-      }
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
+
+        if (this.playerDebugOptionsUnlocked) {
+          Text('▼')
+            .fontSize(12)
+            .fontColor($r('app.color.text_primary'))
+            .margin({ left: 8 })
+        }
+      }.width('100%')
     }
     .width(112)
     .height(38)
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
     .onClick(() => {
       if (!this.playerDebugOptionsUnlocked) {
         return
@@ -1410,6 +1647,7 @@ export struct SettingsPage {
       this.showMpvHwdecMenu = true
     })
     .bindMenu(this.playerDebugOptionsUnlocked && this.showMpvHwdecMenu, this.MpvHwdecMenuContent, {
+      systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
       placement: Placement.Bottom,
       showInSubWindow: false,
       onDisappear: () => {
@@ -1420,26 +1658,30 @@ export struct SettingsPage {
 
   @Builder
   ColorModePicker(): void {
-    Row() {
-      Text(this.colorMode === 0 ? '深色' : (this.colorMode === 1 ? '浅色' : '跟随'))
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.End)
-        .layoutWeight(1)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Text(this.colorMode === 0 ? '深色' : (this.colorMode === 1 ? '浅色' : '跟随'))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
 
-      Text('▼')
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ left: 8 })
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 8 })
+      }.width('100%')
     }
     .width(112)
     .height(38)
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
     .bindMenu(this.ColorModeMenuContent, {
+      systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
       placement: Placement.Bottom,
       showInSubWindow: false
     })
@@ -1534,26 +1776,30 @@ export struct SettingsPage {
 
   @Builder
   HdsMaterialLevelPicker(): void {
-    Row() {
-      Text(getHdsMaterialLevelLabel(this.hdsMaterialLevel))
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.End)
-        .layoutWeight(1)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Text(getHdsMaterialLevelLabel(this.hdsMaterialLevel))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
 
-      Text('▼')
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ left: 8 })
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 8 })
+      }.width('100%')
     }
     .width(112)
     .height(38)
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
     .bindMenu(this.HdsMaterialLevelMenuContent, {
+      systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
       placement: Placement.Bottom,
       showInSubWindow: false
     })
@@ -1583,26 +1829,30 @@ export struct SettingsPage {
   @Builder
   Api26MaterialStylePicker(): void {
     if (isImmersiveMaterialSupported()) {
-      Row() {
-        Text(getApi26MaterialStyleLabel(this.api26MaterialStyle))
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .textAlign(TextAlign.End)
-          .layoutWeight(1)
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          Text(getApi26MaterialStyleLabel(this.api26MaterialStyle))
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .textAlign(TextAlign.End)
+            .layoutWeight(1)
 
-        Text('▼')
-          .fontSize(12)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 8 })
+          Text('▼')
+            .fontSize(12)
+            .fontColor($r('app.color.text_primary'))
+            .margin({ left: 8 })
+        }.width('100%')
       }
       .width(112)
       .height(38)
       .padding({ left: 10, right: 8 })
       .borderRadius(12)
+      .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
       .bindMenu(this.Api26MaterialStyleMenuContent, {
+        systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
         placement: Placement.Bottom,
         showInSubWindow: false
       })
@@ -1652,26 +1902,30 @@ export struct SettingsPage {
 
   @Builder
   DetailEnhancerPicker(): void {
-    Row() {
-      Text(this.getDetailEnhancerLabel(this.mpvDetailEnhancerQuality))
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.End)
-        .layoutWeight(1)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Text(this.getDetailEnhancerLabel(this.mpvDetailEnhancerQuality))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
 
-      Text('▼')
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ left: 8 })
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 8 })
+      }.width('100%')
     }
     .width(112)
     .height(38)
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
     .bindMenu(this.DetailEnhancerMenuContent, {
+      systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
       placement: Placement.Bottom,
       showInSubWindow: false
     })
@@ -1701,7 +1955,7 @@ export struct SettingsPage {
       Row() {
         Text(label)
           .fontSize(16)
-          .fontWeight(selected ? FontWeight.Bold : FontWeight.Medium)
+          .fontWeight(FontWeight.Medium)
           .fontColor(selected ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
           .layoutWeight(1)
       }
@@ -1709,7 +1963,7 @@ export struct SettingsPage {
       .height(48)
       .padding({ left: 14, right: 14 })
       .borderRadius(14)
-      .backgroundColor(selected ? $r('app.color.episode_item_selected_bg') : Color.Transparent)
+      .backgroundColor(Color.Transparent)
     }
     .onClick(action)
   }
@@ -1784,6 +2038,9 @@ export struct SettingsPage {
   }
 
   private getSettingsDestinationTitle(destination: string): string {
+    if (destination === SETTINGS_DESTINATION_IMAGE_PROXY) {
+      return this.getUIContext().getHostContext()?.resourceManager.getStringSync($r('app.string.image_proxy_title').id) ?? ''
+    }
     if (destination === SETTINGS_DESTINATION_RULE_SHOP) {
       return '规则仓库'
     }
@@ -1797,7 +2054,7 @@ export struct SettingsPage {
       return '历史记录'
     }
     if (destination === SETTINGS_DESTINATION_WEBDAV) {
-      return '观看历史同步'
+      return 'WebDAV 同步'
     }
     if (destination === SETTINGS_DESTINATION_PLAYER) {
       return '播放器'
@@ -1815,6 +2072,7 @@ export struct SettingsPage {
     return destination === SETTINGS_DESTINATION_RULE_SHOP ||
       destination === SETTINGS_DESTINATION_DANMAKU ||
       destination === SETTINGS_DESTINATION_HISTORY ||
+      destination === SETTINGS_DESTINATION_IMAGE_PROXY ||
       destination === SETTINGS_DESTINATION_WEBDAV
   }
 
@@ -1889,6 +2147,26 @@ export struct SettingsPage {
         PLAYER_AUTO_PIP_DEFAULT
       )
       AppStorage.setOrCreate(PREFS_KEY_PLAYER_AUTO_PIP, this.playerAutoPiP)
+      this.playerGestureDoubleTap = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP,
+        PLAYER_GESTURE_DEFAULT
+      )
+      this.playerGestureLongPress = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_GESTURE_LONG_PRESS,
+        PLAYER_GESTURE_DEFAULT
+      )
+      this.playerGestureSeek = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_GESTURE_SEEK,
+        PLAYER_GESTURE_DEFAULT
+      )
+      this.playerGestureBrightness = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS,
+        PLAYER_GESTURE_DEFAULT
+      )
+      this.playerGestureVolume = await prefs.getBoolean(
+        PREFS_KEY_PLAYER_GESTURE_VOLUME,
+        PLAYER_GESTURE_DEFAULT
+      )
       this.bottomTabAutoHide = await prefs.getBoolean(
         PREFS_KEY_BOTTOM_TAB_AUTO_HIDE,
         BOTTOM_TAB_AUTO_HIDE_DEFAULT
@@ -2096,6 +2374,40 @@ export struct SettingsPage {
     }
   }
 
+  private async setPlayerGestureValue(key: string, enabled: boolean): Promise<void> {
+    AppStorage.setOrCreate(key, enabled)
+    try {
+      await PreferencesStore.getInstance().setBoolean(key, enabled)
+    } catch (err) {
+      logger.error('Set player gesture setting failed: key=%{public}s error=%{public}s', key, JSON.stringify(err))
+    }
+  }
+
+  private async setPlayerGestureDoubleTap(enabled: boolean): Promise<void> {
+    this.playerGestureDoubleTap = enabled
+    await this.setPlayerGestureValue(PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP, enabled)
+  }
+
+  private async setPlayerGestureLongPress(enabled: boolean): Promise<void> {
+    this.playerGestureLongPress = enabled
+    await this.setPlayerGestureValue(PREFS_KEY_PLAYER_GESTURE_LONG_PRESS, enabled)
+  }
+
+  private async setPlayerGestureSeek(enabled: boolean): Promise<void> {
+    this.playerGestureSeek = enabled
+    await this.setPlayerGestureValue(PREFS_KEY_PLAYER_GESTURE_SEEK, enabled)
+  }
+
+  private async setPlayerGestureBrightness(enabled: boolean): Promise<void> {
+    this.playerGestureBrightness = enabled
+    await this.setPlayerGestureValue(PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS, enabled)
+  }
+
+  private async setPlayerGestureVolume(enabled: boolean): Promise<void> {
+    this.playerGestureVolume = enabled
+    await this.setPlayerGestureValue(PREFS_KEY_PLAYER_GESTURE_VOLUME, enabled)
+  }
+
   private async setBottomTabAutoHide(enabled: boolean): Promise<void> {
     this.bottomTabAutoHide = enabled
     if (!enabled) {
@@ -2175,6 +2487,24 @@ export struct SettingsPage {
       await prefs.setBoolean(HIDE_LOCAL_PAGE_KEY, enabled)
     } catch (err) {
       logger.error('Set hide local page failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setHideTimelinePage(enabled: boolean): Promise<void> {
+    this.hideTimelinePage = enabled
+    try {
+      await PreferencesStore.getInstance().setBoolean(HIDE_TIMELINE_PAGE_KEY, enabled)
+    } catch (err) {
+      logger.error('Set hide timeline page failed: %{public}s', JSON.stringify(err))
+    }
+  }
+
+  private async setHideFavoritePage(enabled: boolean): Promise<void> {
+    this.hideFavoritePage = enabled
+    try {
+      await PreferencesStore.getInstance().setBoolean(HIDE_FAVORITE_PAGE_KEY, enabled)
+    } catch (err) {
+      logger.error('Set hide favorite page failed: %{public}s', JSON.stringify(err))
     }
   }
 

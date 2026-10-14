@@ -3,12 +3,12 @@ import { RecommendViewModel } from '../../viewmodel/RecommendViewModel'
 import { HeroBanner } from '../../components/recommend/HeroBanner'
 import { PosterRailSection } from '../../components/recommend/PosterRailSection'
 import { TagTopicSection } from '../../components/recommend/TagTopicSection'
+import { TopicTagButton } from '../../components/recommend/TopicTagButton'
 import { LoadingOverlay } from '../../components/common/LoadingOverlay'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
 import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
 import { router } from '@kit.ArkUI'
-import { deviceInfo } from '@kit.BasicServicesKit'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -16,16 +16,13 @@ import {
   HdsNavigationIconOptions,
   HdsNavigationMenuContentOptions,
   HdsNavigationTitle,
-  TitleBarContentOptions,
-  HdsTabs
+  TitleBarContentOptions
 } from '@kit.UIDesignKit'
 import {
-  getEffectiveTopSafeHeight,
   getTopSpacerHeight,
   getBottomSpacerHeight,
   buildImmersiveTitleBarStyle,
   buildTitleBarOptions,
-  buildAdaptiveMaterialEffect,
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
@@ -48,13 +45,10 @@ import {
 
 const logger = new Logger('HomePage')
 const HOME_TITLE_TAG_BAR_HEIGHT: number = 44
-const HOME_TITLE_ROW_HEIGHT: number = 72
 const HOME_TITLE_TAG_LEFT_MARGIN: number = 16
 const HOME_TITLE_MENU_RESERVED_WIDTH: number = 110
-const HOME_TITLE_TAG_VISUAL_OFFSET_Y: number = -5
 const HOME_STICKY_TAG_PIN_HYSTERESIS: number = 8
 const HOME_TAG_SWITCH_PIN_GUARD_MS: number = 450
-const HOME_STICKY_TAG_HEIGHT: number = 30
 const HIGH_SCORE_AUTO_PREFETCH_LIMIT: number = 200
 const HOME_SECTION_DISPLAY_LIMIT: number = 20
 
@@ -67,7 +61,6 @@ export struct HomePage {
   @StorageLink('screenWidthVp') screenWidthVp: number = 0
   @StorageLink('bottomTabAutoHide') bottomTabAutoHide: boolean = BOTTOM_TAB_AUTO_HIDE_DEFAULT
   @StorageLink('bottomTabOffset') bottomTabOffset: number = 0
-  @StorageLink('isHdsTabsEnabled') isHdsTabsEnabled: boolean = true
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State isLoading: boolean = true
   @State hasLoadError: boolean = false
@@ -186,9 +179,6 @@ export struct HomePage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       this.HomeNavigationContent()
-      if (this.tagBarPinned) {
-        this.StickyTitleTagBar()
-      }
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
@@ -755,7 +745,8 @@ export struct HomePage {
   private buildHomeTitleBarContent(): TitleBarContentOptions {
     return {
       title: this.buildHomeTitle(),
-      menu: this.buildHomeMenu()
+      menu: this.buildHomeMenu(),
+      stackBuilder: (): void => this.HomeTitleTagContent()
     }
   }
 
@@ -764,6 +755,13 @@ export struct HomePage {
     base.style = buildImmersiveTitleBarStyle(this.hdsMaterialLevel)
     base.content = this.buildHomeTitleBarContent()
     return base
+  }
+
+  @Builder
+  private HomeTitleTagContent() {
+    if (this.tagBarPinned) {
+      this.StickyTitleTagBar()
+    }
   }
 
   @Builder
@@ -779,7 +777,7 @@ export struct HomePage {
           .constraintSize({ minWidth: '100%' })
           .height('100%')
           .alignItems(VerticalAlign.Center)
-          .justifyContent(FlexAlign.Center)
+          .justifyContent(FlexAlign.Start)
           .padding({ left: 0, right: 12 })
         }
         .scrollable(ScrollDirection.Horizontal)
@@ -788,60 +786,32 @@ export struct HomePage {
         .edgeEffect(EdgeEffect.Spring)
         .width('100%')
         .height(HOME_TITLE_TAG_BAR_HEIGHT)
+        .clip(true)
       }
       .width('100%')
       .height(HOME_TITLE_TAG_BAR_HEIGHT)
     }
-    .width(this.getStickyTitleTagBarWidth())
-    .height(HOME_TITLE_ROW_HEIGHT)
-    .margin({ left: HOME_TITLE_TAG_LEFT_MARGIN, top: getEffectiveTopSafeHeight(this.topSafeHeight) })
+    .width('100%')
+    .height('100%')
+    .padding({ left: HOME_TITLE_TAG_LEFT_MARGIN, right: HOME_TITLE_MENU_RESERVED_WIDTH })
+    .align(Alignment.Start)
     .alignItems(VerticalAlign.Center)
-    .translate({ y: HOME_TITLE_TAG_VISUAL_OFFSET_Y })
+    .hitTestBehavior(HitTestMode.Transparent)
     .zIndex(60)
     .backgroundColor(Color.Transparent)
   }
 
   @Builder
   private StickyTagChip(tag: string) {
-    if (this.isHdsTabsEnabled && deviceInfo.distributionOSApiVersion >= 60100) {
-      StickyHdsTagChip({
-        tag: tag,
-        selectedTag: this.selectedTag,
-        isLoading: this.tagLoading,
-        chipWidth: this.getStickyTagChipWidth(tag),
-        hdsMaterialLevel: this.hdsMaterialLevel,
-        onSelected: (nextTag: string) => {
-          this.handleTagSelect(nextTag)
-        }
-      })
-    } else {
-      this.FallbackStickyTagChip(tag)
-    }
-  }
-
-  @Builder
-  private FallbackStickyTagChip(tag: string) {
-    Row({ space: 5 }) {
-      if (this.tagLoading && tag === this.selectedTag) {
-        LoadingProgress()
-          .width(12)
-          .height(12)
-          .color(Color.White)
+    TopicTagButton({
+      tag: tag,
+      selectedTag: this.selectedTag,
+      isLoading: this.tagLoading,
+      chipWidth: this.getStickyTagChipWidth(tag),
+      onSelected: (nextTag: string) => {
+        this.handleTagSelect(nextTag)
       }
-
-      Text(tag)
-        .fontSize(13)
-        .fontColor(tag === this.selectedTag ? Color.White : $r('app.color.text_primary'))
-        .fontWeight(tag === this.selectedTag ? FontWeight.Medium : FontWeight.Normal)
-    }
-      .height(30)
-      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-      .borderRadius(16)
-      .backgroundColor(tag === this.selectedTag ? $r('app.color.accent_blue') : $r('app.color.tag_chip_bg'))
-      .animation({ duration: 140, curve: Curve.EaseOut })
-      .onClick(() => {
-        this.handleTagSelect(tag === this.selectedTag ? '' : tag)
-      })
+    })
   }
 
   private getHomeTopSpacerHeight(): number {
@@ -859,11 +829,6 @@ export struct HomePage {
       return 340 + this.getHomeTopSpacerHeight()
     }
     return 300 + this.getHomeTopSpacerHeight()
-  }
-
-  private getStickyTitleTagBarWidth(): number {
-    const width = this.screenWidthVp > 0 ? this.screenWidthVp : 360
-    return Math.max(150, width - HOME_TITLE_MENU_RESERVED_WIDTH - HOME_TITLE_TAG_LEFT_MARGIN)
   }
 
   private getStickyTagChipWidth(tag: string): number {
@@ -956,98 +921,5 @@ export struct HomePage {
       this.tagBarPinned = false
       this.tagPinScrollThreshold = -1
     }
-  }
-}
-
-@Component
-struct StickyHdsTagChip {
-  @Prop tag: string = ''
-  @Prop selectedTag: string = ''
-  @Prop isLoading: boolean = false
-  @Prop chipWidth: number = 64
-  @Prop hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
-  onSelected?: (tag: string) => void
-
-  build() {
-    Column() {
-      HdsTabs() {
-        TabContent()
-          .clip(false)
-          .tabBar(this.contentBuilder())
-          .width('100%')
-          .height('100%')
-          .backgroundColor(Color.Transparent)
-          .hitTestBehavior(HitTestMode.None)
-      }
-      .clip(false)
-      .hitTestBehavior(HitTestMode.None)
-      .align(Alignment.Center)
-      .width(this.chipWidth)
-      .height(HOME_STICKY_TAG_HEIGHT)
-      .enabled(false)
-      .barWidth(this.chipWidth)
-      .barHeight(HOME_STICKY_TAG_HEIGHT)
-      .barOverlap(true)
-      .barPosition(BarPosition.End)
-      .vertical(false)
-      .backgroundColor(Color.Transparent)
-      .shadow(undefined)
-      .barFloatingStyle({
-        barWidth: {
-          smallWidth: this.chipWidth,
-          mediumWidth: this.chipWidth,
-          largeWidth: this.chipWidth
-        },
-        gradientMask: {
-          maskColor: Color.Transparent
-        },
-        barBottomMargin: 0,
-        barSideMargin: 0,
-        systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-        lightColor: Color.Transparent
-      })
-    }
-    .backgroundColor(Color.Transparent)
-    .clip(true)
-    .borderRadius(HOME_STICKY_TAG_HEIGHT / 2)
-    .width(this.chipWidth)
-    .height(HOME_STICKY_TAG_HEIGHT)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-    .animation({ duration: 140, curve: Curve.EaseOut })
-    .onClick(() => {
-      this.onSelected?.(this.isSelected() ? '' : this.tag)
-    })
-  }
-
-  @Builder
-  private contentBuilder(): void {
-    Row({ space: 5 }) {
-      if (this.isLoading && this.isSelected()) {
-        LoadingProgress()
-          .width(12)
-          .height(12)
-          .color(Color.White)
-      }
-
-      Text(this.tag)
-        .fontSize(13)
-        .fontColor(this.isSelected() ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
-        .fontWeight(this.isSelected() ? FontWeight.Medium : FontWeight.Normal)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Clip })
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .backgroundColor(Color.Transparent)
-    .hitTestBehavior(HitTestMode.Transparent)
-    .responseRegion({ x: 0, y: 0, width: '100%', height: '100%' })
-  }
-
-  private isSelected(): boolean {
-    return this.tag === this.selectedTag
   }
 }

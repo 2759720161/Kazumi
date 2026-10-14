@@ -67,6 +67,10 @@ export class RdbSchema {
       `${RdbConstants.COL_DURATION_MS} INTEGER NOT NULL DEFAULT 0, ` +
       `${RdbConstants.COL_ROAD_INDEX} INTEGER NOT NULL DEFAULT -1, ` +
       `${RdbConstants.COL_EPISODE_INDEX} INTEGER NOT NULL DEFAULT -1, ` +
+      `${RdbConstants.COL_ENTRY_KIND} TEXT NOT NULL DEFAULT 'online', ` +
+      `${RdbConstants.COL_EPISODE_PAGE_URL} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_PROGRESSES_JSON} TEXT NOT NULL DEFAULT '{}', ` +
+      `${RdbConstants.COL_BANGUMI_ITEM_JSON} TEXT NOT NULL DEFAULT '', ` +
       `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0` +
       `)`;
   }
@@ -112,6 +116,14 @@ export class RdbSchema {
       `)`;
   }
 
+  static getCreateHistorySyncEventTable(): string {
+    return `CREATE TABLE IF NOT EXISTS ${RdbConstants.TABLE_HISTORY_SYNC_EVENT} (` +
+      `${RdbConstants.COL_EVENT_ID} TEXT PRIMARY KEY, ` +
+      `${RdbConstants.COL_PAYLOAD} TEXT NOT NULL DEFAULT '', ` +
+      `${RdbConstants.COL_UPDATED_AT} INTEGER NOT NULL DEFAULT 0` +
+      `)`;
+  }
+
   static getCreateIndexes(): string[] {
     return [
       `CREATE INDEX IF NOT EXISTS idx_rule_source_name ON ${RdbConstants.TABLE_RULE_SOURCE}(${RdbConstants.COL_NAME})`,
@@ -124,7 +136,8 @@ export class RdbSchema {
       `CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON ${RdbConstants.TABLE_SEARCH_HISTORY}(${RdbConstants.COL_TIMESTAMP})`,
       `CREATE INDEX IF NOT EXISTS idx_collect_change_bangumi_id ON ${RdbConstants.TABLE_COLLECT_CHANGE}(${RdbConstants.COL_BANGUMI_ID})`,
       `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_key ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_KEY})`,
-      `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`
+      `CREATE INDEX IF NOT EXISTS idx_local_video_history_file_name ON ${RdbConstants.TABLE_LOCAL_VIDEO_HISTORY}(${RdbConstants.COL_FILE_NAME})`,
+      `CREATE INDEX IF NOT EXISTS idx_history_sync_event_updated_at ON ${RdbConstants.TABLE_HISTORY_SYNC_EVENT}(${RdbConstants.COL_UPDATED_AT})`
     ];
   }
 
@@ -135,7 +148,8 @@ export class RdbSchema {
       RdbSchema.getCreateWatchHistoryTable(),
       RdbSchema.getCreateSearchHistoryTable(),
       RdbSchema.getCreateCollectChangeTable(),
-      RdbSchema.getCreateLocalVideoHistoryTable()
+      RdbSchema.getCreateLocalVideoHistoryTable(),
+      RdbSchema.getCreateHistorySyncEventTable()
     ];
     const indexes = RdbSchema.getCreateIndexes();
     for (let i = 0; i < indexes.length; i++) {

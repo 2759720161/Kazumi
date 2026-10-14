@@ -19,6 +19,7 @@ import { WebDavConfig } from '../../network/WebDavClient'
 import {
   HistorySyncService,
   WEBDAV_SYNC_AUTO_KEY,
+  WEBDAV_SYNC_COLLECT_KEY,
   WEBDAV_SYNC_ENABLED_KEY,
   WEBDAV_SYNC_LAST_TIME_KEY
 } from '../../services/HistorySyncService'
@@ -47,6 +48,7 @@ export struct WebDavSyncPageContent {
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @State syncEnabled: boolean = false
   @State autoSync: boolean = false
+  @State collectSyncEnabled: boolean = true
   @State serverUrl: string = ''
   @State username: string = ''
   @State password: string = ''
@@ -112,12 +114,16 @@ export struct WebDavSyncPageContent {
     Column() {
       this.SectionHeader('同步')
       Column() {
-        this.ToggleRow('启用 WebDAV 同步', '使用自己的 WebDAV 空间同步观看历史', this.syncEnabled, (isOn: boolean) => {
+        this.ToggleRow('启用 WebDAV 同步', '同步观看历史与收藏数据', this.syncEnabled, (isOn: boolean) => {
           this.setSyncEnabled(isOn)
         })
         this.ItemDivider()
-        this.ToggleRow('自动同步', '进入历史页时自动拉取远端记录', this.autoSync, (isOn: boolean) => {
+        this.ToggleRow('自动同步', '进入历史或收藏页时自动同步', this.autoSync, (isOn: boolean) => {
           this.setAutoSync(isOn)
+        })
+        this.ItemDivider()
+        this.ToggleRow('同步收藏', '同步想看、在看等收藏状态', this.collectSyncEnabled, (isOn: boolean) => {
+          this.setCollectSyncEnabled(isOn)
         })
         this.ItemDivider()
         Row() {
@@ -171,11 +177,6 @@ export struct WebDavSyncPageContent {
         })
         this.ItemDivider()
         this.PasswordInputRow()
-        this.ItemDivider()
-        this.InputRow('远端目录', '/FanPlayer/', this.remoteDir, (value: string) => {
-          this.remoteDir = value
-          this.saveConfigSilently()
-        })
       }
       .width('100%')
       .borderRadius(12)
@@ -295,6 +296,7 @@ export struct WebDavSyncPageContent {
       const config = await this.syncService.getConfig()
       this.syncEnabled = config.enabled
       this.autoSync = config.autoSync
+      this.collectSyncEnabled = await PreferencesStore.getInstance().getBoolean(WEBDAV_SYNC_COLLECT_KEY, true)
       this.serverUrl = config.serverUrl
       this.username = config.username
       this.password = config.password
@@ -345,6 +347,15 @@ export struct WebDavSyncPageContent {
     }
   }
 
+  private async setCollectSyncEnabled(enabled: boolean): Promise<void> {
+    this.collectSyncEnabled = enabled
+    try {
+      await PreferencesStore.getInstance().setBoolean(WEBDAV_SYNC_COLLECT_KEY, enabled)
+    } catch (err) {
+      logger.warn('Save WebDAV collect sync failed: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+  }
+
   private async saveConfigAndTestConnection(): Promise<void> {
     if (this.isBusy) {
       return
@@ -367,26 +378,55 @@ export struct WebDavSyncPageContent {
     }
   }
 
+  private async syncNow(): Promise<void> {
+    if (this.isBusy || !this.configLoaded) {
+      return
+    }
+    this.isBusy = true
+    try {
+      await this.syncService.saveConfig(this.buildConfig())
+      const result = await this.syncService.syncNow()
+      this.lastSyncTime = await PreferencesStore.getInstance().getNumber(WEBDAV_SYNC_LAST_TIME_KEY, 0)
+      promptAction.showToast({ message: result.message })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.warn('WebDAV sync failed: %{public}s', message)
+      promptAction.showToast({ message: message.length > 0 ? message : '同步失败' })
+    } finally {
+      this.isBusy = false
+    }
+  }
+
   private buildSaveIcon(): HdsNavigationIconOptions {
     return {
       icon: this.isBusy ? $r('sys.symbol.hourglass') : $r('sys.symbol.checkmark'),
-      label: 'save',
+      label: '保存并测试',
       action: () => {
         this.saveConfigAndTestConnection()
       }
     }
   }
 
+  private buildSyncIcon(): HdsNavigationIconOptions {
+    return {
+      icon: this.isBusy ? $r('sys.symbol.hourglass') : $r('sys.symbol.arrow_clockwise'),
+      label: '立即同步',
+      action: () => {
+        this.syncNow()
+      }
+    }
+  }
+
   private buildWebDavMenu(): HdsNavigationMenuContentOptions {
     return {
-      value: [{ content: this.buildSaveIcon() }]
+      value: [{ content: this.buildSyncIcon() }, { content: this.buildSaveIcon() }]
     }
   }
 
   private buildWebDavTitle(): HdsNavigationTitle {
     return {
-      mainTitle: '观看历史同步',
-      subTitle: 'WebDAV'
+      mainTitle: 'WebDAV 同步',
+      subTitle: '同步历史、进度与收藏'
     }
   }
 
@@ -398,7 +438,7 @@ export struct WebDavSyncPageContent {
   }
 
   private buildWebDavTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('观看历史同步', this.hdsMaterialLevel)
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('WebDAV 同步', this.hdsMaterialLevel)
     base.content = this.buildWebDavTitleBarContent()
     return base
   }

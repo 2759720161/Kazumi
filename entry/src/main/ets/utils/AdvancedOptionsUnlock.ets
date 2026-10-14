@@ -4,3 +4,7 @@ export const PLAYER_DEBUG_OPTIONS_UNLOCK_TAP_COUNT: number = 30
 export const PLAYER_DEBUG_OPTIONS_UNLOCK_WINDOW_MS: number = 60000
 export const HIDE_LOCAL_PAGE_KEY: string = 'hideLocalPage'
 export const HIDE_LOCAL_PAGE_DEFAULT: boolean = false
+export const HIDE_TIMELINE_PAGE_KEY: string = 'hideTimelinePage'
+export const HIDE_TIMELINE_PAGE_DEFAULT: boolean = false
+export const HIDE_FAVORITE_PAGE_KEY: string = 'hideFavoritePage'
+export const HIDE_FAVORITE_PAGE_DEFAULT: boolean = false

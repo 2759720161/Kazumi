@@ -17,6 +17,7 @@ import {
   VideoDownloadState
 } from '../../models/VideoDownloadTask'
 import { VideoDownloadManager } from '../../services/VideoDownloadManager'
+import { CachedRemoteImage } from '../../components/common/CachedRemoteImage'
 import {
   getTopSpacerHeight,
   getBottomSpacerHeight,
@@ -534,14 +535,14 @@ struct DownloadTaskCard {
   build() {
     Column({ space: 6 }) {
       Row({ space: 12 }) {
-        Image(this.task.coverUri.length > 0 ? this.task.coverUri :
-          (this.task.animeCover.length > 0 ? this.task.animeCover : $r('app.media.ic_placeholder')))
-          .draggable(false)
+        CachedRemoteImage({
+          source: this.task.coverUri.length > 0 ? this.task.coverUri : this.task.animeCover,
+          priority: true,
+          cornerRadius: 12,
+          imageOpacity: this.task.coverUri.length > 0 || this.task.animeCover.length > 0 ? 1 : 0.82
+        })
           .width(116)
           .height(72)
-          .objectFit(ImageFit.Cover)
-          .borderRadius(12)
-          .opacity(this.task.coverUri.length > 0 || this.task.animeCover.length > 0 ? 1 : 0.82)
 
         Column({ space: 4 }) {
           Row({ space: 8 }) {

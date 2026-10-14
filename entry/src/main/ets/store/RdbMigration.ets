@@ -221,6 +221,31 @@ export class RdbMigration {
           RdbConstants.COL_DRM_OFFLINE_KEY_ID, 'TEXT NOT NULL DEFAULT \'\'');
         logger.info('Migration v13: added offline DRM metadata to local_video_history');
       }
+    },
+    {
+      version: 14,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await rdbManager.executeSql(RdbSchema.getCreateHistorySyncEventTable())
+        await rdbManager.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_history_sync_event_updated_at ON ` +
+          `${RdbConstants.TABLE_HISTORY_SYNC_EVENT}(${RdbConstants.COL_UPDATED_AT})`
+        )
+        logger.info('Migration v14: created persistent history sync event log')
+      }
+    },
+    {
+      version: 15,
+      migrate: async (rdbManager: RdbManager): Promise<void> => {
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_WATCH_HISTORY,
+          RdbConstants.COL_ENTRY_KIND, 'TEXT NOT NULL DEFAULT \'online\'')
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_WATCH_HISTORY,
+          RdbConstants.COL_EPISODE_PAGE_URL, 'TEXT NOT NULL DEFAULT \'\'')
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_WATCH_HISTORY,
+          RdbConstants.COL_PROGRESSES_JSON, 'TEXT NOT NULL DEFAULT \'{}\'')
+        await RdbMigration.addColumnIfMissing(rdbManager, RdbConstants.TABLE_WATCH_HISTORY,
+          RdbConstants.COL_BANGUMI_ITEM_JSON, 'TEXT NOT NULL DEFAULT \'\'')
+        logger.info('Migration v15: added complete Kazumi history state to watch_history')
+      }
     }
   ];
 

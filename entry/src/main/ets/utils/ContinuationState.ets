@@ -1,12 +1,18 @@
+import { util } from '@kit.ArkTS'
+
 export const CONTINUATION_PAYLOAD_KEY: string = 'kazumiContinuationPayload'
 export const CONTINUATION_RESTORE_PAYLOAD_KEY: string = 'continuationRestorePayload'
 export const CONTINUATION_RESTORE_TOKEN_KEY: string = 'continuationRestoreToken'
-export const CONTINUATION_SUPPORT_PAGE_STACK_KEY: string = 'ohos.extra.param.key.supportContinuePageStack'
+export const CONTINUATION_CURRENT_SECTION_KEY: string = 'continuationCurrentSection'
+export const CONTINUATION_MAX_TRANSFER_BYTES: number = 80 * 1024
+
+const CONTINUATION_PAYLOAD_PROTOCOL_VERSION: number = 2
 
 export class ContinuationPayload {
-  version: number = 1
+  version: number = CONTINUATION_PAYLOAD_PROTOCOL_VERSION
   route: string = 'index'
   currentTab: number = 0
+  currentSection: string = 'home'
   paramsJson: string = ''
   positionMs: number = 0
   updatedAt: number = 0
@@ -56,10 +62,14 @@ export class ContinuationPlayerParams {
 }
 
 export class ContinuationState {
-  static markIndex(currentTab: number): void {
+  static markIndex(currentTab: number, currentSection: string = ''): void {
+    if (currentSection.length > 0) {
+      AppStorage.setOrCreate(CONTINUATION_CURRENT_SECTION_KEY, currentSection)
+    }
     const payload = new ContinuationPayload()
     payload.route = 'index'
     payload.currentTab = currentTab
+    payload.currentSection = ContinuationState.resolveCurrentSection(currentSection)
     payload.updatedAt = Date.now()
     ContinuationState.storePayload(payload)
   }
@@ -75,8 +85,31 @@ export class ContinuationState {
     ContinuationState.storePayload(payload)
   }
 
-  static getPayloadJson(): string {
-    return AppStorage.get<string>(CONTINUATION_PAYLOAD_KEY) ?? ''
+  static updatePlayerPosition(positionMs: number): void {
+    const payloadJson = AppStorage.get<string>(CONTINUATION_PAYLOAD_KEY) ?? ''
+    const payload = ContinuationState.parsePayload(payloadJson)
+    if (payload === null || payload.route !== 'player') {
+      return
+    }
+    payload.positionMs = Math.max(0, positionMs)
+    payload.updatedAt = Date.now()
+    AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, JSON.stringify(payload))
+  }
+
+  static getTransferPayloadJson(): string {
+    const payloadJson = AppStorage.get<string>(CONTINUATION_PAYLOAD_KEY) ?? ''
+    const payload = ContinuationState.parsePayload(payloadJson)
+    if (payload === null) {
+      return ''
+    }
+    return ContinuationState.fitPayloadForTransfer(payload)
+  }
+
+  static getPayloadSizeBytes(payloadJson: string): number {
+    if (payloadJson.length === 0) {
+      return 0
+    }
+    return util.TextEncoder.create('utf-8').encodeInto(payloadJson).byteLength
   }
 
   static publishRestorePayload(payloadJson: string): void {
@@ -98,9 +131,18 @@ export class ContinuationState {
       if (raw['version'] !== undefined) payload.version = raw['version'] as number
       if (raw['route'] !== undefined) payload.route = raw['route'] as string
       if (raw['currentTab'] !== undefined) payload.currentTab = raw['currentTab'] as number
+      if (raw['currentSection'] !== undefined) {
+        payload.currentSection = raw['currentSection'] as string
+      } else {
+        // Protocol v1 transferred only the numeric tab index.
+        payload.currentSection = ''
+      }
       if (raw['paramsJson'] !== undefined) payload.paramsJson = raw['paramsJson'] as string
       if (raw['positionMs'] !== undefined) payload.positionMs = raw['positionMs'] as number
       if (raw['updatedAt'] !== undefined) payload.updatedAt = raw['updatedAt'] as number
+      if (!ContinuationState.isSupportedRoute(payload.route)) {
+        return null
+      }
       return payload
     } catch (_) {
       return null
@@ -154,12 +196,127 @@ export class ContinuationState {
     const payload = new ContinuationPayload()
     payload.route = route
     payload.currentTab = AppStorage.get<number>('currentTab') ?? 0
+    payload.currentSection = ContinuationState.resolveCurrentSection('')
     payload.paramsJson = JSON.stringify(params)
     payload.updatedAt = Date.now()
     return payload
   }
 
   private static storePayload(payload: ContinuationPayload): void {
-    AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, JSON.stringify(payload))
+    let payloadJson = ContinuationState.fitPayloadForTransfer(payload)
+    if (payloadJson.length === 0) {
+      const fallback = new ContinuationPayload()
+      fallback.route = 'index'
+      fallback.currentTab = payload.currentTab
+      fallback.currentSection = payload.currentSection
+      fallback.updatedAt = Date.now()
+      payloadJson = JSON.stringify(fallback)
+    }
+    AppStorage.setOrCreate(CONTINUATION_PAYLOAD_KEY, payloadJson)
+  }
+
+  private static resolveCurrentSection(currentSection: string): string {
+    if (currentSection.length > 0) {
+      return currentSection
+    }
+    return AppStorage.get<string>(CONTINUATION_CURRENT_SECTION_KEY) ?? 'home'
+  }
+
+  private static isSupportedRoute(route: string): boolean {
+    return route === 'index' || route === 'detail' || route === 'player'
+  }
+
+  private static fitPayloadForTransfer(payload: ContinuationPayload): string {
+    payload.version = CONTINUATION_PAYLOAD_PROTOCOL_VERSION
+    let payloadJson = JSON.stringify(payload)
+    if (ContinuationState.getPayloadSizeBytes(payloadJson) <= CONTINUATION_MAX_TRANSFER_BYTES) {
+      return payloadJson
+    }
+
+    if (payload.route === 'player') {
+      payloadJson = ContinuationState.compactPlayerPayload(payload)
+    } else if (payload.route === 'detail') {
+      payloadJson = ContinuationState.compactDetailPayload(payload)
+    }
+    if (ContinuationState.getPayloadSizeBytes(payloadJson) <= CONTINUATION_MAX_TRANSFER_BYTES) {
+      return payloadJson
+    }
+    return ''
+  }
+
+  private static compactPlayerPayload(payload: ContinuationPayload): string {
+    const params = ContinuationState.parsePlayerParams(payload.paramsJson)
+    const originalEpisodesJson = params.episodesJson
+
+    // roadsJson already contains the selected road's episodes, so this is normally duplicate data.
+    params.episodesJson = ''
+    payload.paramsJson = JSON.stringify(params)
+    let payloadJson = JSON.stringify(payload)
+    if (ContinuationState.getPayloadSizeBytes(payloadJson) <= CONTINUATION_MAX_TRANSFER_BYTES) {
+      return payloadJson
+    }
+
+    const selectedRoadJson = ContinuationState.selectSingleRoad(params.roadsJson, params.selectedRoadIndex)
+    if (selectedRoadJson.length > 0) {
+      params.roadsJson = selectedRoadJson
+      params.selectedRoadIndex = 0
+      payload.paramsJson = JSON.stringify(params)
+      payloadJson = JSON.stringify(payload)
+      if (ContinuationState.getPayloadSizeBytes(payloadJson) <= CONTINUATION_MAX_TRANSFER_BYTES) {
+        return payloadJson
+      }
+    }
+
+    // Preserve a lightweight episode list when the full road graph is still too large.
+    params.roadsJson = ''
+    params.episodesJson = originalEpisodesJson
+    params.selectedRoadIndex = 0
+    payload.paramsJson = JSON.stringify(params)
+    payloadJson = JSON.stringify(payload)
+    if (ContinuationState.getPayloadSizeBytes(payloadJson) <= CONTINUATION_MAX_TRANSFER_BYTES) {
+      return payloadJson
+    }
+
+    // The current media URL, episode identity and progress are the minimum viable continuation state.
+    params.episodesJson = ''
+    params.animeCover = ''
+    params.bangumiCover = ''
+    params.coverFallback = ''
+    params.animeDesc = ''
+    payload.paramsJson = JSON.stringify(params)
+    return JSON.stringify(payload)
+  }
+
+  private static compactDetailPayload(payload: ContinuationPayload): string {
+    try {
+      const params = JSON.parse(payload.paramsJson) as Record<string, Object>
+      params['animeDesc'] = ''
+      params['animeTags'] = ''
+      params['animeVotesCount'] = ''
+      params['animeCover'] = ''
+      params['animeCoverFallback'] = ''
+      params['animeBangumiCover'] = ''
+      payload.paramsJson = JSON.stringify(params)
+    } catch (_) {
+      payload.paramsJson = ''
+    }
+    return JSON.stringify(payload)
+  }
+
+  private static selectSingleRoad(roadsJson: string, selectedRoadIndex: number): string {
+    if (roadsJson.length === 0) {
+      return ''
+    }
+    try {
+      const roads = JSON.parse(roadsJson) as Array<Object>
+      if (selectedRoadIndex < 0 || selectedRoadIndex >= roads.length) {
+        return ''
+      }
+      const selectedRoads: Array<Object> = []
+      selectedRoads.push(roads[selectedRoadIndex])
+      return JSON.stringify(selectedRoads)
+    } catch (_) {
+      return ''
+    }
   }
 }

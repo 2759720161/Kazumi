@@ -1,8 +1,3 @@
-/**
- * [FROZEN] 冻结声明：当前仅做本地追番、不做同步，collect_change 无业务价值。
- * 禁止围绕此模型开发新功能，包括但不限于同步消费、变更通知、UI 展示等。
- * 保留此模型仅为数据完整性，不得新增调用点。
- */
 export class CollectChangeRecord {
   id: number = -1
   bangumiId: number = -1

@@ -4,6 +4,7 @@ import { buildRecommendDetailParams } from '../../utils/AnimeNavigation'
 import { navigateToDetail } from '../../utils/DetailNavigation'
 import { CachedRemoteImage } from '../common/CachedRemoteImage'
 import { HOME_PRELOAD_GROUP_TOPIC } from '../../utils/HomePreloadGate'
+import { TopicTagButton } from './TopicTagButton'
 
 @Component
 export struct TagTopicSection {
@@ -82,6 +83,7 @@ export struct TagTopicSection {
     }
     .scrollable(ScrollDirection.Horizontal)
     .scrollBar(BarState.Off)
+    .fadingEdge(true)
     .edgeEffect(EdgeEffect.Spring)
     .width('100%')
     .opacity(this.tagBarPinned ? 0 : 1)
@@ -95,30 +97,14 @@ export struct TagTopicSection {
 
   @Builder
   private TagChip(tag: string) {
-    Row({ space: 5 }) {
-      if (this.isLoading && tag === this.selectedTag) {
-        LoadingProgress()
-          .width(12)
-          .height(12)
-          .color(Color.White)
+    TopicTagButton({
+      tag: tag,
+      selectedTag: this.selectedTag,
+      isLoading: this.isLoading,
+      onSelected: (nextTag: string) => {
+        this.onTagSelect?.(nextTag)
       }
-
-      Text(tag)
-        .fontSize(13)
-        .fontColor(tag === this.selectedTag ? Color.White : $r('app.color.text_primary'))
-        .fontWeight(tag === this.selectedTag ? FontWeight.Medium : FontWeight.Normal)
-    }
-      .height(30)
-      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-      .borderRadius(16)
-      .backgroundColor(tag === this.selectedTag ? $r('app.color.accent_blue') : $r('app.color.tag_chip_bg'))
-      .animation({ duration: 140, curve: Curve.EaseOut })
-      .onClick(() => {
-        this.selectedTag = tag === this.selectedTag ? '' : tag
-        if (this.onTagSelect) {
-          this.onTagSelect(this.selectedTag)
-        }
-      })
+    })
   }
 
   @Builder

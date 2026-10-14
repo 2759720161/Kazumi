@@ -22,7 +22,9 @@ import { DefaultRuleSourceInitializer } from '../../utils/DefaultRuleSourceIniti
 import { SettingsChangeSignal } from '../../store/SettingsChangeSignal'
 import { PreferencesStore } from '../../store/PreferencesStore'
 import { Logger } from '../../utils/Logger'
-import { createThickImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import { API26_MATERIAL_STYLE_DEFAULT, PREFS_KEY_API26_MATERIAL_STYLE,
+  createMenuImmersiveMaterial, createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import { ImmersiveButtonModifier } from '../../utils/ImmersiveButtonModifier'
 import { promptAction, curves, router } from '@kit.ArkUI'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { RuleShareCodec } from '../../utils/RuleShareCodec'
@@ -30,6 +32,187 @@ import { RuleShareCodec } from '../../utils/RuleShareCodec'
 const logger = new Logger('RuleShopPage')
 const PREF_RULE_REPOSITORY_URL = 'rule_repository_url'
 const PREF_RULE_SHOP_SORT_BY_TIME = 'rule_shop_sort_by_time'
+
+@CustomDialog
+struct RuleShareDialog {
+  controller?: CustomDialogController
+  shareText: string = ''
+  @State copying: boolean = false
+
+  private async copyLink(): Promise<void> {
+    if (this.copying) {
+      return
+    }
+    this.copying = true
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.shareText)
+      await pasteboard.getSystemPasteboard().setData(data)
+      this.controller?.close()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      promptAction.showToast({ message: `复制失败: ${msg}` })
+      logger.error('Copy rule link failed: %{public}s', msg)
+    } finally {
+      this.copying = false
+    }
+  }
+
+  build() {
+    Column() {
+      Text($r('app.string.rule_share_title'))
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .textAlign(TextAlign.Start)
+        .margin({ bottom: 20 })
+
+      Scroll() {
+        Text(this.shareText)
+          .fontSize(16)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+          .wordBreak(WordBreak.BREAK_ALL)
+          .copyOption(CopyOptions.LocalDevice)
+          .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
+          .width('100%')
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .align(Alignment.Top)
+      .scrollBar(BarState.Off)
+      .clip(true)
+
+      Row({ space: 8 }) {
+        Button($r('app.string.rule_share_cancel'), { type: ButtonType.Normal })
+          .height(44)
+          .fontSize(16)
+          .fontColor($r('app.color.text_secondary'))
+          .backgroundColor(Color.Transparent)
+          .borderRadius(12)
+          .padding({ left: 12, right: 12 })
+          .onClick(() => this.controller?.close())
+
+        Button($r('app.string.rule_share_copy'), { type: ButtonType.Normal })
+          .height(44)
+          .fontSize(16)
+          .fontColor($r('app.color.accent_blue'))
+          .backgroundColor(Color.Transparent)
+          .borderRadius(12)
+          .padding({ left: 12, right: 12 })
+          .enabled(!this.copying)
+          .onClick(() => {
+            this.copyLink()
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.End)
+      .margin({ top: 16 })
+    }
+    .width('100%')
+    .height('80%')
+    .constraintSize({ maxWidth: 460, maxHeight: 520 })
+    .padding({ left: 24, right: 24, top: 24, bottom: 16 })
+  }
+}
+
+@CustomDialog
+struct RuleImportDialog {
+  controller?: CustomDialogController
+  @State importText: string = ''
+  @State importing: boolean = false
+  @State errorMessage: string = ''
+  onImport: (text: string) => Promise<void> = async (_text: string): Promise<void> => {}
+
+  private async submit(): Promise<void> {
+    if (this.importing) {
+      return
+    }
+    this.importing = true
+    this.errorMessage = ''
+    try {
+      const text = this.importText.trim()
+      if (text.length === 0) {
+        this.errorMessage = this.getUIContext().getHostContext()?.resourceManager
+          .getStringSync($r('app.string.rule_import_empty').id) ?? '请先输入或粘贴规则链接'
+        return
+      }
+      await this.onImport(text)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.errorMessage = `导入失败: ${msg}`
+    } finally {
+      this.importing = false
+    }
+  }
+
+  build() {
+    Column() {
+      Text($r('app.string.rule_import_title'))
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+        .margin({ bottom: 20 })
+
+      TextInput({ text: this.importText, placeholder: $r('app.string.rule_import_placeholder') })
+        .width('100%')
+        .height(48)
+        .fontSize(16)
+        .fontColor($r('app.color.text_primary'))
+        .placeholderColor($r('app.color.text_secondary'))
+        .backgroundColor(Color.Transparent)
+        .showUnderline(true)
+        .copyOption(CopyOptions.LocalDevice)
+        .enabled(!this.importing)
+        .onChange((value: string) => {
+          this.importText = value
+          this.errorMessage = ''
+        })
+
+      if (this.errorMessage.length > 0) {
+        Text(this.errorMessage)
+          .fontSize(13)
+          .fontColor($r('app.color.status_error'))
+          .width('100%')
+          .maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 12 })
+      }
+
+      Row({ space: 8 }) {
+        Button($r('app.string.rule_import_cancel'), { type: ButtonType.Normal })
+          .height(44)
+          .fontSize(16)
+          .fontColor($r('app.color.text_secondary'))
+          .backgroundColor(Color.Transparent)
+          .borderRadius(12)
+          .padding({ left: 12, right: 12 })
+          .enabled(!this.importing)
+          .onClick(() => this.controller?.close())
+
+        Button(this.importing ? $r('app.string.rule_import_pending') : $r('app.string.rule_import_confirm'),
+          { type: ButtonType.Normal })
+          .height(44)
+          .fontSize(16)
+          .fontColor($r('app.color.accent_blue'))
+          .backgroundColor(Color.Transparent)
+          .borderRadius(12)
+          .padding({ left: 12, right: 12 })
+          .enabled(!this.importing)
+          .onClick(() => {
+            this.submit()
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.End)
+      .margin({ top: 16 })
+    }
+    .width('100%')
+    .padding({ left: 24, right: 24, top: 24, bottom: 16 })
+  }
+}
 
 @Entry
 @Component
@@ -49,6 +232,7 @@ export struct RuleShopPageContent {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @State catalogItems: RuleCatalogItem[] = []
   @State localRules: RuleSource[] = []
   @State loading: boolean = false
@@ -60,24 +244,32 @@ export struct RuleShopPageContent {
   @State showActionMenu: boolean = false
   @State showSortMenu: boolean = false
   @State showLinkImportDialog: boolean = false
-  @State showClipboardImportDialog: boolean = false
   @State showDeleteDialog: boolean = false
   @State deleteTargetName: string = ''
   @State importUrl: string = ''
   @State isLinkImporting: boolean = false
   @State isClipboardImporting: boolean = false
-  @State clipboardImportMessage: string = ''
   @State canRefreshRepository: boolean = false
   @State repositoryUrl: string = ''
   @State enableMenuRuleName: string = ''
   @State backgroundInstalling: boolean = false
   @State backgroundInstallDone: number = 0
   @State backgroundInstallTotal: number = 0
+  @State shareText: string = ''
+  private shareDialogController: CustomDialogController | null = null
+  private clipboardImportDialogController: CustomDialogController | null = null
   private scroller: Scroller = new Scroller()
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
 
   aboutToAppear(): void {
     this.initializePage()
+  }
+
+  aboutToDisappear(): void {
+    this.shareDialogController?.close()
+    this.shareDialogController = null
+    this.clipboardImportDialogController?.close()
+    this.clipboardImportDialogController = null
   }
 
   build() {
@@ -128,16 +320,8 @@ export struct RuleShopPageContent {
       .backgroundColor(Color.Transparent)
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
 
-      if (this.showActionMenu) {
-        this.ActionMenuOverlay()
-      }
-
       if (this.showLinkImportDialog) {
         this.LinkImportDialogOverlay()
-      }
-
-      if (this.showClipboardImportDialog) {
-        this.ClipboardImportDialogOverlay()
       }
 
       if (this.showDeleteDialog) {
@@ -309,39 +493,35 @@ export struct RuleShopPageContent {
 
   @Builder
   EnableButtonByName(name: string): void {
-    Row() {
-      Text(this.isRuleEnabled(name) ? '启用' : '关闭')
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.isRuleEnabled(name) ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.End)
-        .layoutWeight(1)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Text(this.isRuleEnabled(name) ? '启用' : '关闭')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.isRuleEnabled(name) ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.End)
+          .layoutWeight(1)
 
-      Text('▼')
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ left: 8 })
+        Text('▼')
+          .fontSize(12)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 8 })
+      }.width('100%')
     }
     .width(86)
     .height(36)
     .padding({ left: 10, right: 8 })
     .borderRadius(12)
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
     .margin({ left: 8 })
     .enabled(this.isRuleOperationIdle())
-    .stateStyles({
-      pressed: {
-        .backgroundColor($r('app.color.category_menu_item_selected'))
-      },
-      normal: {
-        .backgroundColor(Color.Transparent)
-      }
-    })
     .onClick(() => {
       this.enableMenuRuleName = name
     })
     .bindMenu(this.enableMenuRuleName === name, this.RuleEnableMenuContent, {
+      systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
       placement: Placement.Bottom,
       showInSubWindow: false,
       onDisappear: () => {
@@ -391,7 +571,7 @@ export struct RuleShopPageContent {
       Row() {
         Text(label)
           .fontSize(16)
-          .fontWeight(this.isRuleEnabled(this.enableMenuRuleName) === enabled ? FontWeight.Bold : FontWeight.Medium)
+          .fontWeight(FontWeight.Medium)
           .fontColor(this.isRuleEnabled(this.enableMenuRuleName) === enabled ?
             $r('app.color.accent_blue') : $r('app.color.text_primary'))
           .layoutWeight(1)
@@ -400,8 +580,7 @@ export struct RuleShopPageContent {
       .height(48)
       .padding({ left: 14, right: 14 })
       .borderRadius(14)
-      .backgroundColor(this.isRuleEnabled(this.enableMenuRuleName) === enabled ?
-        $r('app.color.episode_item_selected_bg') : Color.Transparent)
+      .backgroundColor(Color.Transparent)
     }
     .onClick(() => {
       this.setRuleEnabledByName(this.enableMenuRuleName, enabled)
@@ -794,127 +973,45 @@ export struct RuleShopPageContent {
   }
 
   @Builder
-  ActionMenuOverlay(): void {
-    Stack({ alignContent: Alignment.TopEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor($r('app.color.color_transparent'))
-        .onClick(() => {
+  RepositoryActionMenu(): void {
+    Menu() {
+      this.ActionMenuItem('新建规则', () => {
+        this.showActionMenu = false
+        router.pushUrl({ url: 'pages/settings/RuleEditorPage' })
+      })
+      this.ActionMenuItem('链接导入', () => {
+        this.openLinkImportDialog('')
+      })
+      this.ActionMenuItem('从剪贴板导入', () => {
+        this.openClipboardImportDialog()
+      })
+      if (this.canRefreshRepository) {
+        this.ActionMenuItem('刷新仓库', () => {
           this.showActionMenu = false
+          this.loadCatalog()
         })
-
-      Column() {
-        this.ActionMenuItem('新建规则', () => {
-          this.showActionMenu = false
-          router.pushUrl({ url: 'pages/settings/RuleEditorPage' })
-        })
-        this.ActionMenuItem('链接导入', () => {
-          this.openLinkImportDialog('')
-        })
-        this.ActionMenuItem('从剪贴板导入', () => {
-          this.openClipboardImportDialog()
-        })
-        if (this.canRefreshRepository) {
-          this.ActionMenuItem('刷新仓库', () => {
-            this.showActionMenu = false
-            this.loadCatalog()
-          })
-        }
       }
-      .width(176)
-      .padding({ top: 8, bottom: 8 })
-      .borderRadius(16)
-      .backgroundColor($r('app.color.category_menu_surface'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
-      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
-      .systemMaterial(createThickImmersiveMaterial())
-      .margin({ top: getTopSpacerHeight(this.topSafeHeight) - 10, right: 12 })
     }
-    .width('100%')
-    .height('100%')
-    .zIndex(20)
-    .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
-  }
-
-  @Builder
-  ClipboardImportDialogOverlay(): void {
-    Column() {
-      Column() {
-        Text('从剪贴板导入')
-          .fontSize(22)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .width('100%')
-          .margin({ bottom: 10 })
-
-        Text('仅接受由 Kazumi 分享生成的规则链接。导入同名规则时会更新内容，并保留原有启用状态和排序。')
-          .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
-          .lineHeight(21)
-          .width('100%')
-          .margin({ bottom: 16 })
-
-        if (this.clipboardImportMessage.length > 0) {
-          Text(this.clipboardImportMessage)
-            .fontSize(13)
-            .fontColor($r('app.color.status_error'))
-            .width('100%')
-            .margin({ bottom: 12 })
-        }
-
-        PasteButton()
-          .width('100%')
-          .height(44)
-          .enabled(!this.isClipboardImporting)
-          .onClick((_event: ClickEvent, result: PasteButtonOnClickResult) => {
-            if (result === PasteButtonOnClickResult.SUCCESS) {
-              this.importFromClipboard()
-            } else {
-              this.clipboardImportMessage = '未获得剪贴板临时读取权限'
-            }
-          })
-
-        Button('取消')
-          .fontSize(14)
-          .height(38)
-          .borderRadius(19)
-          .backgroundColor($r('app.color.button_ghost_bg'))
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .margin({ top: 12 })
-          .enabled(!this.isClipboardImporting)
-          .onClick(() => {
-            this.showClipboardImportDialog = false
-          })
-      }
-      .width('86%')
-      .padding({ left: 20, right: 20, top: 24, bottom: 20 })
-      .borderRadius(24)
-      .backgroundColor($r('app.color.card_background'))
-      .shadow({ radius: 24, color: $r('app.color.shadow_surface'), offsetY: 8 })
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor($r('app.color.overlay_modal_bg'))
-    .zIndex(35)
+    .width(176)
+    .fontColor($r('app.color.text_primary'))
+    .radius(16)
   }
 
   @Builder
   ActionMenuItem(label: string, action: () => void): void {
-    Row() {
-      Text(label)
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
+    MenuItem() {
+      Row() {
+        Text(label)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height(42)
+      .padding({ left: 14, right: 14 })
+      .backgroundColor(Color.Transparent)
     }
-    .width('100%')
-    .height(42)
-    .padding({ left: 14, right: 14 })
     .onClick(() => {
       action()
     })
@@ -1066,22 +1163,55 @@ export struct RuleShopPageContent {
   }
 
   private openClipboardImportDialog(): void {
+    if (this.isClipboardImporting) {
+      return
+    }
     this.showActionMenu = false
-    this.clipboardImportMessage = ''
-    this.showClipboardImportDialog = true
+    this.clipboardImportDialogController?.close()
+    this.clipboardImportDialogController = new CustomDialogController({
+      builder: RuleImportDialog({
+        onImport: (text: string): Promise<void> => {
+          return this.importSharedRule(text)
+        }
+      }),
+      customStyle: false,
+      autoCancel: true,
+      alignment: DialogAlignment.Center,
+      keyboardAvoidMode: KeyboardAvoidMode.DEFAULT,
+      maskColor: $r('app.color.overlay_modal_bg'),
+      backgroundColor: $r('app.color.card_background'),
+      backgroundBlurStyle: BlurStyle.NONE,
+      systemMaterial: createConfiguredImmersiveMaterial(false),
+      onWillDismiss: (action: DismissDialogAction) => {
+        if (!this.isClipboardImporting) {
+          action.dismiss()
+        }
+      }
+    })
+    this.clipboardImportDialogController.open()
   }
 
-  private async shareRule(name: string): Promise<void> {
+  private shareRule(name: string): void {
     const rule = this.findLocalRule(name)
     if (rule === null) {
       promptAction.showToast({ message: '规则源不存在，无法分享' })
       return
     }
     try {
-      const shareText = RuleShareCodec.encodeRuleJson(JSON.stringify(rule.toJSON()))
-      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, shareText)
-      await pasteboard.getSystemPasteboard().setData(data)
-      promptAction.showToast({ message: '规则分享链接已复制，可从剪贴板导入' })
+      this.shareText = RuleShareCodec.encodeRuleJson(JSON.stringify(rule.toJSON()))
+      this.shareDialogController?.close()
+      // Controller options are fixed at creation; read the material setting on every open.
+      this.shareDialogController = new CustomDialogController({
+        builder: RuleShareDialog({ shareText: this.shareText }),
+        customStyle: false,
+        autoCancel: true,
+        alignment: DialogAlignment.Center,
+        maskColor: $r('app.color.overlay_modal_bg'),
+        backgroundColor: $r('app.color.card_background'),
+        backgroundBlurStyle: BlurStyle.NONE,
+        systemMaterial: createConfiguredImmersiveMaterial(false)
+      })
+      this.shareDialogController.open()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       promptAction.showToast({ message: `分享失败: ${msg}` })
@@ -1089,29 +1219,26 @@ export struct RuleShopPageContent {
     }
   }
 
-  private async importFromClipboard(): Promise<void> {
+  private async importSharedRule(shareText: string): Promise<void> {
     if (this.isClipboardImporting) {
       return
     }
     this.isClipboardImporting = true
-    this.clipboardImportMessage = '正在读取并校验规则...'
     try {
-      const pasteData = await pasteboard.getSystemPasteboard().getData()
-      const shareText = pasteData.getPrimaryText().trim()
       const jsonText = RuleShareCodec.decodeRuleJson(shareText)
       const parsed: Object = JSON.parse(jsonText)
       if (Array.isArray(parsed) || parsed === null || typeof parsed !== 'object') {
         throw new Error('剪贴板内容不是单条 Kazumi 规则')
       }
-      const count = await DefaultRuleSourceInitializer.importFromJson(jsonText)
+      await DefaultRuleSourceInitializer.importFromJson(jsonText)
       SettingsChangeSignal.notifyRuleSourceChanged()
       await this.refreshCatalogAfterRuleMutation()
-      this.showClipboardImportDialog = false
+      this.clipboardImportDialogController?.close()
       promptAction.showToast({ message: '规则导入成功' })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.clipboardImportMessage = `导入失败: ${msg}`
       logger.error('Import rule from clipboard failed: %{public}s', msg)
+      throw new Error(msg)
     } finally {
       this.isClipboardImporting = false
     }
@@ -1326,7 +1453,7 @@ export struct RuleShopPageContent {
   }
 
   @Builder
-  RepositorySortMenuAnchor(): void {
+  RepositoryMenuAnchors(): void {
     Row() {
       Blank()
 
@@ -1335,17 +1462,33 @@ export struct RuleShopPageContent {
         .height(40)
         .opacity(0)
         .hitTestBehavior(HitTestMode.None)
+        .margin({ right: 12 })
         .bindMenu(this.showSortMenu, this.RepositorySortMenu, {
-        placement: Placement.BottomRight,
-        showInSubWindow: false,
-        aboutToDisappear: () => {
-          this.showSortMenu = false
-        }
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: Placement.BottomRight,
+          showInSubWindow: false,
+          aboutToDisappear: () => {
+            this.showSortMenu = false
+          }
+        })
+
+      Row()
+        .width(40)
+        .height(40)
+        .opacity(0)
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showActionMenu, this.RepositoryActionMenu, {
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: Placement.BottomRight,
+          showInSubWindow: false,
+          aboutToDisappear: () => {
+            this.showActionMenu = false
+          }
         })
     }
     .width('100%')
     .height(56)
-    .padding({ right: 64 })
+    .padding({ right: 12 })
     .alignItems(VerticalAlign.Center)
     .hitTestBehavior(HitTestMode.Transparent)
   }
@@ -1354,19 +1497,19 @@ export struct RuleShopPageContent {
   RepositorySortMenu(): void {
     Menu() {
       MenuItem({
-        content: '时间',
-        labelInfo: this.sortByTime ? '√' : ''
+        content: '时间'
       })
-        .selected(this.sortByTime)
+        .contentFontColor(this.sortByTime ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
+        .backgroundColor(Color.Transparent)
         .onClick(() => {
           this.selectSortMode(true)
         })
 
       MenuItem({
-        content: '名称',
-        labelInfo: !this.sortByTime ? '√' : ''
+        content: '名称'
       })
-        .selected(!this.sortByTime)
+        .contentFontColor(!this.sortByTime ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
+        .backgroundColor(Color.Transparent)
         .onClick(() => {
           this.selectSortMode(false)
         })
@@ -1394,6 +1537,7 @@ export struct RuleShopPageContent {
       icon: this.showActionMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
       label: 'more',
       action: () => {
+        this.showSortMenu = false
         this.showActionMenu = !this.showActionMenu
       }
     }
@@ -1404,6 +1548,7 @@ export struct RuleShopPageContent {
       icon: $r('sys.symbol.more'),
       label: '排序',
       action: () => {
+        this.showActionMenu = false
         this.showSortMenu = true
       }
     }
@@ -1429,7 +1574,7 @@ export struct RuleShopPageContent {
     return {
       title: this.buildRepositoryTitle(),
       menu: this.buildRepositoryMenu(),
-      stackBuilder: (): void => this.RepositorySortMenuAnchor()
+      stackBuilder: (): void => this.RepositoryMenuAnchors()
     }
   }
 

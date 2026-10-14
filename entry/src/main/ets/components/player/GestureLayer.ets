@@ -7,6 +7,11 @@ export struct GestureLayer {
   @Prop isPlaying: boolean = false
   @Prop isControlVisible: boolean = false
   @Prop gestureEnabled: boolean = true
+  @Prop doubleTapEnabled: boolean = true
+  @Prop longPressEnabled: boolean = true
+  @Prop seekEnabled: boolean = true
+  @Prop brightnessEnabled: boolean = true
+  @Prop volumeEnabled: boolean = true
   @State gestureType: number = 0
   @State gestureValue: number = 0
   @State seekDeltaMs: number = 0
@@ -114,6 +119,10 @@ export struct GestureLayer {
       GestureGroup(GestureMode.Exclusive,
         PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 20 })
           .onActionStart((event: GestureEvent) => {
+            if (!this.seekEnabled) {
+              this.gestureType = this.GESTURE_NONE
+              return
+            }
             this.gestureType = this.GESTURE_SEEK
             this.seekDeltaMs = 0
             if (event && event.fingerList.length > 0) {
@@ -122,14 +131,16 @@ export struct GestureLayer {
             }
           })
           .onActionUpdate((event: GestureEvent) => {
-            if (this.gestureType !== this.GESTURE_SEEK || !event || event.fingerList.length === 0) {
+            if (!this.seekEnabled || this.gestureType !== this.GESTURE_SEEK ||
+              !event || event.fingerList.length === 0) {
               return
             }
             const dx = event.fingerList[0].globalX - this.panStartX
             this.updateSeekDelta(dx)
           })
-          .onActionEnd((event: GestureEvent) => {
-            if (this.gestureType === this.GESTURE_SEEK && this.seekDeltaMs !== 0 && this.onSeek) {
+          .onActionEnd(() => {
+            if (this.seekEnabled && this.gestureType === this.GESTURE_SEEK &&
+              this.seekDeltaMs !== 0 && this.onSeek) {
               const targetMs = Math.max(0, Math.min(this.durationMs, this.positionMs + this.seekDeltaMs))
               this.onSeek(targetMs)
             }
@@ -143,14 +154,16 @@ export struct GestureLayer {
             }
             this.panStartX = event.fingerList[0].globalX
             this.panStartY = event.fingerList[0].globalY
-            if (this.panStartX < this.layerWidth / 2) {
+            if (this.panStartX < this.layerWidth / 2 && this.brightnessEnabled) {
               this.gestureType = this.GESTURE_BRIGHTNESS
               this.gestureStartValue = this.clampBrightness(this.screenBrightness)
               this.gestureValue = this.gestureStartValue
-            } else {
+            } else if (this.panStartX >= this.layerWidth / 2 && this.volumeEnabled) {
               this.gestureType = this.GESTURE_VOLUME
               this.gestureStartValue = this.clamp01(this.volume)
               this.gestureValue = this.gestureStartValue
+            } else {
+              this.gestureType = this.GESTURE_NONE
             }
           })
           .onActionUpdate((event: GestureEvent) => {
@@ -158,9 +171,9 @@ export struct GestureLayer {
               return
             }
             const dy = event.fingerList[0].globalY - this.panStartY
-            if (this.gestureType === this.GESTURE_VOLUME) {
+            if (this.gestureType === this.GESTURE_VOLUME && this.volumeEnabled) {
               this.updateVolumeDelta(dy)
-            } else if (this.gestureType === this.GESTURE_BRIGHTNESS) {
+            } else if (this.gestureType === this.GESTURE_BRIGHTNESS && this.brightnessEnabled) {
               this.updateBrightnessDelta(dy)
             }
           })
@@ -170,12 +183,18 @@ export struct GestureLayer {
 
         LongPressGesture({ fingers: 1, repeat: false, duration: 450 })
           .onAction(() => {
+            if (!this.longPressEnabled) {
+              return
+            }
             this.isLongPressActive = true
             if (this.onTemporarySpeedStart) {
               this.onTemporarySpeedStart()
             }
           })
           .onActionEnd(() => {
+            if (!this.isLongPressActive) {
+              return
+            }
             this.isLongPressActive = false
             if (this.onTemporarySpeedEnd) {
               this.onTemporarySpeedEnd()
@@ -184,7 +203,7 @@ export struct GestureLayer {
 
         TapGesture({ count: 2 })
           .onAction(() => {
-            if (this.mouseGestureActive) {
+            if (this.mouseGestureActive || !this.doubleTapEnabled) {
               return
             }
             if (this.onTogglePlayPause) {
@@ -214,7 +233,7 @@ export struct GestureLayer {
   }
 
   private handleMouseWheel(event: AxisEvent): void {
-    if (!this.gestureEnabled || event.axisVertical === undefined || event.axisVertical === 0) {
+    if (!this.gestureEnabled || !this.volumeEnabled || event.axisVertical === undefined || event.axisVertical === 0) {
       return
     }
 
@@ -254,7 +273,7 @@ export struct GestureLayer {
     if (isDoubleClick) {
       this.clearMouseClickTimer()
       this.lastMouseClickMs = 0
-      if (this.onMouseDoubleClick) {
+      if (this.doubleTapEnabled && this.onMouseDoubleClick) {
         this.onMouseDoubleClick()
       }
       this.mouseGestureActive = false

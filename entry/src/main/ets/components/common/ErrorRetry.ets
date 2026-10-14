@@ -1,7 +1,12 @@
-import { createThickImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  createConfiguredImmersiveMaterial
+} from '../../utils/ImmersiveMaterial'
 
 @Component
 export struct ErrorRetry {
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @Prop message: string = '加载失败';
   onRetry?: () => void;
 
@@ -20,7 +25,7 @@ export struct ErrorRetry {
         .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
         .border({ width: 0.5, color: $r('app.color.border_specular') })
         .shadow({ radius: 14, color: $r('app.color.shadow_button_primary'), offsetY: 4 })
-        .systemMaterial(createThickImmersiveMaterial())
+        .systemMaterial(createConfiguredImmersiveMaterial(true, this.api26MaterialStyle))
         .onClick(() => {
           if (this.onRetry) {
             this.onRetry();

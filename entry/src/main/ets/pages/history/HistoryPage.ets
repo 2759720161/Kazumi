@@ -90,6 +90,7 @@ export struct HistoryPageContent {
   private historySyncService: HistorySyncService = HistorySyncService.getInstance()
   private scroller: Scroller = new Scroller()
   private isFirstAppear: boolean = true
+  private selectedAllExplicitly: boolean = false
 
   aboutToAppear(): void {
     this.loadHistories(this.histories.length === 0).then(() => {
@@ -327,7 +328,7 @@ export struct HistoryPageContent {
     }
     this.loadError = false
     try {
-      this.histories = await this.historyStore.getAll()
+      this.histories = await this.historyStore.getAllOnline()
       await this.fillSourceNames()
       this.bumpHistoryRenderVersion()
     } catch (err) {
@@ -358,9 +359,7 @@ export struct HistoryPageContent {
     const removedRecord: HistoryRecord | null = this.removeHistoryRecordFromView(animeId)
     try {
       await this.historyStore.deleteByAnimeId(animeId)
-      if (this.showAdvancedPlayerOptions) {
-        await this.historySyncService.recordDeleted(animeId)
-      }
+      if (removedRecord !== null) await this.historySyncService.recordDeleted(removedRecord)
     } catch (err) {
       logger.error('Delete history failed: %{public}s', JSON.stringify(err))
       if (removedRecord !== null) {
@@ -629,6 +628,7 @@ export struct HistoryPageContent {
   }
 
   private toggleSelect(animeId: string): void {
+    this.selectedAllExplicitly = false
     const idx: number = this.selectedIds.indexOf(animeId)
     if (idx >= 0) {
       const newIds: string[] = []
@@ -648,6 +648,7 @@ export struct HistoryPageContent {
 
     if (this.selectedIds.length === this.histories.length) {
       this.selectedIds = []
+      this.selectedAllExplicitly = false
       return
     }
     const allIds: string[] = []
@@ -655,11 +656,13 @@ export struct HistoryPageContent {
       allIds.push(this.histories[i].animeId)
     }
     this.selectedIds = allIds
+    this.selectedAllExplicitly = true
   }
 
   private exitEditMode(): void {
     this.isEditMode = false
     this.selectedIds = []
+    this.selectedAllExplicitly = false
   }
 
   onBackPress(): boolean {
@@ -747,15 +750,30 @@ export struct HistoryPageContent {
       this.exitEditMode()
       return
     }
+    const isDeletingAll: boolean = this.selectedAllExplicitly && idsToDelete.length === this.histories.length
     const removedRecords: HistoryRecord[] = this.removeHistoryRecordsFromView(idsToDelete)
     this.exitEditMode()
     this.bumpHistoryRenderVersion()
+    if (isDeletingAll) {
+      try {
+        await this.historyStore.clearAll()
+      } catch (err) {
+        logger.error('Clear history failed: %{public}s', JSON.stringify(err))
+        this.restoreHistoryRecords(removedRecords)
+        return
+      }
+      try {
+        await this.historySyncService.recordCleared()
+      } catch (err) {
+        logger.error('Record clear history sync event failed: %{public}s', JSON.stringify(err))
+      }
+      return
+    }
     for (let i = 0; i < idsToDelete.length; i++) {
       try {
         await this.historyStore.deleteByAnimeId(idsToDelete[i])
-        if (this.showAdvancedPlayerOptions) {
-          await this.historySyncService.recordDeleted(idsToDelete[i])
-        }
+        const removedRecord: HistoryRecord | null = this.findHistoryRecordInList(removedRecords, idsToDelete[i])
+        if (removedRecord !== null) await this.historySyncService.recordDeleted(removedRecord)
       } catch (err) {
         logger.error('Delete history failed: %{public}s', JSON.stringify(err))
         const failedRecord: HistoryRecord | null = this.findHistoryRecordInList(removedRecords, idsToDelete[i])
@@ -1009,7 +1027,7 @@ export struct HistoryPageContent {
       const result: HistorySyncResult = await this.historySyncService.syncNow()
       await this.loadHistories(false)
       if (showToast) {
-        promptAction.showToast({ message: result.message + '，共 ' + String(result.mergedCount) + ' 条' })
+        promptAction.showToast({ message: result.message })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '同步失败'

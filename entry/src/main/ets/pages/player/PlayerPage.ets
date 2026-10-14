@@ -23,6 +23,7 @@ import { PreferencesStore } from '../../store/PreferencesStore'
 import { HistoryRecord } from '../../models/HistoryRecord'
 import { CollectController } from '../../controller/CollectController'
 import { CollectType } from '../../models/CollectType'
+import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 import { AnimeItem } from '../../models/AnimeItem'
 
 import { DanmakuFileParser, LocalDanmakuParseResult } from '../../core/danmaku/DanmakuFileParser'
@@ -45,18 +46,16 @@ import { KeyCode } from '@ohos.multimodalInput.keyCode'
 import { audio } from '@kit.AudioKit'
 import { common } from '@kit.AbilityKit'
 import { AVCastPicker, AVCastPickerState } from '@kit.AVSessionKit'
-import { HdsTabs } from '@kit.UIDesignKit'
 
 import { webview } from '@kit.ArkWeb'
 import { getBottomSpacerHeight, getEffectiveTopSafeHeight } from '../../utils/HdsPageStyle'
 import {
-  buildAdaptiveMaterialEffect,
-  HDS_MATERIAL_LEVEL_DEFAULT,
-  PREFS_KEY_HDS_MATERIAL_LEVEL
-} from '../../utils/HdsPageStyle'
-import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  createMenuImmersiveMaterial,
   createConfiguredImmersiveMaterial,
 } from '../../utils/ImmersiveMaterial'
+import { ImmersiveButtonModifier } from '../../utils/ImmersiveButtonModifier'
 import {
   PLAYER_AUTO_FULLSCREEN_DEFAULT,
   PLAYER_AUTO_FULLSCREEN_PHONE_SHORT_EDGE_MAX,
@@ -67,6 +66,14 @@ import {
   PREFS_KEY_PLAYER_AUTO_PIP
 } from '../../utils/PlayerAutoPiP'
 import { ContinuationPlayerParams, ContinuationState } from '../../utils/ContinuationState'
+import {
+  PLAYER_GESTURE_DEFAULT,
+  PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS,
+  PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP,
+  PREFS_KEY_PLAYER_GESTURE_LONG_PRESS,
+  PREFS_KEY_PLAYER_GESTURE_SEEK,
+  PREFS_KEY_PLAYER_GESTURE_VOLUME
+} from '../../utils/PlayerGestureSettings'
 
 const logger = new Logger('PlayerPage')
 const PLAYER_LIVE_URL_KEY: string = 'playerLivePlaybackUrl'
@@ -112,7 +119,6 @@ export struct PlayerPage {
   @State durationMs: number = 0
   @State bufferMs: number = 0
   @State speed: number = 1.0
-  @State speedLabel: string = '1x'
   @State volume: number = 1.0
   @State isControlVisible: boolean = true
   @State isDraggingProgress: boolean = false
@@ -139,6 +145,11 @@ export struct PlayerPage {
   @State private videoHeight: number = 0
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP) playerGestureDoubleTap: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_LONG_PRESS) playerGestureLongPress: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_SEEK) playerGestureSeek: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS) playerGestureBrightness: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_VOLUME) playerGestureVolume: boolean = PLAYER_GESTURE_DEFAULT
   private playerEngine: IPlayerEngine | null = null
   private xComponentController: XComponentController | null = null
   @State hasEngine: boolean = false
@@ -152,7 +163,7 @@ export struct PlayerPage {
   @State showMoreMenu: boolean = false
   @State showDanmakuMatchPanel: boolean = false
   @State showEpisodeSidePanel: boolean = false
-  @State showSpeedPanel: boolean = false
+  @State showSpeedMenu: boolean = false
   @State episodePanelOffsetX: number = 0
   @State @Watch('onDanmakuSettingsVisibilityChanged') showDanmakuSettingsPanel: boolean = false
   @State @Watch('onDanmakuSettingsVisibilityChanged') showDanmakuSettingsSheet: boolean = false
@@ -160,6 +171,7 @@ export struct PlayerPage {
   @State showHud: boolean = false
   @State hudText: string = ''
   @State currentCollectType: number = CollectType.none
+  @State showCollectStatusSheet: boolean = false
   @State currentAspectMode: VideoAspectMode = VideoAspectMode.contain
   @State showAspectModePanel: boolean = false
   @State showRoadPickerPopup: boolean = false
@@ -171,7 +183,7 @@ export struct PlayerPage {
   @State currentManualMappingText: string = ''
   @State suppressControlAnimation: boolean = false
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
-  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @State episodeGridColumns: string = '1fr 1fr 1fr'
   @State isEpisodeDownloadSelecting: boolean = false
   @State selectedDownloadEpisodeIndexes: number[] = []
@@ -226,7 +238,6 @@ export struct PlayerPage {
   private sourceName: string = ''
   private historySeekMs: number = -1
   private temporarySpeedBeforeLongPress: number = -1
-  private readonly speedOptions: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0]
   private audioManager: audio.AudioManager | null = null
   private mediaVolumeMinLevel: number = -1
   private mediaVolumeMaxLevel: number = -1
@@ -316,7 +327,7 @@ export struct PlayerPage {
     this.sourceResolver.setWorkerWebController(2, this.backgroundWebController)
 
     if (this.animeId.length > 0) {
-      this.collectController.getCollectType(this.animeId).then((type: number) => {
+      this.collectController.getCollectType(this.animeId, this.bangumiId).then((type: number) => {
         this.currentCollectType = type
       }).catch((err: Error) => {
         logger.warn('Load collect type failed: %{public}s', err.message)
@@ -603,6 +614,18 @@ export struct PlayerPage {
       },
       onDisappear: () => {
         this.showDanmakuSettingsSheet = false
+        this.startAutoHideTimer()
+      }
+    })
+    .bindSheet($$this.showCollectStatusSheet, this.buildCollectStatusSheet, {
+      height: 410,
+      showClose: false,
+      dragBar: true,
+      onAppear: () => {
+        this.pauseAutoHideTimer()
+      },
+      onDisappear: () => {
+        this.showCollectStatusSheet = false
         this.startAutoHideTimer()
       }
     })
@@ -970,6 +993,11 @@ export struct PlayerPage {
           isPlaying: this.isPlaying,
           isControlVisible: this.isControlVisible,
           gestureEnabled: this.isPlayerGestureEnabled(),
+          doubleTapEnabled: this.playerGestureDoubleTap,
+          longPressEnabled: this.playerGestureLongPress,
+          seekEnabled: this.playerGestureSeek,
+          brightnessEnabled: this.playerGestureBrightness,
+          volumeEnabled: this.playerGestureVolume,
           onSeek: (positionMs: number) => {
             this.seekTo(positionMs)
             this.showHudText(`跳转到 ${this.formatTime(positionMs)}`)
@@ -1104,17 +1132,11 @@ export struct PlayerPage {
       .zIndex(6)
       .hitTestBehavior(HitTestMode.Transparent)
 
-      if (this.showMoreMenu) {
-        this.PlayerMoreMenu()
-      }
+      this.PlayerMoreMenuAnchor()
 
-      if (this.showAspectModePanel) {
-        this.AspectModePanelOverlay()
-      }
+      this.AspectModeMenuAnchor()
 
-      if (this.isFullScreen && this.showSpeedPanel) {
-        this.SpeedPanelOverlay()
-      }
+      this.SpeedMenuAnchor()
     }
       .width('100%')
       .height('100%')
@@ -1171,6 +1193,12 @@ export struct PlayerPage {
           this.seekByFifteenSeconds(true)
         })
       }
+
+      this.TopSymbolButton(CollectType.getIcon(this.currentCollectType),
+        CollectType.isFavorite(this.currentCollectType) ? CollectType.getLabel(this.currentCollectType) : '追番', () => {
+          this.showMoreMenu = false
+          this.showCollectStatusSheet = true
+        }, CollectType.isFavorite(this.currentCollectType))
 
       this.TopSymbolButton(this.showMoreMenu ? $r('sys.symbol.xmark') : $r('sys.symbol.dot_grid_1x2'),
         this.showMoreMenu ? '收起' : '更多', () => {
@@ -1604,246 +1632,254 @@ export struct PlayerPage {
   }
 
   @Builder
-  private PlayerMoreMenu() {
+  private PlayerMoreMenuAnchor() {
     Stack({ alignContent: Alignment.TopEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor($r('app.color.color_transparent'))
-        .onClick(() => {
+      Row()
+        .width(156)
+        .height(1)
+        .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showMoreMenu, this.PlayerMoreMenuContent, {
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: Placement.BottomRight,
+          showInSubWindow: false,
+          aboutToAppear: () => {
+            this.pauseAutoHideTimer()
+          },
+          aboutToDisappear: () => {
+            this.showMoreMenu = false
+            this.startAutoHideTimer()
+          }
+        })
+    }
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
+  private PlayerMoreMenuContent() {
+    Menu() {
+      if (this.isFullScreen) {
+        if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
+          this.downloadState === VideoDownloadState.PAUSED || this.downloadState === VideoDownloadState.QUEUED ||
+          this.downloadState === VideoDownloadState.PREPARING)) {
+          this.MoreMenuItem('取消下载', () => {
+            this.showMoreMenu = false
+            this.cancelCurrentDownload()
+          })
+        }
+        this.MoreMenuItem(this.isDanmakuEnabled ? '关闭弹幕' : '开启弹幕', () => {
+          this.toggleDanmaku()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('加载本地弹幕', () => {
+          this.pickAndLoadLocalDanmaku()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('弹幕匹配', () => {
+          this.openDanmakuMatchPanel()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('弹幕设置', () => {
+          this.openDanmakuSettings()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('视频比例', () => {
+          this.showMoreMenu = false
+          this.showAspectModePanel = true
+        })
+
+      } else {
+        if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
+          this.downloadState === VideoDownloadState.PAUSED || this.downloadState === VideoDownloadState.QUEUED ||
+          this.downloadState === VideoDownloadState.PREPARING)) {
+          this.MoreMenuItem('取消下载', () => {
+            this.showMoreMenu = false
+            this.cancelCurrentDownload()
+          })
+        }
+        this.MoreMenuItem('加载本地弹幕', () => {
+          this.pickAndLoadLocalDanmaku()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('弹幕匹配', () => {
+          this.openDanmakuMatchPanel()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('弹幕设置', () => {
+          this.openDanmakuSettings()
+          this.showMoreMenu = false
+        })
+        this.MoreMenuItem('视频比例', () => {
+          this.showMoreMenu = false
+          this.showAspectModePanel = true
+        })
+        this.MoreMenuItem('倍速', () => {
+          this.openSpeedMenu()
           this.showMoreMenu = false
         })
 
-      Column() {
-        if (this.isFullScreen) {
-          if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
-            this.downloadState === VideoDownloadState.PAUSED || this.downloadState === VideoDownloadState.QUEUED ||
-            this.downloadState === VideoDownloadState.PREPARING)) {
-            this.MoreMenuItem('取消下载', () => {
-              this.showMoreMenu = false
-              this.cancelCurrentDownload()
-            })
-          }
-          this.MoreMenuItem(this.isDanmakuEnabled ? '关闭弹幕' : '开启弹幕', () => {
-            this.toggleDanmaku()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('加载本地弹幕', () => {
-            this.pickAndLoadLocalDanmaku()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('弹幕匹配', () => {
-            this.openDanmakuMatchPanel()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('弹幕设置', () => {
-            this.openDanmakuSettings()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('视频比例', () => {
-            this.showAspectModePanel = true
-          })
-
-        } else {
-          if (this.isCurrentDownloadSource() && (this.downloadState === VideoDownloadState.RUNNING ||
-            this.downloadState === VideoDownloadState.PAUSED || this.downloadState === VideoDownloadState.QUEUED ||
-            this.downloadState === VideoDownloadState.PREPARING)) {
-            this.MoreMenuItem('取消下载', () => {
-              this.showMoreMenu = false
-              this.cancelCurrentDownload()
-            })
-          }
-          this.MoreMenuItem('加载本地弹幕', () => {
-            this.pickAndLoadLocalDanmaku()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('弹幕匹配', () => {
-            this.openDanmakuMatchPanel()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('弹幕设置', () => {
-            this.openDanmakuSettings()
-            this.showMoreMenu = false
-          })
-          this.MoreMenuItem('视频比例', () => {
-            this.showAspectModePanel = true
-          })
-          this.MoreMenuItem('倍速', () => {
-            this.openSpeedPanel()
-            this.showMoreMenu = false
-          })
-
-        }
       }
-      .width(156)
-      .padding({ top: 8, bottom: 8 })
-      .borderRadius(16)
-      .backgroundColor($r('app.color.category_menu_surface'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .systemMaterial(createConfiguredImmersiveMaterial())
-      .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
-      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
-      .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
     }
-    .width('100%')
-    .height('100%')
-    .zIndex(8)
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .width(156)
+    .borderRadius(16)
   }
 
   @Builder
-  private AspectModePanelOverlay() {
-    if (this.showAspectModePanel) {
-      Stack({ alignContent: Alignment.TopEnd }) {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor($r('app.color.color_transparent'))
-          .onClick(() => {
+  private AspectModeMenuAnchor() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Row()
+        .width(160)
+        .height(1)
+        .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showAspectModePanel, this.AspectModeMenuContent, {
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: Placement.BottomRight,
+          showInSubWindow: false,
+          aboutToAppear: () => {
+            this.pauseAutoHideTimer()
+          },
+          aboutToDisappear: () => {
             this.showAspectModePanel = false
-          })
-
-        AspectModePanel({
-          currentMode: this.currentAspectMode,
-          onSelectMode: (mode: VideoAspectMode) => {
-            this.applyAspectMode(mode)
-            this.showAspectModePanel = false
-            this.showMoreMenu = false
+            this.startAutoHideTimer()
           }
         })
-          .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
+    }
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
+  private AspectModeMenuContent() {
+    AspectModePanel({
+      currentMode: this.currentAspectMode,
+      onSelectMode: (mode: VideoAspectMode) => {
+        this.applyAspectMode(mode)
+        this.showAspectModePanel = false
+      }
+    })
+  }
+
+  @Builder
+  private buildCollectStatusSheet(): void {
+    CollectStatusMenu({
+      currentType: this.currentCollectType,
+      onSelect: (collectType: number) => {
+        this.updateCollectStatus(collectType)
+      },
+      onDismiss: () => {
+        this.showCollectStatusSheet = false
+      }
+    })
+      .padding({ bottom: this.bottomSafeHeight })
+  }
+
+  @Builder
+  private SpeedMenuAnchor() {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      Row()
+        .width(104)
+        .height(1)
+        .margin({ right: this.getSpeedMenuRightMargin(), bottom: this.getSpeedMenuBottomMargin() })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showSpeedMenu, this.SpeedMenuContent, {
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: Placement.TopRight,
+          showInSubWindow: false,
+          aboutToAppear: () => {
+            this.pauseAutoHideTimer()
+          },
+          aboutToDisappear: () => {
+            if (this.showSpeedMenu) {
+              this.closeSpeedMenu()
+            }
+          }
+        })
+    }
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
+  private SpeedMenuContent() {
+    Menu() {
+      this.SpeedMenuItem(3.0)
+      this.SpeedMenuItem(2.0)
+      this.SpeedMenuItem(1.75)
+      this.SpeedMenuItem(1.5)
+      this.SpeedMenuItem(1.25)
+      this.SpeedMenuItem(1.0)
+      this.SpeedMenuItem(0.75)
+      this.SpeedMenuItem(0.5)
+      this.SpeedMenuItem(0.25)
+    }
+    .width(104)
+    .borderRadius(16)
+  }
+
+  @Builder
+  private SpeedMenuItem(value: number) {
+    MenuItem() {
+      Row() {
+        Text(this.formatSpeedLabel(value))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Math.abs(this.speed - value) < 0.01 ?
+            $r('app.color.accent_blue') : $r('app.color.text_primary'))
+          .layoutWeight(1)
       }
       .width('100%')
-      .height('100%')
-      .zIndex(9)
-      .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+      .height(40)
     }
-  }
-
-  @Builder
-  private SpeedPanelOverlay() {
-    Stack({ alignContent: Alignment.End }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor('#66000000')
-        .onClick(() => {
-          this.closeSpeedPanel()
-        })
-        .transition(TransitionEffect.OPACITY.animation({ duration: 260, curve: Curve.FastOutSlowIn }))
-
-      Column() {
-        Row() {
-          Text('播放速度')
-            .fontSize(21)
-            .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_title'))
-
-          Blank()
-
-          Button({ type: ButtonType.Circle }) {
-            SymbolGlyph($r('sys.symbol.xmark'))
-              .fontSize(20)
-              .fontColor([$r('app.color.text_title')])
-          }
-          .width(40)
-          .height(40)
-          .margin({ left: 12 })
-          .backgroundColor($r('app.color.episode_item_unselected_bg'))
-          .onClick(() => {
-            this.closeSpeedPanel()
-          })
-        }
-        .width('100%')
-        .height(72)
-        .padding({ left: 22, right: 14, top: 10, bottom: 8 })
-        .alignItems(VerticalAlign.Center)
-
-        Scroll() {
-          Column({ space: 10 }) {
-            ForEach(this.speedOptions, (item: number, index?: number) => {
-              this.SpeedOptionRow(item, index)
-            }, (item: number) => `player_speed_${item}`)
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 8, bottom: this.bottomSafeHeight + 24 })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .align(Alignment.Top)
-      }
-      .width(this.getSpeedSidePanelWidth())
-      .height('100%')
-      .backgroundColor($r('app.color.player_side_panel_surface'))
-      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .systemMaterial(createConfiguredImmersiveMaterial())
-      .borderRadius({ topLeft: 32, bottomLeft: 32 })
-      .border({ width: { left: 0.5 }, color: $r('app.color.divider_blue') })
-      .shadow({ radius: 32, color: $r('app.color.shadow_surface'), offsetX: -12 })
-      .transition(
-        TransitionEffect.move(TransitionEdge.END)
-          .combine(TransitionEffect.OPACITY)
-          .animation({ duration: 300, curve: Curve.FastOutSlowIn })
-      )
-    }
-    .width('100%')
-    .height('100%')
-    .zIndex(10)
-    .onAppear(() => {
-      this.pauseAutoHideTimer()
-    })
-    .onDisAppear(() => {
-      this.startAutoHideTimer()
-    })
-  }
-
-  @Builder
-  private SpeedOptionRow(item: number, index?: number) {
-    Row() {
-      Text(this.formatSpeedLabel(item))
-        .fontSize(17)
-        .fontWeight(this.isSpeedSelected(item) ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.isSpeedSelected(item) ? $r('app.color.accent_blue') : $r('app.color.text_title'))
-        .maxLines(1)
-
-      Blank()
-
-      if (this.isSpeedSelected(item)) {
-        SymbolGlyph($r('sys.symbol.checkmark'))
-          .fontSize(18)
-          .fontColor([$r('app.color.accent_blue')])
-      }
-    }
-    .width('100%')
-    .height(50)
-    .padding({ left: 18, right: 18 })
-    .borderRadius(18)
-    .alignItems(VerticalAlign.Center)
-    .backgroundColor(this.isSpeedSelected(item) ? '#1F0A84FF' : $r('app.color.episode_item_unselected_bg'))
-    .border({
-      width: 0.5,
-      color: this.isSpeedSelected(item) ? $r('app.color.divider_blue') : $r('app.color.card_specular_border')
-    })
+    .backgroundColor(Color.Transparent)
     .onClick(() => {
-      this.selectSpeed(item)
+      this.selectSpeed(value)
     })
+  }
+
+  private getSpeedMenuRightMargin(): number {
+    let margin = this.isFullScreen ? 20 : 10
+    if (this.isFullScreen) {
+      // The speed button is followed by cast, PiP, episode list and fullscreen.
+      let trailingButtonCount = 3 // cast, episode list and fullscreen
+      if (PiPManager.isPiPSupported() && this.hasEngine) {
+        trailingButtonCount += 1
+      }
+      margin += trailingButtonCount * 44 + trailingButtonCount * 8
+    } else {
+      // Portrait controls place PiP and fullscreen after the speed button.
+      margin += 44
+      if (PiPManager.isPiPSupported() && this.hasEngine) {
+        margin += 44
+      }
+    }
+    return margin
+  }
+
+  private getSpeedMenuBottomMargin(): number {
+    return this.bottomSafeHeight + (this.isFullScreen ? 64 : 56)
   }
 
   @Builder
   private MoreMenuItem(label: string, action: () => void) {
-    Row() {
-      Text(label)
-        .fontSize(15)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
+    MenuItem() {
+      Row() {
+        Text(label)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .height(40)
     }
-    .width('100%')
-    .height(40)
-    .padding({ left: 14, right: 14 })
+    .backgroundColor(Color.Transparent)
     .onClick(() => {
       action()
     })
@@ -2046,12 +2082,7 @@ export struct PlayerPage {
   @Builder
   private SpeedToolButton() {
     Row() {
-      Text(this.speedLabel)
-        .fontSize(14)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_on_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      this.CurrentSpeedSymbol()
     }
       .width(44)
       .height(40)
@@ -2060,13 +2091,49 @@ export struct PlayerPage {
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .onClick(() => {
-        if (this.isFullScreen) {
-          this.openSpeedPanel()
+        if (!this.isPlayerControlActionAllowed()) {
+          return
+        }
+        if (this.showSpeedMenu) {
+          this.closeSpeedMenu()
         } else {
-          this.nextSpeed()
-          this.showControlsWithAutoHide()
+          this.openSpeedMenu()
         }
       })
+  }
+
+  @Builder
+  private CurrentSpeedSymbol(): void {
+    if (Math.abs(this.speed - 0.5) < 0.01) {
+      SymbolGlyph($r('sys.symbol.speed_50percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (Math.abs(this.speed - 0.75) < 0.01) {
+      SymbolGlyph($r('sys.symbol.speed_75percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (Math.abs(this.speed - 1.25) < 0.01) {
+      SymbolGlyph($r('sys.symbol.speed_125percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (Math.abs(this.speed - 1.5) < 0.01) {
+      SymbolGlyph($r('sys.symbol.speed_150percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (Math.abs(this.speed - 2.0) < 0.01) {
+      SymbolGlyph($r('sys.symbol.speed_200percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    } else if (Math.abs(this.speed - 3.0) < 0.01) {
+      Text('3×')
+        .fontSize(14)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_on_primary'))
+    } else {
+      SymbolGlyph($r('sys.symbol.speed_100percent'))
+        .fontSize(22)
+        .fontColor([$r('app.color.text_on_primary')])
+    }
   }
 
   @Builder
@@ -2314,21 +2381,28 @@ export struct PlayerPage {
           this.EpisodeOrderButton()
 
           if (this.roads.length > 1) {
-            Row() {
-              Text(this.getSelectedRoadName())
-                .fontSize(13)
-                .fontColor($r('app.color.text_hint'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-              SymbolGlyph($r('sys.symbol.chevron_down'))
-                .fontSize(11)
-                .fontColor([$r('app.color.text_hint')])
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 4 }) {
+                Text(this.getSelectedRoadName())
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_hint'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                SymbolGlyph($r('sys.symbol.chevron_down'))
+                  .fontSize(11)
+                  .fontColor([$r('app.color.text_hint')])
+              }
             }
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .borderRadius(16)
+            .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
             .margin({ left: 8 })
             .onClick(() => {
               this.showRoadPickerPopup = !this.showRoadPickerPopup
             })
             .bindMenu(this.showRoadPickerPopup, this.RoadPickerPopupContent, {
+              systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
               placement: Placement.Bottom,
               showInSubWindow: false,
               onDisappear: () => {
@@ -2410,24 +2484,27 @@ export struct PlayerPage {
       Column() {
         Row() {
           if (this.roads.length > 1) {
-            Row() {
-              Text(this.getSelectedRoadName())
-                .fontSize(13)
-                .fontColor($r('app.color.text_hint'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-              SymbolGlyph($r('sys.symbol.chevron_down'))
-                .fontSize(11)
-                .fontColor([$r('app.color.text_hint')])
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 4 }) {
+                Text(this.getSelectedRoadName())
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_hint'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                SymbolGlyph($r('sys.symbol.chevron_down'))
+                  .fontSize(11)
+                  .fontColor([$r('app.color.text_hint')])
+              }
             }
             .height(32)
             .padding({ left: 12, right: 12 })
             .borderRadius(16)
-            .backgroundColor($r('app.color.episode_item_unselected_bg'))
+            .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
             .onClick(() => {
               this.showSideRoadPickerPopup = !this.showSideRoadPickerPopup
             })
             .bindMenu(this.showSideRoadPickerPopup, this.RoadPickerPopupContent, {
+              systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
               placement: Placement.BottomLeft,
               showInSubWindow: false,
               onDisappear: () => {
@@ -2490,7 +2567,7 @@ export struct PlayerPage {
       .height('100%')
       .backgroundColor($r('app.color.player_side_panel_surface'))
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
-      .systemMaterial(createConfiguredImmersiveMaterial())
+      .systemMaterial(createConfiguredImmersiveMaterial(true, this.api26MaterialStyle))
       .borderRadius({ topLeft: 32, bottomLeft: 32 })
       .clip(true)
       .border({ width: { left: 0.5 }, color: $r('app.color.divider_blue') })
@@ -2634,17 +2711,17 @@ export struct PlayerPage {
     if (this.isPhoneDevice()) {
       Column({ space: 4 }) {
         if (this.isEpisodeDownloadSelecting) {
-          this.EpisodeDownloadActionButton($r('sys.symbol.xmark'), () => {
+          this.EpisodeDownloadActionButton($r('sys.symbol.xmark'), '取消选择', () => {
             this.cancelEpisodeDownloadSelection()
           })
-          this.EpisodeDownloadActionButton($r('sys.symbol.checkmark'), () => {
+          this.EpisodeDownloadActionButton($r('sys.symbol.checkmark'), '确认下载', () => {
             this.confirmEpisodeDownloadSelection()
           })
-          this.EpisodeDownloadActionButton($r('sys.symbol.checkmark_square_on_square'), () => {
+          this.EpisodeDownloadActionButton($r('sys.symbol.checkmark_square_on_square'), '全选或取消全选', () => {
             this.toggleSelectAllEpisodesForDownload()
           })
         }
-        this.EpisodeDownloadActionButton($r('sys.symbol.arrowshape_down_to_line_fill'), () => {
+        this.EpisodeDownloadActionButton($r('sys.symbol.arrowshape_down_to_line_fill'), '下载剧集', () => {
           this.enterEpisodeDownloadSelection()
         })
       }
@@ -2654,53 +2731,20 @@ export struct PlayerPage {
   }
 
   @Builder
-  private EpisodeDownloadActionContent(icon: Resource, action: () => void) {
-    Row() {
+  private EpisodeDownloadActionButton(icon: Resource, accessibilityLabel: string, action: () => void) {
+    Button({ type: ButtonType.Circle }) {
       SymbolGlyph(icon)
         .fontSize(21)
         .fontColor([$r('app.color.accent_blue')])
     }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .hitTestBehavior(HitTestMode.Transparent)
-    .onClick(() => {
-      action()
-    })
-  }
-
-  @Builder
-  private EpisodeDownloadActionButton(icon: Resource, action: () => void) {
-    HdsTabs() {
-      TabContent()
-        .clip(false)
-        .backgroundColor(Color.Transparent)
-        .hitTestBehavior(HitTestMode.Transparent)
-    }
     .width(52)
     .height(52)
+    .padding(0)
     .clip(false)
-    .hitTestBehavior(HitTestMode.Transparent)
-    .barWidth(52)
-    .barHeight(52)
-    .barOverlap(true)
-    .barPosition(BarPosition.End)
-    .backgroundColor(Color.Transparent)
-    .vertical(false)
-    .barFloatingStyle({
-      barWidth: { smallWidth: 52, mediumWidth: 52, largeWidth: 52 },
-      gradientMask: { maskColor: Color.Transparent },
-      barBottomMargin: 0,
-      barSideMargin: 0,
-      systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-      miniBar: {
-        miniBarBuilder: () => {
-          this.EpisodeDownloadActionContent(icon, action)
-        },
-        miniBarStyle: 1
-      },
-      lightColor: Color.Transparent
+    .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle, $r('app.color.card_surface_blue')))
+    .accessibilityText(accessibilityLabel)
+    .onClick(() => {
+      action()
     })
   }
 
@@ -2766,7 +2810,7 @@ export struct PlayerPage {
             Column() {
               Text(this.getRoadDisplayName(road, index))
                 .fontSize(15)
-                .fontWeight(index === this.visibleRoadIndex ? FontWeight.Bold : FontWeight.Medium)
+                .fontWeight(FontWeight.Medium)
                 .fontColor(index === this.visibleRoadIndex ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -2785,7 +2829,7 @@ export struct PlayerPage {
           .height(58)
           .padding({ left: 14, right: 14 })
           .borderRadius(14)
-          .backgroundColor(index === this.visibleRoadIndex ? $r('app.color.episode_item_selected_bg') : Color.Transparent)
+          .backgroundColor(Color.Transparent)
         }
         .onClick(() => {
           if (index !== undefined) {
@@ -2881,57 +2925,28 @@ export struct PlayerPage {
     return '已找到播放地址，正在初始化播放器'
   }
 
-  private nextSpeed(): void {
-    const currentIdx = this.findCurrentSpeedIndex(this.speedOptions)
-    const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % this.speedOptions.length : 2
-    const nextSpeed = this.speedOptions[nextIdx]
-    this.changeSpeed(nextSpeed)
-    this.showHudText(this.formatSpeedLabel(nextSpeed))
-    logger.info('Player speed changed by UI: %{public}s', this.formatSpeedLabel(nextSpeed))
-  }
-
-  private openSpeedPanel(): void {
-    if (!this.isFullScreen) {
-      this.nextSpeed()
-      this.showControlsWithAutoHide()
-      return
-    }
-
+  private openSpeedMenu(): void {
     this.showMoreMenu = false
     this.showAspectModePanel = false
     this.showEpisodeSidePanel = false
+    this.showDanmakuMatchPanel = false
     this.showDanmakuSettingsPanel = false
-    this.showSpeedPanel = true
+    this.showDanmakuSettingsSheet = false
+    this.showSpeedMenu = true
     this.pauseAutoHideTimer()
   }
 
-  private closeSpeedPanel(): void {
-    this.showSpeedPanel = false
+  private closeSpeedMenu(): void {
+    this.showSpeedMenu = false
+    this.showControlsWithAutoHide()
   }
 
   private selectSpeed(speed: number): void {
     this.changeSpeed(speed)
     this.showHudText(this.formatSpeedLabel(speed))
-    this.showSpeedPanel = false
+    this.showSpeedMenu = false
     this.showControlsWithAutoHide()
     logger.info('Player speed selected by UI: %{public}s', this.formatSpeedLabel(speed))
-  }
-
-  private isSpeedSelected(speed: number): boolean {
-    return Math.abs(this.speed - speed) < 0.01
-  }
-
-  private findCurrentSpeedIndex(speeds: number[]): number {
-    let closestIndex = -1
-    let closestDelta = Number.MAX_VALUE
-    for (let i = 0; i < speeds.length; i++) {
-      const delta = Math.abs(speeds[i] - this.speed)
-      if (delta < closestDelta) {
-        closestDelta = delta
-        closestIndex = i
-      }
-    }
-    return closestDelta <= 0.02 ? closestIndex : -1
   }
 
   private formatSpeedLabel(speed: number): string {
@@ -3046,7 +3061,7 @@ export struct PlayerPage {
     this.showSideRoadPickerPopup = false
     if (this.isFullScreen) {
       this.showMoreMenu = false
-      this.showSpeedPanel = false
+      this.showSpeedMenu = false
       this.showDanmakuMatchPanel = false
       this.showDanmakuSettingsPanel = false
       this.showDanmakuSettingsSheet = false
@@ -3359,10 +3374,9 @@ export struct PlayerPage {
       this.liveStartPositionMs = state.positionMs
       this.cacheLivePlaybackPosition(state.positionMs)
     }
-    this.markContinuationState()
+    ContinuationState.updatePlayerPosition(this.positionMs)
     if (Math.abs(this.speed - state.speed) > 0.001) {
       this.speed = state.speed
-      this.speedLabel = this.formatSpeedLabel(state.speed)
     }
     if (this.shouldSyncPlaybackSessionState(state)) {
       const sessionStartMs = Date.now()
@@ -3568,7 +3582,7 @@ export struct PlayerPage {
       this.showMoreMenu = false
       this.showAspectModePanel = false
       this.showEpisodeSidePanel = false
-      this.showSpeedPanel = false
+      this.showSpeedMenu = false
       this.pauseAutoHideTimer()
       return
     }
@@ -3593,7 +3607,7 @@ export struct PlayerPage {
 
   private showControlsWithAutoHide(): void {
     this.isControlVisible = true
-    if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedPanel && this.selectedPanelTab !== 1) {
+    if (!this.showMoreMenu && !this.isDraggingProgress && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedMenu && this.selectedPanelTab !== 1) {
       this.startAutoHideTimer()
     }
   }
@@ -3611,7 +3625,7 @@ export struct PlayerPage {
     }
 
     if (this.showEpisodeSidePanel || this.showDanmakuSettingsPanel || this.showDanmakuSettingsSheet ||
-      this.showMoreMenu || this.showSpeedPanel || this.showAspectModePanel ||
+      this.showMoreMenu || this.showSpeedMenu || this.showAspectModePanel ||
       this.showRoadPickerPopup || this.showSideRoadPickerPopup) {
       return
     }
@@ -3679,7 +3693,7 @@ export struct PlayerPage {
   private startAutoHideTimer(): void {
     this.pauseAutoHideTimer()
     this.controlHideTimer = setTimeout(() => {
-      if (!this.isDraggingProgress && !this.showMoreMenu && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedPanel && this.selectedPanelTab !== 1) {
+      if (!this.isDraggingProgress && !this.showMoreMenu && !this.showDanmakuSettingsPanel && !this.showDanmakuSettingsSheet && !this.showEpisodeSidePanel && !this.showAspectModePanel && !this.showSpeedMenu && this.selectedPanelTab !== 1) {
         this.isControlVisible = false
       }
       this.controlHideTimer = -1
@@ -3693,7 +3707,11 @@ export struct PlayerPage {
       !this.showDanmakuSettingsSheet &&
       !this.showEpisodeSidePanel &&
       !this.showAspectModePanel &&
-      !this.showSpeedPanel
+      !this.showSpeedMenu
+  }
+
+  private isPlayerControlActionAllowed(): boolean {
+    return this.isControlVisible && !this.suppressControlAnimation
   }
 
   private pauseAutoHideTimer(): void {
@@ -3900,7 +3918,7 @@ export struct PlayerPage {
     this.showRoadPickerPopup = false
     this.showSideRoadPickerPopup = false
     this.showEpisodeSidePanel = false
-    this.showSpeedPanel = false
+    this.showSpeedMenu = false
     this.pauseAutoHideTimer()
     this.danmakuSettingsOpenVersion++
     if (this.isFullScreen) {
@@ -3942,7 +3960,7 @@ export struct PlayerPage {
 
   private async openDanmakuMatchPanel(): Promise<void> {
     this.showMoreMenu = false
-    this.showSpeedPanel = false
+    this.showSpeedMenu = false
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
     this.showEpisodeSidePanel = false
@@ -4077,7 +4095,6 @@ export struct PlayerPage {
     if (this.hasEngine && this.playerEngine !== null) {
       this.playerEngine.setSpeed(speed)
       this.speed = speed
-      this.speedLabel = this.formatSpeedLabel(speed)
     }
   }
 
@@ -4114,7 +4131,7 @@ export struct PlayerPage {
     this.isControlVisible = true
     this.showMoreMenu = false
     this.showAspectModePanel = false
-    this.showSpeedPanel = false
+    this.showSpeedMenu = false
     this.showDanmakuSettingsPanel = false
     this.showDanmakuSettingsSheet = false
     this.showEpisodeSidePanel = false
@@ -4389,29 +4406,19 @@ export struct PlayerPage {
     return Math.min(Math.max(360, targetWidth), 560)
   }
 
-  private getSpeedSidePanelWidth(): Dimension {
-    if (this.screenWidthVp <= 0) {
-      return 300
-    }
-    if (this.screenWidthVp < 720) {
-      return Math.min(300, Math.max(260, Math.round(this.screenWidthVp * 0.42)))
-    }
-    return Math.min(340, Math.max(300, Math.round(this.screenWidthVp * 0.28)))
-  }
-
   private hasNextEpisode(): boolean {
     if (this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
       return this.currentEpisodeIndex >= 0 &&
         this.currentEpisodeIndex < this.roads[this.selectedRoadIndex].episodes.length - 1
     }
-    return false
+    return this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < this.episodes.length - 1
   }
 
   private hasPreviousEpisode(): boolean {
     if (this.selectedRoadIndex >= 0 && this.selectedRoadIndex < this.roads.length) {
       return this.currentEpisodeIndex > 0
     }
-    return false
+    return this.episodes.length > 0 && this.currentEpisodeIndex > 0
   }
 
   private playNextEpisode(): void {
@@ -4420,6 +4427,8 @@ export struct PlayerPage {
         this.visibleRoadIndex = this.selectedRoadIndex
         this.onEpisodeSelected(this.currentEpisodeIndex + 1)
       }
+    } else if (this.currentEpisodeIndex >= 0 && this.currentEpisodeIndex < this.episodes.length - 1) {
+      this.onEpisodeSelected(this.currentEpisodeIndex + 1)
     }
   }
 
@@ -4429,6 +4438,8 @@ export struct PlayerPage {
         this.visibleRoadIndex = this.selectedRoadIndex
         this.onEpisodeSelected(this.currentEpisodeIndex - 1)
       }
+    } else if (this.episodes.length > 0 && this.currentEpisodeIndex > 0) {
+      this.onEpisodeSelected(this.currentEpisodeIndex - 1)
     }
   }
 
@@ -4440,7 +4451,9 @@ export struct PlayerPage {
       this.isEpisodeSwitching = keepCurrentVideo
       this.stopBeforeSniff()
       this.selectedRoadIndex = this.visibleRoadIndex
-      this.episodes = this.toEpisodePanelItems(this.roads[this.visibleRoadIndex])
+      if (this.visibleRoadIndex >= 0 && this.visibleRoadIndex < this.roads.length) {
+        this.episodes = this.toEpisodePanelItems(this.roads[this.visibleRoadIndex])
+      }
       this.currentEpisodeIndex = index
       this.episodeName = visibleEpisodes[index].name
       this.episodeUrl = visibleEpisodes[index].url
@@ -4468,6 +4481,7 @@ export struct PlayerPage {
       }
       this.showEpisodeSidePanel = false
       this.showControlsWithAutoHide()
+      this.markContinuationState()
     }
   }
 
@@ -4554,7 +4568,7 @@ export struct PlayerPage {
     if (this.visibleRoadIndex >= 0 && this.visibleRoadIndex < this.roads.length) {
       return this.toEpisodePanelItems(this.roads[this.visibleRoadIndex])
     }
-    return []
+    return this.episodes
   }
 
   private getDisplayedEpisodes(): EpisodePanelItem[] {
@@ -4606,14 +4620,18 @@ export struct PlayerPage {
       record.animeUrl = this.animeUrl
       record.bangumiId = this.bangumiId
       record.sourceId = this.sourceId >= 0 ? this.sourceId : this.ruleSourceId
+      record.sourceName = this.sourceName
       record.episodeName = this.episodeName
       record.episodeUrl = historyEpisodeUrl
+      record.episodePageUrl = historyEpisodeUrl
+      record.entryKind = 'online'
       record.positionMs = this.positionMs
       record.durationMs = this.durationMs
       record.roadIndex = this.selectedRoadIndex
       record.episodeIndex = this.currentEpisodeIndex
+      record.updatedAt = Date.now()
       await this.historyStore.upsert(record)
-      HistorySyncService.getInstance().scheduleAutoUploadAfterLocalChange()
+      await HistorySyncService.getInstance().recordProgress(record)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logger.error('Save history failed: %{public}s', msg)
@@ -4942,18 +4960,17 @@ export struct PlayerPage {
     return this.sourceResolver.getIsResolving()
   }
 
-  private async toggleCollect(): Promise<void> {
+  private async updateCollectStatus(collectType: number): Promise<void> {
     try {
       const animeItem = this.buildAnimeItemFromPlayer()
-      if (CollectType.isFavorite(this.currentCollectType)) {
-        await this.collectController.deleteCollect(animeItem)
-        this.currentCollectType = CollectType.none
-      } else {
-        await this.collectController.addCollect(animeItem, CollectType.favorite)
-        this.currentCollectType = CollectType.favorite
-      }
+      const normalizedType = CollectType.normalize(collectType)
+      await this.collectController.addCollect(animeItem, normalizedType)
+      this.currentCollectType = normalizedType
+      this.showCollectStatusSheet = false
+      this.showHudText(normalizedType === CollectType.none ? '已取消追番' :
+        `已设为${CollectType.getLabel(normalizedType)}`)
     } catch (err) {
-      logger.error('Toggle collect failed: %{public}s', err instanceof Error ? err.message : String(err))
+      logger.error('Update collect status failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
   }
 

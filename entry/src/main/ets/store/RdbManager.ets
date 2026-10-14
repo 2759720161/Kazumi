@@ -80,6 +80,19 @@ export class RdbManager {
     }
   }
 
+  async batchInsert(table: string, values: relationalStore.ValuesBucket[]): Promise<number> {
+    const store = this.getStore();
+    try {
+      const count = await store.batchInsert(table, values);
+      logger.debug('Batch inserted into %{public}s, count=%{public}d', table, count);
+      return count;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Batch insert failed for %{public}s: %{public}s', table, msg);
+      throw new Error(msg);
+    }
+  }
+
   async update(table: string, values: relationalStore.ValuesBucket, predicates: relationalStore.RdbPredicates): Promise<number> {
     const store = this.getStore();
     try {

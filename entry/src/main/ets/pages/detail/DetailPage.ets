@@ -1,10 +1,12 @@
 import { CollectController } from '../../controller/CollectController'
 import { CollectType } from '../../models/CollectType'
+import { CollectStatusMenu } from '../../components/collect/CollectStatusMenu'
 import { AnimeItem } from '../../models/AnimeItem'
 import { DetailHeroBackground } from '../../components/detail/DetailHeroBackground'
 import { DetailTitleBlock } from '../../components/detail/DetailTitleBlock'
 import { DetailInfoPanel } from '../../components/detail/DetailInfoPanel'
 import { DetailFloatingPlayButton } from '../../components/detail/DetailFloatingPlayButton'
+import { CachedRemoteImage } from '../../components/common/CachedRemoteImage'
 import { SourceSheet, SourceSheetSnapshot } from '../../components/detail/SourceSheet'
 import { BangumiApi } from '../../core/api/BangumiApi'
 import { BangumiConfig } from '../../core/api/BangumiConfig'
@@ -75,6 +77,7 @@ export struct DetailPageContent {
   @State animeEps: number = 0
   @State sourceName: string = ''
   @State currentCollectType: number = CollectType.none
+  @State showCollectStatusSheet: boolean = false
   @State showSourceSheet: boolean = false
   @State autoOpenSourceSheet: boolean = false
   @State sourceSheetCloseSignal: number = 0
@@ -224,6 +227,14 @@ export struct DetailPageContent {
     .width('100%')
     .height(LayoutPolicy.matchParent)
     .background($r('app.color.page_background_media'))
+    .bindSheet($$this.showCollectStatusSheet, this.CollectStatusSheetContent, {
+      height: 410,
+      showClose: false,
+      dragBar: true,
+      onDisappear: () => {
+        this.showCollectStatusSheet = false
+      }
+    })
   }
 
   @Builder
@@ -276,19 +287,16 @@ export struct DetailPageContent {
           .width('100%')
           .hitTestBehavior(HitTestMode.None)
 
-        Image(this.getTransitionCoverSrc())
-          .draggable(false)
+        CachedRemoteImage({
+          source: this.getTransitionCoverSrc(),
+          sources: this.buildCoverUrls(),
+          sharedId: this.getSharedCoverIdForRender(),
+          priority: true,
+          cornerRadius: 12
+        })
           .width('100%')
           .aspectRatio(118 / 168)
-          .objectFit(this.getTransitionCoverSrc().length > 0 ? ImageFit.Cover : ImageFit.Contain)
-          .borderRadius(12)
-          .clip(true)
-          .alt($r('app.media.ic_placeholder'))
           .shadow({ radius: 20, color: $r('app.color.detail_info_shadow'), offsetY: 8 })
-          .onError(() => {
-            this.tryNextCoverImage()
-          })
-          .sharedTransition(this.getSharedCoverIdForRender(), { duration: 420, curve: Curve.FastOutSlowIn })
       }
       .width('36%')
       .height('100%')
@@ -792,7 +800,7 @@ export struct DetailPageContent {
   private async loadDetail(): Promise<void> {
     try {
       const animeId = `${this.ruleSourceId}_${this.animeUrl}`
-      this.currentCollectType = await this.collectController.getCollectType(animeId)
+      this.currentCollectType = await this.collectController.getCollectType(animeId, this.bangumiId)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logger.warn('Load collect type failed: %{public}s', msg)
@@ -815,18 +823,31 @@ export struct DetailPageContent {
     return item
   }
 
-  private async toggleCollect(): Promise<void> {
+  @Builder
+  private CollectStatusSheetContent(): void {
+    CollectStatusMenu({
+      currentType: this.currentCollectType,
+      onSelect: (collectType: number) => {
+        this.updateCollectStatus(collectType)
+      },
+      onDismiss: () => {
+        this.showCollectStatusSheet = false
+      }
+    })
+      .padding({ bottom: this.bottomSafeHeight })
+  }
+
+  private async updateCollectStatus(collectType: number): Promise<void> {
     try {
       const animeItem = this.buildAnimeItem()
-      if (CollectType.isFavorite(this.currentCollectType)) {
-        await this.collectController.deleteCollect(animeItem)
-        this.currentCollectType = CollectType.none
-      } else {
-        await this.collectController.addCollect(animeItem, CollectType.favorite)
-        this.currentCollectType = CollectType.favorite
-      }
+      const normalizedType = CollectType.normalize(collectType)
+      await this.collectController.addCollect(animeItem, normalizedType)
+      this.currentCollectType = normalizedType
+      this.showCollectStatusSheet = false
+      promptAction.showToast({ message: normalizedType === CollectType.none ? '已取消追番' :
+        `已设为${CollectType.getLabel(normalizedType)}` })
     } catch (err) {
-      logger.error('toggleCollect failed: %{public}s', err instanceof Error ? err.message : String(err))
+      logger.error('updateCollectStatus failed: %{public}s', err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -979,9 +1000,9 @@ export struct DetailPageContent {
     return {
       icon: CollectType.isFavorite(this.currentCollectType) ?
         CollectType.getIcon(this.currentCollectType) : $r('sys.symbol.heart'),
-      label: CollectType.isFavorite(this.currentCollectType) ? '已收藏' : '收藏',
+      label: CollectType.isFavorite(this.currentCollectType) ? CollectType.getLabel(this.currentCollectType) : '追番',
       action: () => {
-        this.toggleCollect()
+        this.showCollectStatusSheet = true
       }
     }
   }

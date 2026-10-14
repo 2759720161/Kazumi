@@ -1,5 +1,6 @@
 import { http } from '@kit.NetworkKit'
 import { util } from '@kit.ArkTS'
+import { BusinessError } from '@kit.BasicServicesKit'
 import { Logger } from '../utils/Logger'
 
 const logger = new Logger('WebDavClient')
@@ -19,6 +20,12 @@ export class WebDavResponse {
   headers: Record<string, Object> = {}
 }
 
+export class WebDavBinaryResponse {
+  statusCode: number = 0
+  body: Uint8Array = new Uint8Array(0)
+  headers: Record<string, Object> = {}
+}
+
 export class WebDavClient {
   private config: WebDavConfig
 
@@ -29,13 +36,9 @@ export class WebDavClient {
   async testConnection(): Promise<boolean> {
     const headers: Record<string, string> = {}
     headers['Depth'] = '0'
-    const response = await this.request('PROPFIND', this.buildUrl(this.config.remoteDir), '', headers)
+    const response = await this.request('PROPFIND', this.buildUrl('/'), '', headers)
     if (response.statusCode === 207 || response.statusCode === 200 || response.statusCode === 301 ||
       response.statusCode === 302) {
-      return true
-    }
-    if (response.statusCode === 404) {
-      await this.ensureRemoteDir()
       return true
     }
     return false
@@ -98,6 +101,109 @@ export class WebDavClient {
       return
     }
     throw new Error('上传远端文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  async downloadBytesAtPath(remotePath: string): Promise<Uint8Array | null> {
+    const response = await this.requestBinary('GET', this.buildUrl(remotePath))
+    if (response.statusCode === 200) {
+      return response.body
+    }
+    if (response.statusCode === 404) {
+      return null
+    }
+    throw new Error('下载远端二进制文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  async uploadBytesAtPath(remotePath: string, content: Uint8Array): Promise<void> {
+    const response = await this.requestBinary('PUT', this.buildUrl(remotePath), content, {
+      'Content-Type': 'application/octet-stream'
+    })
+    if (response.statusCode === 200 || response.statusCode === 201 || response.statusCode === 204) {
+      return
+    }
+    throw new Error('上传远端二进制文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  async replaceTextAtPath(destinationPath: string, temporaryPath: string, content: string): Promise<void> {
+    await this.deleteAtPath(temporaryPath)
+    await this.uploadTextAtPath(temporaryPath, content)
+    try {
+      await this.commitUploadedFile(temporaryPath, destinationPath)
+    } catch (moveErr) {
+      const moveMessage = moveErr instanceof Error ? moveErr.message : String(moveErr)
+      logger.warn('WebDAV MOVE commit failed, falling back to direct PUT: %{public}s', moveMessage)
+      try {
+        await this.uploadTextAtPath(destinationPath, content)
+      } catch (uploadErr) {
+        await this.deleteIgnoringFailure(temporaryPath)
+        const uploadMessage = uploadErr instanceof Error ? uploadErr.message : String(uploadErr)
+        throw new Error(moveMessage + '; 直接写入回退失败: ' + uploadMessage)
+      }
+      await this.deleteIgnoringFailure(temporaryPath)
+    }
+  }
+
+  async replaceBytesAtPath(destinationPath: string, temporaryPath: string, content: Uint8Array): Promise<void> {
+    await this.deleteAtPath(temporaryPath)
+    await this.uploadBytesAtPath(temporaryPath, content)
+    try {
+      await this.commitUploadedFile(temporaryPath, destinationPath)
+    } catch (moveErr) {
+      const moveMessage = moveErr instanceof Error ? moveErr.message : String(moveErr)
+      logger.warn('WebDAV MOVE commit failed, falling back to direct binary PUT: %{public}s', moveMessage)
+      try {
+        await this.uploadBytesAtPath(destinationPath, content)
+      } catch (uploadErr) {
+        await this.deleteIgnoringFailure(temporaryPath)
+        const uploadMessage = uploadErr instanceof Error ? uploadErr.message : String(uploadErr)
+        throw new Error(moveMessage + '; 直接写入回退失败: ' + uploadMessage)
+      }
+      await this.deleteIgnoringFailure(temporaryPath)
+    }
+  }
+
+  async moveAtPath(sourcePath: string, destinationPath: string): Promise<void> {
+    const response = await this.requestMove(sourcePath, destinationPath)
+    if (response.statusCode === 200 || response.statusCode === 201 || response.statusCode === 204) {
+      return
+    }
+    throw new Error('提交远端文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  private async commitUploadedFile(sourcePath: string, destinationPath: string): Promise<void> {
+    let response = await this.requestMove(sourcePath, destinationPath)
+    if (this.isMoveSuccessful(response.statusCode)) {
+      return
+    }
+    if (response.statusCode === 409 || response.statusCode === 412) {
+      logger.warn('WebDAV overwrite MOVE returned %{public}d; retrying after deleting destination',
+        response.statusCode)
+      await this.deleteAtPath(destinationPath)
+      response = await this.requestMove(sourcePath, destinationPath)
+      if (this.isMoveSuccessful(response.statusCode)) {
+        return
+      }
+    }
+    throw new Error('提交远端文件失败: HTTP ' + String(response.statusCode))
+  }
+
+  private async requestMove(sourcePath: string, destinationPath: string): Promise<WebDavResponse> {
+    return await this.request('MOVE', this.buildUrl(sourcePath), '', {
+      'Destination': this.buildUrl(destinationPath),
+      'Overwrite': 'T'
+    })
+  }
+
+  private isMoveSuccessful(statusCode: number): boolean {
+    return statusCode === 200 || statusCode === 201 || statusCode === 204
+  }
+
+  private async deleteIgnoringFailure(remotePath: string): Promise<void> {
+    try {
+      await this.deleteAtPath(remotePath)
+    } catch (err) {
+      logger.warn('WebDAV temporary file cleanup failed: %{public}s', err instanceof Error ? err.message : String(err))
+    }
   }
 
   async deleteAtPath(remotePath: string): Promise<void> {
@@ -175,6 +281,48 @@ export class WebDavClient {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logger.warn('WebDAV request failed: %{public}s %{public}s %{public}s', method, url, msg)
+      throw new Error(msg)
+    } finally {
+      httpRequest.destroy()
+    }
+  }
+
+  private async requestBinary(method: string, url: string, body?: Uint8Array,
+    headers?: Record<string, string>): Promise<WebDavBinaryResponse> {
+    const httpRequest = http.createHttp()
+    const requestHeaders: Record<string, string> = {}
+    if (headers !== undefined) {
+      const keys = Object.keys(headers)
+      for (let i = 0; i < keys.length; i++) {
+        requestHeaders[keys[i]] = headers[keys[i]]
+      }
+    }
+    requestHeaders['Authorization'] = this.buildAuthorization()
+    requestHeaders['Accept'] = '*/*'
+
+    try {
+      const requestBody = body !== undefined && body.length > 0 ? WebDavClient.toExactArrayBuffer(body) : undefined
+      const options: http.HttpRequestOptions = {
+        method: this.resolveRequestMethod(method),
+        customMethod: method,
+        header: requestHeaders,
+        readTimeout: 20000,
+        connectTimeout: 20000,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+        extraData: requestBody
+      }
+      const result = await httpRequest.request(url, options)
+      const response = new WebDavBinaryResponse()
+      response.statusCode = result.responseCode as number
+      response.headers = result.header as Record<string, Object>
+      if (result.result instanceof ArrayBuffer) {
+        response.body = new Uint8Array(result.result as ArrayBuffer)
+      }
+      logger.debug('WebDAV binary %{public}s %{public}s -> %{public}d', method, url, response.statusCode)
+      return response
+    } catch (err) {
+      const msg = WebDavClient.errorMessage(err)
+      logger.warn('WebDAV binary request failed: %{public}s %{public}s %{public}s', method, url, msg)
       throw new Error(msg)
     } finally {
       httpRequest.destroy()
@@ -324,5 +472,32 @@ export class WebDavClient {
       }
     }
     return new Uint8Array(bytes)
+  }
+
+  private static toExactArrayBuffer(input: Uint8Array): ArrayBuffer {
+    const buffer = new ArrayBuffer(input.length)
+    const output = new Uint8Array(buffer)
+    for (let i = 0; i < input.length; i++) {
+      output[i] = input[i]
+    }
+    return buffer
+  }
+
+  private static errorMessage(err: Object): string {
+    if (err instanceof Error) {
+      return err.message
+    }
+    const businessError = err as BusinessError
+    const message = businessError.message ?? ''
+    const code = businessError.code ?? 0
+    if (message.length > 0 || code !== 0) {
+      return 'code=' + String(code) + ' message=' + message
+    }
+    try {
+      const serialized = JSON.stringify(err)
+      return serialized.length > 0 ? serialized : String(err)
+    } catch (_serializeErr) {
+      return String(err)
+    }
   }
 }

@@ -1,20 +1,55 @@
-import { HdsTabs, HdsTabsController } from '@kit.UIDesignKit'
-import { deviceInfo } from '@kit.BasicServicesKit'
 import {
-  buildAdaptiveMaterialEffect,
-  HDS_MATERIAL_LEVEL_DEFAULT,
-  PREFS_KEY_HDS_MATERIAL_LEVEL
-} from '../../utils/HdsPageStyle'
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  createControlImmersiveMaterial,
+  isImmersiveMaterialSupported
+} from '../../utils/ImmersiveMaterial'
+
+class PlayToggleMaterialModifier implements AttributeModifier<ToggleAttribute> {
+  private materialStyle: string
+
+  constructor(materialStyle: string) {
+    this.materialStyle = materialStyle
+  }
+
+  applyNormalAttribute(instance: ToggleAttribute): void {
+    instance.backgroundColor($r('app.color.card_surface_blue'))
+      .selectedColor($r('app.color.card_surface_blue'))
+    const material = createControlImmersiveMaterial(this.materialStyle)
+    if (material !== undefined) {
+      instance.systemMaterial(material)
+    }
+  }
+}
 
 @Component
 export struct DetailFloatingPlayButton {
-  @StorageLink('isHdsTabsEnabled') isHdsTabsEnabled: boolean = true
-  @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @Prop bottomSafeHeight: number = 0
+  @State private playButtonOn: boolean = false
+
+  private resetTimer: number = -1
 
   onPlay: (() => void) | undefined = undefined
 
-  private tabsController: HdsTabsController = new HdsTabsController()
+  aboutToDisappear(): void {
+    clearTimeout(this.resetTimer)
+    this.resetTimer = -1
+    this.playButtonOn = false
+  }
+
+  private onPlayToggleChange(isOn: boolean): void {
+    this.playButtonOn = isOn
+    clearTimeout(this.resetTimer)
+    this.resetTimer = -1
+    if (isOn) {
+      // This toggle is an action, not a persistent playback state.
+      this.resetTimer = setTimeout(() => {
+        this.resetTimer = -1
+        this.playButtonOn = false
+      }, 0)
+    }
+  }
 
   @Builder
   private PlayContent() {
@@ -33,86 +68,56 @@ export struct DetailFloatingPlayButton {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
-    .borderRadius(26)
-    .hitTestBehavior(HitTestMode.Transparent)
-    .onClick(() => {
-      if (this.onPlay) {
-        this.onPlay()
-      }
-    })
+    .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
-  private HdsPlayButton() {
-    HdsTabs({ controller: this.tabsController }) {
-      TabContent()
-        .clip(false)
-        .backgroundColor(Color.Transparent)
-        .hitTestBehavior(HitTestMode.Transparent)
+  private NativePlayButton() {
+    Toggle({ type: ToggleType.Button, isOn: this.playButtonOn }) {
+      this.PlayContent()
     }
     .width(126)
     .height(52)
+    .padding(0)
+    .borderRadius(26)
     .clip(false)
-    .hitTestBehavior(HitTestMode.Transparent)
-    .barWidth(126)
-    .barHeight(52)
-    .barOverlap(true)
-    .barPosition(BarPosition.End)
-    .backgroundColor(Color.Transparent)
-    .vertical(false)
-    .barFloatingStyle({
-      barWidth: { smallWidth: 126, mediumWidth: 126, largeWidth: 126 },
-      gradientMask: {
-        maskColor: Color.Transparent
-      },
-      barBottomMargin: 0,
-      barSideMargin: 0,
-      systemMaterialEffect: buildAdaptiveMaterialEffect(this.hdsMaterialLevel),
-      miniBar: {
-        miniBarBuilder: () => {
-          this.PlayContent()
-        },
-        miniBarStyle: 1
-      },
-      lightColor: Color.Transparent
+    .attributeModifier(new PlayToggleMaterialModifier(this.api26MaterialStyle))
+    .accessibilityText('开始播放')
+    .onChange((isOn: boolean) => {
+      this.onPlayToggleChange(isOn)
+    })
+    .onClick(() => {
+      this.onPlay?.()
     })
   }
 
   @Builder
   private FallbackPlayButton() {
-    Button() {
-      Row() {
-        SymbolGlyph($r('sys.symbol.play_fill'))
-          .fontSize(22)
-          .fontColor([$r('app.color.accent_blue')])
-          .margin({ right: 9 })
-
-        Text('开始播放')
-          .fontSize(17)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.accent_blue'))
-      }
-      .justifyContent(FlexAlign.Center)
-      .width('100%')
+    Toggle({ type: ToggleType.Button, isOn: this.playButtonOn }) {
+      this.PlayContent()
     }
     .width(126)
     .height(52)
+    .padding(0)
     .borderRadius(26)
     .backgroundColor($r('app.color.card_surface_blue'))
+    .selectedColor($r('app.color.card_surface_blue'))
     .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
     .border({ width: 0.5, color: $r('app.color.border_specular') })
     .shadow({ radius: 18, color: $r('app.color.shadow_surface'), offsetY: 7 })
+    .accessibilityText('开始播放')
+    .onChange((isOn: boolean) => {
+      this.onPlayToggleChange(isOn)
+    })
     .onClick(() => {
-      if (this.onPlay) {
-        this.onPlay()
-      }
+      this.onPlay?.()
     })
   }
 
   build() {
     Row() {
-      if (this.isHdsTabsEnabled && deviceInfo.distributionOSApiVersion >= 60100) {
-        this.HdsPlayButton()
+      if (isImmersiveMaterialSupported()) {
+        this.NativePlayButton()
       } else {
         this.FallbackPlayButton()
       }

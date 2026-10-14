@@ -28,6 +28,9 @@ import {
   HDS_MATERIAL_LEVEL_DEFAULT,
   PREFS_KEY_HDS_MATERIAL_LEVEL
 } from '../../utils/HdsPageStyle'
+import { API26_MATERIAL_STYLE_DEFAULT, PREFS_KEY_API26_MATERIAL_STYLE,
+  createMenuImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import { ImmersiveButtonModifier } from '../../utils/ImmersiveButtonModifier'
 
 const logger = new Logger('RuleEditorPage')
 
@@ -37,6 +40,7 @@ struct RuleEditorPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @State ruleName: string = ''
   @State version: string = '1.0'
   @State baseUrl: string = ''
@@ -327,29 +331,33 @@ struct RuleEditorPage {
         .textAlign(TextAlign.Start)
         .layoutWeight(1)
 
-      Row() {
-        Text(value === RuleMode.API ? 'API' : 'XPath')
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .textAlign(TextAlign.End)
-          .layoutWeight(1)
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          Text(value === RuleMode.API ? 'API' : 'XPath')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .textAlign(TextAlign.End)
+            .layoutWeight(1)
 
-        Text('▼')
-          .fontSize(12)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 8 })
+          Text('▼')
+            .fontSize(12)
+            .fontColor($r('app.color.text_primary'))
+            .margin({ left: 8 })
+        }.width('100%')
       }
       .width(112)
       .height(38)
       .padding({ left: 10, right: 8 })
       .borderRadius(12)
+      .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
       .onClick(() => {
         this.ruleModeMenuSection = section
       })
       .bindMenu(this.ruleModeMenuSection === section, this.RuleModeMenuContent, {
+        systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
         placement: Placement.Bottom,
         showInSubWindow: false,
         onDisappear: () => {
@@ -386,7 +394,7 @@ struct RuleEditorPage {
       Row() {
         Text(label)
           .fontSize(16)
-          .fontWeight(selected ? FontWeight.Bold : FontWeight.Medium)
+          .fontWeight(FontWeight.Medium)
           .fontColor(selected ? $r('app.color.accent_blue') : $r('app.color.text_primary'))
           .layoutWeight(1)
       }
@@ -394,7 +402,7 @@ struct RuleEditorPage {
       .height(48)
       .padding({ left: 14, right: 14 })
       .borderRadius(14)
-      .backgroundColor(selected ? $r('app.color.episode_item_selected_bg') : Color.Transparent)
+      .backgroundColor(Color.Transparent)
     }
     .onClick(action)
   }
@@ -409,28 +417,32 @@ struct RuleEditorPage {
         .textAlign(TextAlign.Start)
         .layoutWeight(1)
 
-      Row() {
-        Text(value)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textAlign(TextAlign.End)
-          .layoutWeight(1)
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          Text(value)
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textAlign(TextAlign.End)
+            .layoutWeight(1)
 
-        Text('▼')
-          .fontSize(12)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 8 })
+          Text('▼')
+            .fontSize(12)
+            .fontColor($r('app.color.text_primary'))
+            .margin({ left: 8 })
+        }.width('100%')
       }
       .width(112)
       .height(38)
       .padding({ left: 10, right: 8 })
       .borderRadius(12)
+      .attributeModifier(new ImmersiveButtonModifier(this.api26MaterialStyle))
       .onClick(() => {
         this.requestMethodMenuSection = section
       })
       .bindMenu(this.requestMethodMenuSection === section, this.RequestMethodMenuContent, {
+        systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
         placement: Placement.Bottom,
         showInSubWindow: false,
         onDisappear: () => {

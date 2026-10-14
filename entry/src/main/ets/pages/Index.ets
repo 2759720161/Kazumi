@@ -20,7 +20,12 @@ import {
   BOTTOM_TAB_AUTO_HIDE_DEFAULT,
   BOTTOM_TAB_SHOW_ANIMATION_DEFAULT
 } from '../utils/BottomTabAutoHide'
-import { ADVANCED_OPTIONS_UNLOCKED_KEY, HIDE_LOCAL_PAGE_KEY } from '../utils/AdvancedOptionsUnlock'
+import {
+  ADVANCED_OPTIONS_UNLOCKED_KEY,
+  HIDE_LOCAL_PAGE_KEY,
+  HIDE_TIMELINE_PAGE_KEY,
+  HIDE_FAVORITE_PAGE_KEY
+} from '../utils/AdvancedOptionsUnlock'
 import {
   CONTINUATION_RESTORE_PAYLOAD_KEY,
   CONTINUATION_RESTORE_TOKEN_KEY,
@@ -38,14 +43,20 @@ import {
   THIRD_LAUNCH_NOTICE_ACKNOWLEDGED_PREF_KEY,
   THIRD_LAUNCH_NOTICE_PENDING_KEY
 } from '../utils/ThirdLaunchNotice'
+import {
+  COVER_LOADING_NOTICE_ACKNOWLEDGED_PREF_KEY,
+  COVER_LOADING_NOTICE_PENDING_KEY
+} from '../utils/CoverLoadingNotice'
 
 const logger = new Logger('Index')
 const APP_PREFERENCES_READY_KEY: string = 'appPreferencesReady'
 const DOWNLOAD_NAVIGATION_TOKEN_KEY: string = 'downloadNavigationToken'
 
 @CustomDialog
-struct ThirdLaunchSupportDialog {
+struct LaunchNoticeDialog {
   controller?: CustomDialogController
+  @Prop title: ResourceStr = '支持作者'
+  @Prop message: ResourceStr = '由于该应用无法上架应用商店（曾经上架过，但是被下架并封号），如果您对该应用感到满意，可以在应用市场下载“影匣”，并打开使用两分钟（可以的话，隔一两天打开一次）。影匣也会不断更新迭代，您的支持是对作者最大的鼓励。'
   onAcknowledge: () => void = (): void => {}
   @State private remainingSeconds: number = 5
   private countdownTimer: number = -1
@@ -76,7 +87,7 @@ struct ThirdLaunchSupportDialog {
 
   build() {
     Column() {
-      Text('支持作者')
+      Text(this.title)
         .fontSize(24)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
@@ -84,7 +95,7 @@ struct ThirdLaunchSupportDialog {
         .textAlign(TextAlign.Center)
         .margin({ bottom: 18 })
 
-      Text('由于该应用无法上架应用商店（曾经上架过，但是被下架并封号），如果您对该应用感到满意，可以在应用市场下载“影匣”，并打开使用两分钟（可以的话，隔一两天打开一次）。影匣也会不断更新迭代，您的支持是对作者最大的鼓励。')
+      Text(this.message)
         .fontSize(16)
         .fontWeight(FontWeight.Regular)
         .fontColor($r('app.color.text_body'))
@@ -103,6 +114,9 @@ struct ThirdLaunchSupportDialog {
         .backgroundColor(this.remainingSeconds > 0 ? $r('app.color.status_default') : $r('app.color.accent_blue'))
         .enabled(this.remainingSeconds === 0)
         .onClick((): void => {
+          if (this.remainingSeconds > 0) {
+            return
+          }
           this.onAcknowledge()
           this.controller?.close()
         })
@@ -131,8 +145,12 @@ struct Index {
   @StorageLink(BOTTOM_TAB_ANIMATION_HIDDEN_KEY) bottomTabAnimationHidden: boolean = false
   @StorageLink(ADVANCED_OPTIONS_UNLOCKED_KEY) @Watch('onAdvancedOptionsUnlockedChanged')
   advancedOptionsUnlocked: boolean = true
-  @StorageLink(HIDE_LOCAL_PAGE_KEY) @Watch('onHideLocalPageChanged')
+  @StorageLink(HIDE_LOCAL_PAGE_KEY) @Watch('onHiddenPageChanged')
   hideLocalPage: boolean = false
+  @StorageLink(HIDE_TIMELINE_PAGE_KEY) @Watch('onHiddenPageChanged')
+  hideTimelinePage: boolean = false
+  @StorageLink(HIDE_FAVORITE_PAGE_KEY) @Watch('onHiddenPageChanged')
+  hideFavoritePage: boolean = false
   @StorageLink(PREFS_KEY_HDS_MATERIAL_LEVEL) hdsMaterialLevel: string = HDS_MATERIAL_LEVEL_DEFAULT
   @StorageLink(CONTINUATION_RESTORE_PAYLOAD_KEY) continuationRestorePayload: string = ''
   @StorageLink(CONTINUATION_RESTORE_TOKEN_KEY) @Watch('onContinuationRestoreTokenChanged')
@@ -143,6 +161,8 @@ struct Index {
   downloadNavigationToken: number = 0
   @StorageLink(THIRD_LAUNCH_NOTICE_PENDING_KEY) @Watch('onThirdLaunchNoticePendingChanged')
   thirdLaunchNoticePending: boolean = false
+  @StorageLink(COVER_LOADING_NOTICE_PENDING_KEY) @Watch('onCoverLoadingNoticePendingChanged')
+  coverLoadingNoticePending: boolean = false
   @State private hdsImmersiveMaterialSupported: boolean = true
   private tabsController: HdsTabsController = new HdsTabsController()
   private bottomTabControllerHidden: boolean = false
@@ -153,9 +173,27 @@ struct Index {
   private handledContinuationRestoreToken: number = -1
   private pendingMainTabIndex: number = -1
   private handledDownloadNavigationToken: number = 0
-  private thirdLaunchNoticeOpening: boolean = false
+  private previousHideLocalPage: boolean = false
+  private previousHideTimelinePage: boolean = false
+  private previousHideFavoritePage: boolean = false
+  private launchNoticeOpening: boolean = false
+  private launchNoticeTimer: number = -1
+  private indexPageVisible: boolean = false
+  private coverLoadingNoticeController: CustomDialogController | null = new CustomDialogController({
+    builder: LaunchNoticeDialog({
+      title: $r('app.string.cover_loading_notice_title'),
+      message: $r('app.string.cover_loading_notice_message'),
+      onAcknowledge: (): void => {
+        this.acknowledgeCoverLoadingNotice()
+      }
+    }),
+    customStyle: true,
+    autoCancel: false,
+    alignment: DialogAlignment.Center,
+    maskColor: $r('app.color.overlay_modal_bg')
+  })
   private thirdLaunchNoticeController: CustomDialogController | null = new CustomDialogController({
-    builder: ThirdLaunchSupportDialog({
+    builder: LaunchNoticeDialog({
       onAcknowledge: (): void => {
         this.acknowledgeThirdLaunchNotice()
       }
@@ -167,22 +205,29 @@ struct Index {
   })
 
   aboutToAppear(): void {
+    this.indexPageVisible = true
     setHomePreloadEnabled(true)
     this.refreshHdsMaterialSupport()
+    this.previousHideLocalPage = this.hideLocalPage
+    this.previousHideTimelinePage = this.hideTimelinePage
+    this.previousHideFavoritePage = this.hideFavoritePage
     this.normalizeCurrentTab()
-    ContinuationState.markIndex(this.currentTab)
+    this.markCurrentContinuationState()
     this.restoreContinuationIfNeeded()
     this.openDownloadPageIfNeeded()
-    this.openThirdLaunchNoticeIfNeeded()
+    this.openLaunchNoticesIfNeeded()
   }
 
   onPageShow(): void {
+    this.indexPageVisible = true
     setHomePreloadEnabled(true)
     logger.info('Index page visible, resume home preload')
-    this.openThirdLaunchNoticeIfNeeded()
+    this.openLaunchNoticesIfNeeded()
   }
 
   onPageHide(): void {
+    this.indexPageVisible = false
+    this.cancelPendingLaunchNotice()
     setHomePreloadEnabled(false)
     logger.info('Index page hidden, pause home preload')
   }
@@ -192,36 +237,74 @@ struct Index {
   }
 
   private onThirdLaunchNoticePendingChanged(): void {
-    this.openThirdLaunchNoticeIfNeeded()
+    this.openLaunchNoticesIfNeeded()
+  }
+
+  private onCoverLoadingNoticePendingChanged(): void {
+    this.openLaunchNoticesIfNeeded()
   }
 
   private onAppPreferencesReadyChanged(): void {
-    this.openThirdLaunchNoticeIfNeeded()
+    this.restoreContinuationIfNeeded()
+    this.openLaunchNoticesIfNeeded()
   }
 
-  private openThirdLaunchNoticeIfNeeded(): void {
-    if (!this.appPreferencesReady || !this.thirdLaunchNoticePending || this.thirdLaunchNoticeOpening) {
+  aboutToDisappear(): void {
+    this.indexPageVisible = false
+    this.cancelPendingLaunchNotice()
+    this.coverLoadingNoticeController?.close()
+    this.thirdLaunchNoticeController?.close()
+    this.launchNoticeOpening = false
+  }
+
+  private cancelPendingLaunchNotice(): void {
+    clearTimeout(this.launchNoticeTimer)
+    this.launchNoticeTimer = -1
+  }
+
+  private openLaunchNoticesIfNeeded(): void {
+    if (!this.appPreferencesReady || !this.indexPageVisible || this.launchNoticeOpening ||
+      this.launchNoticeTimer >= 0 || (!this.coverLoadingNoticePending && !this.thirdLaunchNoticePending)) {
       return
     }
-    this.thirdLaunchNoticeOpening = true
-    setTimeout((): void => {
-      if (!this.thirdLaunchNoticePending) {
-        this.thirdLaunchNoticeOpening = false
+    this.launchNoticeTimer = setTimeout((): void => {
+      this.launchNoticeTimer = -1
+      if (!this.appPreferencesReady || !this.indexPageVisible || this.launchNoticeOpening ||
+        (!this.coverLoadingNoticePending && !this.thirdLaunchNoticePending)) {
         return
       }
+      this.launchNoticeOpening = true
       try {
-        this.thirdLaunchNoticeController?.open()
+        // Show onboarding before support, never stack the two launch dialogs.
+        if (this.coverLoadingNoticePending) {
+          this.coverLoadingNoticeController?.open()
+        } else {
+          this.thirdLaunchNoticeController?.open()
+        }
       } catch (err) {
-        this.thirdLaunchNoticeOpening = false
+        this.launchNoticeOpening = false
         const msg = err instanceof Error ? err.message : String(err)
-        logger.warn('Open third-launch notice failed: %{public}s', msg)
+        logger.warn('Open launch notice failed: %{public}s', msg)
       }
     }, 240)
   }
 
+  private acknowledgeCoverLoadingNotice(): void {
+    this.coverLoadingNoticePending = false
+    this.launchNoticeOpening = false
+    PreferencesStore.getInstance().setBoolean(
+      COVER_LOADING_NOTICE_ACKNOWLEDGED_PREF_KEY,
+      true
+    ).catch((err: Object): void => {
+      logger.warn('Persist cover-loading notice acknowledgement failed: %{public}s',
+        err instanceof Error ? err.message : String(err))
+    })
+    this.openLaunchNoticesIfNeeded()
+  }
+
   private acknowledgeThirdLaunchNotice(): void {
     this.thirdLaunchNoticePending = false
-    this.thirdLaunchNoticeOpening = false
+    this.launchNoticeOpening = false
     PreferencesStore.getInstance().setBoolean(
       THIRD_LAUNCH_NOTICE_ACKNOWLEDGED_PREF_KEY,
       true
@@ -290,15 +373,19 @@ struct Index {
             }
             .tabBar(this.bottomTabStyle($r('sys.symbol.house'), $r('sys.symbol.house_fill'), '首页'))
 
-            TabContent() {
-              TimelinePage()
+            if (!this.hideTimelinePage) {
+              TabContent() {
+                TimelinePage()
+              }
+              .tabBar(this.bottomTabStyle($r('sys.symbol.calendar'), $r('sys.symbol.calendar'), '时间表'))
             }
-            .tabBar(this.bottomTabStyle($r('sys.symbol.calendar'), $r('sys.symbol.calendar'), '时间表'))
 
-            TabContent() {
-              FavoritePage()
+            if (!this.hideFavoritePage) {
+              TabContent() {
+                FavoritePage()
+              }
+              .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '收藏'))
             }
-            .tabBar(this.bottomTabStyle($r('sys.symbol.heart'), $r('sys.symbol.heart_fill'), '收藏'))
           }
 
           if (!this.hideLocalPage) {
@@ -333,7 +420,7 @@ struct Index {
           }
           logger.info('Main tab changed: %{public}d', index)
           this.currentTab = index
-          ContinuationState.markIndex(index)
+          this.markCurrentContinuationState()
           this.bottomTabOffset = 0
           this.applyBottomTabVisibilityAnimation(false)
       })
@@ -348,17 +435,21 @@ struct Index {
   }
 
   private getSettingsTabIndex(): number {
-    if (this.advancedOptionsUnlocked) {
-      return this.hideLocalPage ? 3 : 4
+    if (!this.advancedOptionsUnlocked) {
+      return this.hideLocalPage ? 0 : 1
     }
-    return this.hideLocalPage ? 0 : 1
+    return 1 + (this.hideTimelinePage ? 0 : 1) +
+      (this.hideFavoritePage ? 0 : 1) + (this.hideLocalPage ? 0 : 1)
   }
 
   private getLocalTabIndex(): number {
     if (this.hideLocalPage) {
       return -1
     }
-    return this.advancedOptionsUnlocked ? 3 : 0
+    if (!this.advancedOptionsUnlocked) {
+      return 0
+    }
+    return 1 + (this.hideTimelinePage ? 0 : 1) + (this.hideFavoritePage ? 0 : 1)
   }
 
   private getHdsTabBarHeight(): number {
@@ -412,10 +503,7 @@ struct Index {
   }
 
   private getTabCount(): number {
-    if (this.advancedOptionsUnlocked) {
-      return this.hideLocalPage ? 4 : 5
-    }
-    return this.hideLocalPage ? 1 : 2
+    return this.getSettingsTabIndex() + 1
   }
 
   private refreshHdsMaterialSupport(): void {
@@ -452,8 +540,18 @@ struct Index {
   private switchMainTabAfterStructureChange(targetIndex: number): void {
     this.pendingMainTabIndex = targetIndex
     this.currentTab = targetIndex
-    ContinuationState.markIndex(targetIndex)
+    this.markCurrentContinuationState()
     this.synchronizeMainTabAfterRebuild(targetIndex)
+  }
+
+  private markCurrentContinuationState(): void {
+    const section = this.getPageAtIndex(
+      this.currentTab,
+      this.hideLocalPage,
+      this.hideTimelinePage,
+      this.hideFavoritePage
+    )
+    ContinuationState.markIndex(this.currentTab, section)
   }
 
   private synchronizeMainTabAfterRebuild(targetIndex: number, attempt: number = 0): void {
@@ -476,21 +574,80 @@ struct Index {
     }, delayMs)
   }
 
-  private onHideLocalPageChanged(): void {
-    const previousSettingsIndex = this.advancedOptionsUnlocked
-      ? (this.hideLocalPage ? 4 : 3)
-      : (this.hideLocalPage ? 1 : 0)
-    const previousLocalIndex = this.advancedOptionsUnlocked ? 3 : 0
+  private onHiddenPageChanged(): void {
+    const currentPage = this.getPageAtIndex(
+      this.currentTab,
+      this.previousHideLocalPage,
+      this.previousHideTimelinePage,
+      this.previousHideFavoritePage
+    )
+    this.previousHideLocalPage = this.hideLocalPage
+    this.previousHideTimelinePage = this.hideTimelinePage
+    this.previousHideFavoritePage = this.hideFavoritePage
 
-    if (this.currentTab === previousSettingsIndex ||
-      (this.hideLocalPage && this.currentTab === previousLocalIndex)) {
-      this.switchMainTabAfterStructureChange(this.getSettingsTabIndex())
+    if (!this.appPreferencesReady) {
+      this.normalizeCurrentTab()
       return
     }
 
-    const maxIndex = this.getSettingsTabIndex()
-    const targetIndex = Math.min(Math.max(this.currentTab, 0), maxIndex)
-    this.switchMainTabAfterStructureChange(targetIndex)
+    const targetIndex = this.getPageTabIndex(currentPage)
+    this.switchMainTabAfterStructureChange(targetIndex >= 0 ? targetIndex : this.getSettingsTabIndex())
+  }
+
+  private getPageAtIndex(index: number, hideLocalPage: boolean,
+    hideTimelinePage: boolean, hideFavoritePage: boolean): string {
+    if (!this.advancedOptionsUnlocked) {
+      return !hideLocalPage && index === 0 ? 'local' : 'settings'
+    }
+
+    if (index === 0) {
+      return 'home'
+    }
+    let tabIndex = 1
+    if (!hideTimelinePage) {
+      if (index === tabIndex) {
+        return 'timeline'
+      }
+      tabIndex += 1
+    }
+    if (!hideFavoritePage) {
+      if (index === tabIndex) {
+        return 'favorite'
+      }
+      tabIndex += 1
+    }
+    if (!hideLocalPage) {
+      if (index === tabIndex) {
+        return 'local'
+      }
+    }
+    return 'settings'
+  }
+
+  private getPageTabIndex(page: string): number {
+    if (!this.advancedOptionsUnlocked) {
+      return page === 'local' && !this.hideLocalPage ? 0 : this.getSettingsTabIndex()
+    }
+    if (page === 'home') {
+      return 0
+    }
+    let tabIndex = 1
+    if (!this.hideTimelinePage) {
+      if (page === 'timeline') {
+        return tabIndex
+      }
+      tabIndex += 1
+    }
+    if (!this.hideFavoritePage) {
+      if (page === 'favorite') {
+        return tabIndex
+      }
+      tabIndex += 1
+    }
+    if (!this.hideLocalPage && page === 'local') {
+      return tabIndex
+    }
+    return this.getSettingsTabIndex()
   }
 
   private onBottomTabAnimationTokenChanged(): void {
@@ -545,6 +702,9 @@ struct Index {
   }
 
   private restoreContinuationIfNeeded(): void {
+    if (!this.appPreferencesReady) {
+      return
+    }
     if (this.continuationRestoreToken === this.handledContinuationRestoreToken) {
       return
     }
@@ -557,25 +717,27 @@ struct Index {
       logger.warn('Invalid continuation payload')
       return
     }
+    this.continuationRestorePayload = ''
     this.applyContinuationPayload(payload)
   }
 
   private applyContinuationPayload(payload: ContinuationPayload): void {
-    logger.info('Restore continuation route=%{public}s tab=%{public}d', payload.route, payload.currentTab)
-    if (payload.currentTab >= 0) {
-      this.currentTab = payload.currentTab
+    logger.info('Restore continuation route=%{public}s section=%{public}s tab=%{public}d',
+      payload.route, payload.currentSection, payload.currentTab)
+    const sectionTabIndex = payload.currentSection.length > 0 ? this.getPageTabIndex(payload.currentSection) : -1
+    const targetTabIndex = sectionTabIndex >= 0 ? sectionTabIndex : payload.currentTab
+    if (targetTabIndex >= 0) {
+      this.currentTab = targetTabIndex
       this.normalizeCurrentTab()
     }
     if (payload.route === 'index') {
-      ContinuationState.markIndex(this.currentTab)
+      this.markCurrentContinuationState()
       return
     }
     let params = ContinuationState.parseParams(payload.paramsJson)
     if (payload.route === 'player') {
       const playerParams = ContinuationState.parsePlayerParams(payload.paramsJson)
-      if (payload.positionMs > 0) {
-        playerParams.historyPositionMs = payload.positionMs
-      }
+      playerParams.historyPositionMs = Math.max(0, payload.positionMs)
       params = playerParams
     }
     const url = this.getContinuationRouteUrl(payload.route)

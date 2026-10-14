@@ -1,7 +1,12 @@
-import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  createConfiguredImmersiveMaterial
+} from '../../utils/ImmersiveMaterial'
 
 @Component
 export struct EpisodePanel {
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @Prop isVisible: boolean = false;
   @Prop episodes: EpisodePanelItem[] = [];
   @Prop currentIndex: number = -1;
@@ -67,7 +72,7 @@ export struct EpisodePanel {
       .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
       .borderRadius({ topLeft: 22, topRight: 22 })
       .shadow({ radius: 26, color: $r('app.color.overlay_topbar_bg'), offsetY: -8 })
-      .systemMaterial(createConfiguredImmersiveMaterial())
+      .systemMaterial(createConfiguredImmersiveMaterial(true, this.api26MaterialStyle))
       .align(Alignment.Bottom)
     }
   }

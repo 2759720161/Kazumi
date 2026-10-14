@@ -84,7 +84,7 @@ export class DanmakuFileParser {
         const fontSizeValue = parseFloat(parts[2])
         const colorValue = parseInt(parts[3], 10)
         const color = DanmakuFileParser.normalizeColorFromInt(colorValue)
-        const fontSize = isNaN(fontSizeValue) ? 25 : fontSizeValue
+        const fontSize = isNaN(fontSizeValue) ? 16 : fontSizeValue
 
         const danmakuType = DanmakuFileParser.mapBilibiliType(typeValue)
         items.push(new DanmakuItem(

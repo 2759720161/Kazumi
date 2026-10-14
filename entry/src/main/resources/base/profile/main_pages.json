@@ -12,6 +12,7 @@
     "pages/player/PlayerPage",
     "pages/history/HistoryPage",
     "pages/settings/WebDavSyncPage",
+    "pages/settings/ImageProxySettingsPage",
     "pages/settings/DanmakuSettingsPage",
     "pages/settings/DanmakuBlockRulesPage",
     "pages/settings/RuleShopPage",

@@ -26,6 +26,9 @@ import { CastEventCallbacks, CastMediaInfo, CastSessionManager } from '../../ser
 import { fileIo } from '@kit.CoreFileKit'
 import { media } from '@kit.MediaKit'
 import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  createMenuImmersiveMaterial,
   createConfiguredImmersiveMaterial,
 } from '../../utils/ImmersiveMaterial'
 import {
@@ -37,6 +40,14 @@ import {
   PLAYER_AUTO_PIP_DEFAULT,
   PREFS_KEY_PLAYER_AUTO_PIP
 } from '../../utils/PlayerAutoPiP'
+import {
+  PLAYER_GESTURE_DEFAULT,
+  PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS,
+  PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP,
+  PREFS_KEY_PLAYER_GESTURE_LONG_PRESS,
+  PREFS_KEY_PLAYER_GESTURE_SEEK,
+  PREFS_KEY_PLAYER_GESTURE_VOLUME
+} from '../../utils/PlayerGestureSettings'
 
 const logger = new Logger('LocalPlayerPage')
 
@@ -51,6 +62,7 @@ export struct LocalPlayerPage {
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @StorageLink('appInForeground') @Watch('onAppForegroundChanged') appInForeground: boolean = true
   @StorageLink('danmakuSettingsVersion') @Watch('onDanmakuSettingsVersionChanged') danmakuSettingsVersion: number = 0
   @State videoUri: string = ''
@@ -73,6 +85,11 @@ export struct LocalPlayerPage {
   @State private danmakuCanvasOffsetY: number = 0
   @StorageLink('playerAutoFullscreen') playerAutoFullscreen: boolean = PLAYER_AUTO_FULLSCREEN_DEFAULT
   @StorageLink(PREFS_KEY_PLAYER_AUTO_PIP) playerAutoPiP: boolean = PLAYER_AUTO_PIP_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_DOUBLE_TAP) playerGestureDoubleTap: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_LONG_PRESS) playerGestureLongPress: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_SEEK) playerGestureSeek: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_BRIGHTNESS) playerGestureBrightness: boolean = PLAYER_GESTURE_DEFAULT
+  @StorageLink(PREFS_KEY_PLAYER_GESTURE_VOLUME) playerGestureVolume: boolean = PLAYER_GESTURE_DEFAULT
   @State playbackOptions: PlaybackOptions = new PlaybackOptions()
   @State playbackQueue: LocalVideoRecord[] = []
   @State currentQueueIndex: number = -1
@@ -752,9 +769,14 @@ export struct LocalPlayerPage {
       positionMs: this.positionMs,
       volume: this.volume,
       screenBrightness: this.screenBrightness,
-      isPlaying: this.isPlaying,
-      isControlVisible: this.isControlVisible,
-      gestureEnabled: !this.shouldDisablePlayerGestures(),
+          isPlaying: this.isPlaying,
+          isControlVisible: this.isControlVisible,
+          gestureEnabled: !this.shouldDisablePlayerGestures(),
+          doubleTapEnabled: this.playerGestureDoubleTap,
+          longPressEnabled: this.playerGestureLongPress,
+          seekEnabled: this.playerGestureSeek,
+          brightnessEnabled: this.playerGestureBrightness,
+          volumeEnabled: this.playerGestureVolume,
       onSeek: (positionMs: number) => {
         this.seekTo(positionMs)
         this.showHudText('跳转到 ' + this.formatTime(positionMs))
@@ -842,12 +864,8 @@ export struct LocalPlayerPage {
       .zIndex(6)
       .hitTestBehavior(HitTestMode.Transparent)
 
-      if (this.showAspectModePanel) {
-        this.AspectModePanelOverlay()
-      }
-      if (this.showSpeedMenu) {
-        this.SpeedMenuOverlay()
-      }
+      this.AspectModeMenuAnchor()
+      this.SpeedMenuAnchor()
     }
     .width('100%')
     .height('100%')
@@ -888,6 +906,7 @@ export struct LocalPlayerPage {
       this.PiPToolButton()
 
       this.TopSymbolButton($r('sys.symbol.rectangle_4_group_1'), '视频比例', () => {
+        this.showSpeedMenu = false
         this.showAspectModePanel = true
         this.pauseAutoHideTimer()
       })
@@ -1111,7 +1130,7 @@ export struct LocalPlayerPage {
       this.CurrentSpeedSymbol()
     }
     .width(44)
-    .height(40)
+    .height(44)
     .backgroundColor('#00000000')
     .border({ width: 0, color: '#00000000' })
     .justifyContent(FlexAlign.Center)
@@ -1395,124 +1414,119 @@ export struct LocalPlayerPage {
   }
 
   @Builder
-  private AspectModePanelOverlay() {
+  private AspectModeMenuAnchor() {
     Stack({ alignContent: Alignment.TopEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor($r('app.color.color_transparent'))
-        .onClick(() => {
-          this.showAspectModePanel = false
-        })
-
-      AspectModePanel({
-        currentMode: this.currentAspectMode,
-        onSelectMode: (mode: VideoAspectMode) => {
-          this.applyAspectMode(mode)
-          this.showAspectModePanel = false
-        }
-      })
+      Row()
+        .width(160)
+        .height(1)
         .margin({ top: this.isFullScreen ? this.topSafeHeight + 46 : 46, right: 12 })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showAspectModePanel, this.AspectModeMenuContent, {
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: Placement.BottomRight,
+          showInSubWindow: false,
+          aboutToAppear: () => {
+            this.pauseAutoHideTimer()
+          },
+          aboutToDisappear: () => {
+            this.showAspectModePanel = false
+            this.startAutoHideTimer()
+          }
+        })
     }
     .width('100%')
     .height('100%')
-    .zIndex(9)
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .hitTestBehavior(HitTestMode.Transparent)
   }
 
   @Builder
-  private SpeedMenuOverlay() {
-    Stack({ alignContent: Alignment.BottomEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor($r('app.color.color_transparent'))
-        .hitTestBehavior(HitTestMode.Default)
-        .onClick(() => {
-          this.closeSpeedMenu()
-        })
-
-      Column() {
-        Scroll() {
-          Column() {
-            this.SpeedMenuItem(3.0)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(2.0)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(1.75)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(1.5)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(1.25)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(1.0)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(0.75)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(0.5)
-            this.SpeedMenuDivider()
-            this.SpeedMenuItem(0.25)
-          }
-          .width('100%')
-        }
-        .width('100%')
-        .height(364)
-        .scrollable(ScrollDirection.Vertical)
-        .edgeEffect(EdgeEffect.Spring)
-        .scrollBar(BarState.Off)
-        .hitTestBehavior(HitTestMode.Default)
+  private AspectModeMenuContent() {
+    AspectModePanel({
+      currentMode: this.currentAspectMode,
+      onSelectMode: (mode: VideoAspectMode) => {
+        this.applyAspectMode(mode)
+        this.showAspectModePanel = false
       }
-      .width(104)
-      .padding({ top: 8, bottom: 8 })
-      .borderRadius(16)
-      .backgroundColor($r('app.color.speed_menu_surface'))
-      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
-      .border({ width: 0.5, color: $r('app.color.category_menu_divider') })
-      .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: 8 })
-      .margin({ right: 12, bottom: this.isFullScreen ? this.bottomSafeHeight + 74 : this.bottomSafeHeight + 66 })
-      .hitTestBehavior(HitTestMode.Default)
+    })
+  }
+
+  @Builder
+  private SpeedMenuAnchor() {
+    Stack({ alignContent: this.isFullScreen ? Alignment.BottomEnd : Alignment.BottomStart }) {
+      Row()
+        .width(104)
+        .height(1)
+        .margin(this.isFullScreen ?
+          { right: this.getSpeedMenuRightMargin(), bottom: this.getSpeedMenuBottomMargin() } :
+          { left: 10, bottom: this.getSpeedMenuBottomMargin() })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.showSpeedMenu, this.SpeedMenuContent, {
+          systemMaterial: createMenuImmersiveMaterial(this.api26MaterialStyle),
+          placement: this.isFullScreen ? Placement.TopRight : Placement.TopLeft,
+          showInSubWindow: false,
+          aboutToAppear: () => {
+            this.pauseAutoHideTimer()
+          },
+          aboutToDisappear: () => {
+            if (this.showSpeedMenu) {
+              this.closeSpeedMenu()
+            }
+          }
+        })
     }
     .width('100%')
     .height('100%')
-    .zIndex(10)
-    .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
+  private SpeedMenuContent() {
+    Menu() {
+      this.SpeedMenuItem(3.0)
+      this.SpeedMenuItem(2.0)
+      this.SpeedMenuItem(1.75)
+      this.SpeedMenuItem(1.5)
+      this.SpeedMenuItem(1.25)
+      this.SpeedMenuItem(1.0)
+      this.SpeedMenuItem(0.75)
+      this.SpeedMenuItem(0.5)
+      this.SpeedMenuItem(0.25)
+    }
+    .width(104)
+    .borderRadius(16)
   }
 
   @Builder
   private SpeedMenuItem(value: number) {
-    Row() {
-      Text(this.formatPlaybackSpeed(value))
-        .fontSize(15)
-        .fontWeight(Math.abs(this.speed - value) < 0.01 ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-
-      if (Math.abs(this.speed - value) < 0.01) {
-        SymbolGlyph($r('sys.symbol.checkmark'))
-          .fontSize(18)
-          .fontColor([$r('sys.color.brand')])
+    MenuItem() {
+      Row() {
+        Text(this.formatPlaybackSpeed(value))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Math.abs(this.speed - value) < 0.01 ?
+            $r('app.color.accent_blue') : $r('app.color.text_primary'))
+          .layoutWeight(1)
       }
-    }
       .width('100%')
       .height(40)
-      .padding({ left: 14, right: 14 })
-      .borderRadius(8)
-      .backgroundColor(Color.Transparent)
-      .onClick(() => {
-        this.setPlaybackSpeed(value)
-        this.closeSpeedMenu()
-      })
+    }
+    .backgroundColor(Color.Transparent)
+    .onClick(() => {
+      this.setPlaybackSpeed(value)
+      this.closeSpeedMenu()
+    })
   }
 
-  @Builder
-  private SpeedMenuDivider() {
-    Divider()
-      .strokeWidth(0.5)
-      .color($r('app.color.category_menu_divider'))
-      .margin({ left: 14, right: 14 })
+  private getSpeedMenuRightMargin(): number {
+    return 10 + 44
+  }
+
+  private getSpeedMenuBottomMargin(): number {
+    return this.bottomSafeHeight + (this.isFullScreen ? 64 : 56)
   }
 
   private openSpeedMenu(): void {
+    this.showAspectModePanel = false
     this.showSpeedMenu = true
     this.pauseAutoHideTimer()
   }
@@ -1588,7 +1602,7 @@ export struct LocalPlayerPage {
       .padding({ left: 18, right: 18, top: 12, bottom: this.bottomSafeHeight + 18 })
       .borderRadius({ topLeft: 18, topRight: 18 })
       .backgroundColor($r('app.color.card_background'))
-      .systemMaterial(createConfiguredImmersiveMaterial())
+      .systemMaterial(createConfiguredImmersiveMaterial(true, this.api26MaterialStyle))
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: -6 })
     }
     .width('100%')
@@ -1679,7 +1693,7 @@ export struct LocalPlayerPage {
       .borderRadius({ topLeft: 18, topRight: 18 })
       .clip(true)
       .backgroundColor($r('app.color.page_background'))
-      .systemMaterial(createConfiguredImmersiveMaterial())
+      .systemMaterial(createConfiguredImmersiveMaterial(true, this.api26MaterialStyle))
       .shadow({ radius: 20, color: $r('app.color.shadow_surface'), offsetY: -6 })
     }
     .width('100%')

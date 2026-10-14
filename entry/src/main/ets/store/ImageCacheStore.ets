@@ -1,7 +1,11 @@
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
-import { http } from '@kit.NetworkKit';
+import { connection, http } from '@kit.NetworkKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { FileStore } from './FileStore';
 import { Logger, extractErrorMsg } from '../utils/Logger';
+import { ImageNetworkSettings } from './ImageNetworkSettings';
+import { ImageNetworkConfig, ImageProxyConfig, ImageProxyType } from '../models/ImageProxyConfig';
+import { BangumiConfig } from '../core/api/BangumiConfig';
 
 const logger = new Logger('ImageCacheStore');
 // Keep image bursts below the socket pressure that can trigger curl 55 on
@@ -12,6 +16,12 @@ const MAX_CONCURRENT_IMAGE_DOWNLOADS = 3;
 // its first cover.
 const MAX_REGULAR_IMAGE_DOWNLOADS = 2;
 const IMAGE_RETRY_DELAY_MS = 350;
+const UNSUPPORTED_SOCKS5: string = 'SOCKS5 requires HarmonyOS API 26.0.0';
+
+export class CachedImageResult {
+  uri: string = '';
+  sourceUrl: string = '';
+}
 
 export class ImageCacheStore {
   private static instance: ImageCacheStore | null = null;
@@ -37,8 +47,19 @@ export class ImageCacheStore {
   }
 
   async getCachedImageUri(urls: string[], priority: boolean = false): Promise<string> {
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i].trim();
+    const result = await this.getCachedImageResult(urls, priority);
+    return result.uri;
+  }
+
+  async getCachedImageResult(urls: string[], priority: boolean = false): Promise<CachedImageResult> {
+    const version = ImageNetworkSettings.getVersion();
+    const config = ImageNetworkSettings.getConfig();
+    const candidates = this.buildCandidates(urls, config.proxyEnabled);
+    for (let i = 0; i < candidates.length; i++) {
+      if (version !== ImageNetworkSettings.getVersion()) {
+        return new CachedImageResult();
+      }
+      const url = candidates[i].trim();
       if (url.length === 0 || url.startsWith('file://')) {
         continue;
       }
@@ -52,29 +73,57 @@ export class ImageCacheStore {
         if (fs.accessSync(path)) {
           const stat = fs.statSync(path);
           if (stat.size > 100 && this.isValidImageFile(path)) {
-            return fileUri.getUriFromPath(path);
+            const result = new CachedImageResult();
+            result.uri = fileUri.getUriFromPath(path);
+            result.sourceUrl = url;
+            return result;
           }
           logger.warn('Invalid or truncated cache file (size=%{public}d), deleting: %{public}s',
             stat.size, this.shorten(url));
           fs.unlinkSync(path);
         }
 
-        const data = await this.downloadImage(url, priority);
+        const data = await this.downloadImage(url, priority, config, version);
+        if (version !== ImageNetworkSettings.getVersion()) {
+          return new CachedImageResult();
+        }
         this.writeBinary(path, data);
-        return fileUri.getUriFromPath(path);
+        const result = new CachedImageResult();
+        result.uri = fileUri.getUriFromPath(path);
+        result.sourceUrl = url;
+        return result;
       } catch (err) {
+        if (version !== ImageNetworkSettings.getVersion()) {
+          return new CachedImageResult();
+        }
         const msg = extractErrorMsg(err as Object);
         this.markFailed(url);
         logger.warn('Cache image failed: %{public}s, url=%{public}s', msg, this.shorten(url));
       }
     }
-    return '';
+    return new CachedImageResult();
+  }
+
+  invalidateImage(url: string): void {
+    if (url.length === 0) {
+      return;
+    }
+    try {
+      const path = this.getCachePath(url);
+      if (fs.accessSync(path)) {
+        fs.unlinkSync(path);
+      }
+    } catch (_) {
+      logger.warn('Could not remove undecodable cached image');
+    }
+    this.markFailed(url);
   }
 
   /** Returns an existing cached file without starting a network request. */
   getExistingCachedImageUri(urls: string[]): string {
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i].trim();
+    const candidates = this.buildCandidates(urls, ImageNetworkSettings.isProxyEnabled());
+    for (let i = 0; i < candidates.length; i++) {
+      const url = candidates[i].trim();
       if (url.length === 0 || url.startsWith('file://') || this.isFailedRecently(url)) {
         continue;
       }
@@ -95,41 +144,86 @@ export class ImageCacheStore {
     return '';
   }
 
-  private async downloadImage(url: string, priority: boolean): Promise<ArrayBuffer> {
-    const inFlight = this.inFlightDownloads.get(url);
+  private buildCandidates(urls: string[], proxyEnabled: boolean): string[] {
+    const result: string[] = [];
+    for (let i = 0; i < urls.length; i++) {
+      const candidates = BangumiConfig.getImageCandidates(urls[i], proxyEnabled);
+      for (let j = 0; j < candidates.length; j++) {
+        if (result.indexOf(candidates[j]) < 0) {
+          result.push(candidates[j]);
+        }
+      }
+    }
+    return result;
+  }
+
+  private async downloadImage(url: string, priority: boolean,
+    config: ImageNetworkConfig, version: number): Promise<ArrayBuffer> {
+    const key = `${version}:${url}`;
+    const inFlight = this.inFlightDownloads.get(key);
     if (inFlight !== undefined) {
       return await inFlight;
     }
 
-    const task = this.downloadImageWithRetry(url, priority);
-    this.inFlightDownloads.set(url, task);
+    const task = this.downloadImageWithRetry(url, priority, config, version);
+    this.inFlightDownloads.set(key, task);
     try {
       return await task;
     } finally {
-      if (this.inFlightDownloads.get(url) === task) {
-        this.inFlightDownloads.delete(url);
+      if (this.inFlightDownloads.get(key) === task) {
+        this.inFlightDownloads.delete(key);
       }
     }
   }
 
-  private async downloadImageWithRetry(url: string, priority: boolean): Promise<ArrayBuffer> {
+  private async downloadImageWithRetry(url: string, priority: boolean,
+    config: ImageNetworkConfig, version: number): Promise<ArrayBuffer> {
+    const proxies = config.getProxyCandidates();
+    if (config.proxyEnabled && proxies.length === 0) {
+      throw new Error('No image proxy selected');
+    }
+    const failover = config.proxyEnabled && config.autoFailover && proxies.length > 1;
+    const maxAttempts = failover ? proxies.length : 3;
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (version !== ImageNetworkSettings.getVersion()) {
+        throw new Error('Image network configuration changed');
+      }
       await this.acquireDownloadSlot(priority);
       try {
-        return await this.downloadImageOnce(url);
+        if (version !== ImageNetworkSettings.getVersion()) {
+          throw new Error('Image network configuration changed');
+        }
+        const proxy = config.proxyEnabled ? proxies[failover ? attempt : 0] : null;
+        const data = await this.downloadImageOnce(url, proxy);
+        if (failover && attempt > 0 && proxy !== null) {
+          ImageNetworkSettings.activateAfterFailover(proxy.id, version);
+        }
+        return data;
       } catch (err) {
         lastError = new Error(extractErrorMsg(err as Object));
-        if (attempt < 2) {
-          await new Promise<void>((resolve: () => void) => {
-            setTimeout(resolve, IMAGE_RETRY_DELAY_MS * (attempt + 1));
-          });
+        if (!ImageCacheStore.canRetryDownload(lastError.message) &&
+          !(failover && lastError.message === UNSUPPORTED_SOCKS5)) {
+          throw lastError;
         }
       } finally {
         this.releaseDownloadSlot(priority);
       }
+      if (attempt < maxAttempts - 1 && !failover) {
+        await new Promise<void>((resolve: () => void) => {
+          setTimeout(resolve, IMAGE_RETRY_DELAY_MS * (attempt + 1));
+        });
+      }
     }
     throw lastError === null ? new Error('Image download failed') : lastError;
+  }
+
+  static canRetryDownload(message: string): boolean {
+    if (message.startsWith('HTTP ')) {
+      const status = Number(message.substring(5));
+      return status === 407 || status === 429 || status >= 500;
+    }
+    return message !== 'Image network configuration changed' && message !== UNSUPPORTED_SOCKS5;
   }
 
   private async acquireDownloadSlot(priority: boolean): Promise<void> {
@@ -176,7 +270,7 @@ export class ImageCacheStore {
     this.activeDownloadCount = Math.max(0, this.activeDownloadCount - 1);
   }
 
-  private async downloadImageOnce(url: string): Promise<ArrayBuffer> {
+  private async downloadImageOnce(url: string, proxy: ImageProxyConfig | null): Promise<ArrayBuffer> {
     const request = http.createHttp();
     try {
       const isProxyUrl = url.includes('/img.php') || url.includes('/image.php') ||
@@ -198,8 +292,39 @@ export class ImageCacheStore {
         },
         readTimeout: readTimeout,
         connectTimeout: 12000,
-        expectDataType: http.HttpDataType.ARRAY_BUFFER
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+        usingProxy: false
       };
+      if (proxy !== null) {
+        if (proxy.type === ImageProxyType.SOCKS5) {
+          if (deviceInfo.apiAvailable('26.0.0')) {
+            const socksProxy: connection.Socks5Proxy = {
+              host: proxy.host,
+              port: proxy.port,
+              exclusionList: proxy.exclusionList,
+              dnsStrategy: connection.Socks5DnsStrategy.PROXY_MODE
+            };
+            if (proxy.username.length > 0) {
+              socksProxy.username = proxy.username;
+              socksProxy.password = proxy.password;
+            }
+            options.usingSocks5Proxy = socksProxy;
+          } else {
+            throw new Error(UNSUPPORTED_SOCKS5);
+          }
+        } else {
+          const httpProxy: connection.HttpProxy = {
+            host: proxy.host,
+            port: proxy.port,
+            exclusionList: proxy.exclusionList
+          };
+          if (proxy.username.length > 0) {
+            httpProxy.username = proxy.username;
+            httpProxy.password = proxy.password;
+          }
+          options.usingProxy = httpProxy;
+        }
+      }
       const response = await request.request(url, options);
       const statusCode = response.responseCode as number;
       if (statusCode < 200 || statusCode >= 300) {
@@ -385,19 +510,20 @@ export class ImageCacheStore {
   }
 
   private isFailedRecently(url: string): boolean {
-    const failedAt = this.failedUrls.get(url);
+    const key = `${ImageNetworkSettings.getVersion()}:${url}`;
+    const failedAt = this.failedUrls.get(key);
     if (failedAt === undefined) {
       return false;
     }
     if (Date.now() - failedAt > this.failureCooldownMs) {
-      this.failedUrls.delete(url);
+      this.failedUrls.delete(key);
       return false;
     }
     return true;
   }
 
   private markFailed(url: string): void {
-    this.failedUrls.set(url, Date.now());
+    this.failedUrls.set(`${ImageNetworkSettings.getVersion()}:${url}`, Date.now());
     if (this.failedUrls.size <= 300) {
       return;
     }

@@ -1,7 +1,12 @@
-import { createConfiguredImmersiveMaterial } from '../../utils/ImmersiveMaterial'
+import {
+  API26_MATERIAL_STYLE_DEFAULT,
+  PREFS_KEY_API26_MATERIAL_STYLE,
+  createConfiguredImmersiveMaterial
+} from '../../utils/ImmersiveMaterial'
 
 @Component
 export struct SpeedPicker {
+  @StorageLink(PREFS_KEY_API26_MATERIAL_STYLE) api26MaterialStyle: string = API26_MATERIAL_STYLE_DEFAULT
   @Prop currentSpeed: number = 1.0;
   private speeds: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
   private onSpeedSelected?: (speed: number) => void;
@@ -22,7 +27,7 @@ export struct SpeedPicker {
             offsetY: speed === this.currentSpeed ? 4 : 2
           })
           .fontColor(speed === this.currentSpeed ? $r('app.color.text_on_primary') : $r('app.color.text_primary'))
-          .systemMaterial(createConfiguredImmersiveMaterial())
+          .systemMaterial(createConfiguredImmersiveMaterial(true, this.api26MaterialStyle))
           .onClick(() => {
             if (this.onSpeedSelected) {
               this.onSpeedSelected(speed);

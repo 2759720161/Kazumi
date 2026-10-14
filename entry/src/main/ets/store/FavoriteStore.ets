@@ -66,7 +66,7 @@ export class FavoriteStore {
 
   async getByType(collectType: number): Promise<CollectedBangumi[]> {
     const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_FAVORITE);
-    predicates.equalTo(RdbConstants.COL_COLLECT_TYPE, collectType);
+    predicates.equalTo(RdbConstants.COL_COLLECT_TYPE, CollectType.normalize(collectType));
     predicates.orderByDesc(RdbConstants.COL_CREATED_AT);
     const resultSet = await this.rdbManager.query(predicates);
     return this.parseCollectedResultSet(resultSet);
@@ -112,6 +112,110 @@ export class FavoriteStore {
     const type = CollectType.normalize(resultSet.getLong(resultSet.getColumnIndex(RdbConstants.COL_COLLECT_TYPE)));
     resultSet.close();
     return type;
+  }
+
+  async getCollectedByAnimeId(animeId: string): Promise<CollectedBangumi | null> {
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_FAVORITE);
+    predicates.equalTo(RdbConstants.COL_ANIME_ID, animeId);
+    const resultSet = await this.rdbManager.query(predicates);
+    const items = this.parseCollectedResultSet(resultSet);
+    return items.length > 0 ? items[0] : null;
+  }
+
+  async getCollectedByBangumiId(bangumiId: number): Promise<CollectedBangumi | null> {
+    if (bangumiId <= 0) {
+      return null;
+    }
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_FAVORITE);
+    predicates.equalTo(RdbConstants.COL_BANGUMI_ID, bangumiId);
+    predicates.orderByDesc(RdbConstants.COL_CREATED_AT);
+    const resultSet = await this.rdbManager.query(predicates);
+    const items = this.parseCollectedResultSet(resultSet);
+    return items.length > 0 ? items[0] : null;
+  }
+
+  async replaceSyncedCollectibles(incoming: CollectedBangumi[]): Promise<void> {
+    const local = await this.getAllCollected();
+    const incomingByBangumiId: Map<number, CollectedBangumi> = new Map<number, CollectedBangumi>();
+    for (let i = 0; i < incoming.length; i++) {
+      if (incoming[i].bangumiId > 0) {
+        incomingByBangumiId.set(incoming[i].bangumiId, incoming[i]);
+      }
+    }
+    const applied: Set<number> = new Set<number>();
+    this.rdbManager.beginTransaction();
+    try {
+      for (let i = 0; i < local.length; i++) {
+        const localItem = local[i];
+        if (localItem.bangumiId <= 0) {
+          continue;
+        }
+        const synced = incomingByBangumiId.get(localItem.bangumiId);
+        if (synced === undefined || applied.has(localItem.bangumiId)) {
+          await this.remove(localItem.animeId);
+          continue;
+        }
+        const merged = this.mergeSyncedWithLocalSource(synced, localItem);
+        await this.updateCollected(localItem.animeId, merged);
+        applied.add(localItem.bangumiId);
+      }
+
+      const incomingIds: number[] = [];
+      incomingByBangumiId.forEach((_item: CollectedBangumi, bangumiId: number) => {
+        incomingIds.push(bangumiId);
+      });
+      for (let i = 0; i < incomingIds.length; i++) {
+        const bangumiId = incomingIds[i];
+        if (applied.has(bangumiId)) {
+          continue;
+        }
+        const item = incomingByBangumiId.get(bangumiId);
+        if (item !== undefined) {
+          await this.addCollected(item);
+          applied.add(bangumiId);
+        }
+      }
+      this.rdbManager.commit();
+    } catch (err) {
+      this.rdbManager.rollBack();
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async updateCollected(animeId: string, item: CollectedBangumi): Promise<number> {
+    const values: relationalStore.ValuesBucket = {
+      anime_name: item.animeName,
+      anime_cover: item.animeCover,
+      anime_desc: item.animeDesc,
+      anime_url: item.animeUrl,
+      name: item.sourceName,
+      source_id: item.sourceId,
+      collect_type: CollectType.normalize(item.collectType),
+      bangumi_id: item.bangumiId,
+      bangumi_cover: item.bangumiCover,
+      cover_fallback: item.coverFallback,
+      created_at: item.createdAt
+    };
+    const predicates = new relationalStore.RdbPredicates(RdbConstants.TABLE_FAVORITE);
+    predicates.equalTo(RdbConstants.COL_ANIME_ID, animeId);
+    return await this.rdbManager.update(RdbConstants.TABLE_FAVORITE, values, predicates);
+  }
+
+  private mergeSyncedWithLocalSource(synced: CollectedBangumi, local: CollectedBangumi): CollectedBangumi {
+    const item = new CollectedBangumi();
+    item.animeId = local.animeId.length > 0 ? local.animeId : synced.animeId;
+    item.bangumiId = synced.bangumiId;
+    item.animeName = synced.animeName.length > 0 ? synced.animeName : local.animeName;
+    item.animeCover = synced.animeCover.length > 0 ? synced.animeCover : local.animeCover;
+    item.bangumiCover = synced.bangumiCover.length > 0 ? synced.bangumiCover : local.bangumiCover;
+    item.coverFallback = synced.coverFallback.length > 0 ? synced.coverFallback : local.coverFallback;
+    item.animeDesc = synced.animeDesc.length > 0 ? synced.animeDesc : local.animeDesc;
+    item.animeUrl = local.animeUrl.length > 0 ? local.animeUrl : synced.animeUrl;
+    item.sourceName = local.sourceName;
+    item.sourceId = local.sourceId;
+    item.collectType = CollectType.normalize(synced.collectType);
+    item.createdAt = synced.createdAt > 0 ? synced.createdAt : local.createdAt;
+    return item;
   }
 
   private parseResultSet(resultSet: relationalStore.ResultSet): FavoriteRecord[] {

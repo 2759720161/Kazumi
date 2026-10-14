@@ -23,13 +23,14 @@ const IMMERSIVE_STYLE_ULTRA_THIN: uiMaterial.ImmersiveStyle = 0 as uiMaterial.Im
  */
 export function createImmersiveMaterial(
   style: uiMaterial.ImmersiveStyle,
-  interactive: boolean = true
+  interactive: boolean = true,
+  materialStyle: string = getApi26MaterialStyleStorageValue()
 ): uiMaterial.ImmersiveMaterial | undefined {
   if (!isImmersiveMaterialSupported()) {
     return undefined
   }
   try {
-    const configuredStyle = resolveConfiguredStyle(style)
+    const configuredStyle = resolveApi26ImmersiveStyle(materialStyle, style)
     return new uiMaterial.ImmersiveMaterial({
       style: configuredStyle,
       applyShadow: false,
@@ -46,9 +47,41 @@ export function createThinImmersiveMaterial(): uiMaterial.ImmersiveMaterial | un
 
 /** Creates a material using the current setting-page material level. */
 export function createConfiguredImmersiveMaterial(
-  interactive: boolean = true
+  interactive: boolean = true,
+  materialStyle: string = getApi26MaterialStyleStorageValue()
 ): uiMaterial.ImmersiveMaterial | undefined {
-  return createImmersiveMaterial(IMMERSIVE_STYLE_REGULAR, interactive)
+  return createImmersiveMaterial(IMMERSIVE_STYLE_REGULAR, interactive, materialStyle)
+}
+
+export function createControlImmersiveMaterial(materialStyle: string): uiMaterial.ImmersiveMaterial | undefined {
+  if (!isImmersiveMaterialSupported()) {
+    return undefined
+  }
+  try {
+    return new uiMaterial.ImmersiveMaterial({
+      style: resolveApi26ImmersiveStyle(materialStyle),
+      applyShadow: false,
+      interactive: true,
+      lightEffect: { color: undefined }
+    })
+  } catch (_) {
+    return undefined
+  }
+}
+
+export function createMenuImmersiveMaterial(materialStyle: string): uiMaterial.ImmersiveMaterial | undefined {
+  if (!isImmersiveMaterialSupported()) {
+    return undefined
+  }
+  try {
+    return new uiMaterial.ImmersiveMaterial({
+      style: resolveApi26ImmersiveStyle(materialStyle),
+      applyShadow: true,
+      interactive: false
+    })
+  } catch (_) {
+    return undefined
+  }
 }
 
 export function createRegularImmersiveMaterial(): uiMaterial.ImmersiveMaterial | undefined {
@@ -99,8 +132,9 @@ export function getApi26MaterialStyleLabel(style: string): string {
   }
 }
 
-function resolveConfiguredStyle(fallback: uiMaterial.ImmersiveStyle): uiMaterial.ImmersiveStyle {
-  switch (getApi26MaterialStyleStorageValue()) {
+export function resolveApi26ImmersiveStyle(style: string,
+  fallback: uiMaterial.ImmersiveStyle = IMMERSIVE_STYLE_REGULAR): uiMaterial.ImmersiveStyle {
+  switch (normalizeApi26MaterialStyle(style)) {
     case API26_MATERIAL_STYLE_ULTRA_THIN:
       return IMMERSIVE_STYLE_ULTRA_THIN
     case API26_MATERIAL_STYLE_THIN:

@@ -1,4 +1,6 @@
 import { ImageCacheStore } from '../../store/ImageCacheStore'
+import { BangumiConfig } from '../../core/api/BangumiConfig'
+import { IMAGE_NETWORK_VERSION_KEY } from '../../store/ImageNetworkSettings'
 import {
   HOME_PRELOAD_ENABLED_KEY,
   HOME_PRELOAD_GROUP_GENERAL,
@@ -29,8 +31,10 @@ export struct CachedRemoteImage {
   @Prop cornerRadius: number = 12
   @State currentSource: string = ''
   @State fallbackIndex: number = 0
+  @StorageLink(IMAGE_NETWORK_VERSION_KEY) @Watch('onImageNetworkChanged') imageNetworkVersion: number = 0
   private requestKey: string = ''
   private requestSerial: number = 0
+  private downloadedSource: string = ''
 
   aboutToAppear(): void {
     if (this.canLoadImage()) {
@@ -102,6 +106,10 @@ export struct CachedRemoteImage {
     this.reloadSource(this.source)
   }
 
+  private onImageNetworkChanged(): void {
+    this.reloadSource(this.source)
+  }
+
   private reloadSource(source: string): void {
     if (!this.canLoadImage()) {
       this.requestSerial++
@@ -112,6 +120,7 @@ export struct CachedRemoteImage {
     const serial = ++this.requestSerial
     this.requestKey = source
     this.fallbackIndex = 0
+    this.downloadedSource = ''
     if (source.length === 0 && this.sources.length === 0) {
       this.currentSource = ''
       return
@@ -126,13 +135,15 @@ export struct CachedRemoteImage {
     this.loadCachedSource(source, serial)
   }
 
-  private async loadCachedSource(expectedSource: string, serial: number): Promise<void> {
+  private async loadCachedSource(expectedSource: string, serial: number, startIndex: number = 0): Promise<void> {
     const candidates = this.getCandidates()
-    const localUri = await ImageCacheStore.getInstance().getCachedImageUri(candidates, this.priority)
+    const result = await ImageCacheStore.getInstance().getCachedImageResult(candidates.slice(startIndex), this.priority)
     if (this.requestKey !== expectedSource || this.requestSerial !== serial || !this.canLoadImage()) {
       return
     }
-    this.currentSource = localUri.length > 0 ? localUri : candidates[0]
+    this.downloadedSource = result.sourceUrl
+    this.fallbackIndex = result.sourceUrl.length > 0 ? candidates.indexOf(result.sourceUrl) + 1 : candidates.length
+    this.currentSource = result.uri
   }
 
   private handleImageError(): void {
@@ -141,13 +152,14 @@ export struct CachedRemoteImage {
       this.currentSource = ''
       return
     }
-    const currentIndex = candidates.indexOf(this.currentSource)
-    const nextIndex = currentIndex >= 0 ? currentIndex + 1 : this.fallbackIndex
-    if (nextIndex < candidates.length) {
-      this.fallbackIndex = nextIndex + 1
-      this.currentSource = candidates[nextIndex]
-    } else {
-      this.currentSource = ''
+    if (this.downloadedSource.length === 0) {
+      return
+    }
+    ImageCacheStore.getInstance().invalidateImage(this.downloadedSource)
+    this.downloadedSource = ''
+    this.currentSource = ''
+    if (this.fallbackIndex < candidates.length && this.canLoadImage()) {
+      this.loadCachedSource(this.requestKey, ++this.requestSerial, this.fallbackIndex)
     }
   }
 
@@ -181,8 +193,11 @@ export struct CachedRemoteImage {
   }
 
   private pushCandidate(candidates: string[], value: string): void {
-    if (value.length > 0 && candidates.indexOf(value) < 0) {
-      candidates.push(value)
+    const imageCandidates = BangumiConfig.getImageCandidates(value)
+    for (let i = 0; i < imageCandidates.length; i++) {
+      if (candidates.indexOf(imageCandidates[i]) < 0) {
+        candidates.push(imageCandidates[i])
+      }
     }
   }
 }

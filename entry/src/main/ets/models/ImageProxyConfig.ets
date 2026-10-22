@@ -97,6 +97,8 @@ export class ImageProxyConfig {
 
 export class ImageNetworkConfig {
   proxyEnabled: boolean = false
+  imageProxyEnabled: boolean = true
+  dataProxyEnabled: boolean = true
   autoFailover: boolean = true
   selectedProxyId: string = ''
   proxies: ImageProxyConfig[] = []
@@ -104,6 +106,10 @@ export class ImageNetworkConfig {
   static copy(value: ImageNetworkConfig): ImageNetworkConfig {
     const result = new ImageNetworkConfig()
     result.proxyEnabled = value.proxyEnabled
+    result.imageProxyEnabled = typeof value.imageProxyEnabled === 'boolean' ?
+      value.imageProxyEnabled : true
+    result.dataProxyEnabled = typeof value.dataProxyEnabled === 'boolean' ?
+      value.dataProxyEnabled : true
     result.autoFailover = value.autoFailover
     result.selectedProxyId = value.selectedProxyId
     result.proxies = value.proxies.map((proxy: ImageProxyConfig) => ImageProxyConfig.copy(proxy))

@@ -39,6 +39,11 @@ export class ImageNetworkSettings {
           config.selectedProxyId = config.proxies.length > 0 ? config.proxies[0].id : ''
         }
         config.proxyEnabled = value.proxyEnabled === true && config.proxies.length > 0
+        // Versions without scope flags applied the proxy to both images and metadata.
+        config.imageProxyEnabled = typeof value.imageProxyEnabled === 'boolean' ?
+          value.imageProxyEnabled : true
+        config.dataProxyEnabled = typeof value.dataProxyEnabled === 'boolean' ?
+          value.dataProxyEnabled : true
         ImageNetworkSettings.config = config
       } catch (_) {
         logger.warn('Invalid saved image network configuration; using image relay mode')
@@ -53,6 +58,34 @@ export class ImageNetworkSettings {
 
   static isProxyEnabled(): boolean {
     return ImageNetworkSettings.config.proxyEnabled
+  }
+
+  static isImageProxyEnabled(): boolean {
+    return ImageNetworkSettings.config.proxyEnabled && ImageNetworkSettings.config.imageProxyEnabled
+  }
+
+  static isDataProxyEnabled(): boolean {
+    return ImageNetworkSettings.config.proxyEnabled && ImageNetworkSettings.config.dataProxyEnabled
+  }
+
+  static async setImageProxyEnabled(enabled: boolean): Promise<void> {
+    if (enabled === ImageNetworkSettings.config.imageProxyEnabled) {
+      return
+    }
+    const config = ImageNetworkSettings.getConfig()
+    config.imageProxyEnabled = enabled
+    await ImageNetworkSettings.commit(config)
+    logger.info('Image proxy scope enabled=%{public}s', String(enabled))
+  }
+
+  static async setDataProxyEnabled(enabled: boolean): Promise<void> {
+    if (enabled === ImageNetworkSettings.config.dataProxyEnabled) {
+      return
+    }
+    const config = ImageNetworkSettings.getConfig()
+    config.dataProxyEnabled = enabled
+    await ImageNetworkSettings.commit(config)
+    logger.info('Bangumi data proxy scope enabled=%{public}s', String(enabled))
   }
 
   static isSocks5Supported(): boolean {
@@ -71,16 +104,25 @@ export class ImageNetworkSettings {
     if (enabled && ImageNetworkSettings.config.proxies.length === 0) {
       return false
     }
+    if (enabled === ImageNetworkSettings.config.proxyEnabled) {
+      return true
+    }
     const config = ImageNetworkSettings.getConfig()
     config.proxyEnabled = enabled
     await ImageNetworkSettings.commit(config)
+    logger.info('Image proxy enabled=%{public}s selected=%{public}s',
+      String(config.proxyEnabled), config.selectedProxyId)
     return true
   }
 
   static async setAutoFailover(enabled: boolean): Promise<void> {
+    if (enabled === ImageNetworkSettings.config.autoFailover) {
+      return
+    }
     const config = ImageNetworkSettings.getConfig()
     config.autoFailover = enabled
     await ImageNetworkSettings.commit(config)
+    logger.info('Image proxy autoFailover=%{public}s', String(config.autoFailover))
   }
 
   static async saveProxy(proxy: ImageProxyConfig): Promise<void> {

@@ -65,6 +65,7 @@ export class ApiSearchConfig {
   listPath: string = '$.data[*]'
   namePath: string = '$.name'
   sourcePath: string = '$.url'
+  sourceTemplate: string = ''
 
   static fromJSON(json: Record<string, Object> | undefined): ApiSearchConfig {
     const config = new ApiSearchConfig()
@@ -73,6 +74,7 @@ export class ApiSearchConfig {
     if (typeof json['listPath'] === 'string') config.listPath = json['listPath'] as string
     if (typeof json['namePath'] === 'string') config.namePath = json['namePath'] as string
     if (typeof json['sourcePath'] === 'string') config.sourcePath = json['sourcePath'] as string
+    if (typeof json['sourceTemplate'] === 'string') config.sourceTemplate = (json['sourceTemplate'] as string).trim()
     return config
   }
 
@@ -82,6 +84,7 @@ export class ApiSearchConfig {
     result['listPath'] = this.listPath
     result['namePath'] = this.namePath
     result['sourcePath'] = this.sourcePath
+    if (this.sourceTemplate.length > 0) result['sourceTemplate'] = this.sourceTemplate
     return result
   }
 }

@@ -6,6 +6,7 @@ import { TopicTagButton } from '../../components/recommend/TopicTagButton'
 import { TIMELINE_WEEKDAY_LABELS } from '../../components/timeline/TimelineWeekdayHdsTabs'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
+import { IMAGE_NETWORK_VERSION_KEY } from '../../store/ImageNetworkSettings'
 import { router, curves } from '@kit.ArkUI'
 import {
   HdsNavigation,
@@ -49,6 +50,7 @@ const SEASON_SIDEBAR_SLIDE_OUT_DURATION: number = 200
 
 @Component
 export struct TimelinePage {
+  @StorageLink(IMAGE_NETWORK_VERSION_KEY) @Watch('onBangumiNetworkChanged') bangumiNetworkVersion: number = 0
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
   @StorageLink('bottomSafeHeight') bottomSafeHeight: number = 0
   @StorageLink('screenWidthVp') screenWidthVp: number = 360
@@ -70,6 +72,18 @@ export struct TimelinePage {
   private weekdayTabScroller: Scroller = new Scroller()
   private enrichingWeekdayKeys: string[] = []
   private enrichedWeekdayKeys: string[] = []
+  private calendarLoadToken: number = 0
+
+  private onBangumiNetworkChanged(): void {
+    this.calendarLoadToken++
+    this.calendar = []
+    this.hasLoaded = false
+    this.enrichingWeekdayKeys = []
+    this.enrichedWeekdayKeys = []
+    if (this.selectedYear > 0) {
+      this.loadCalendarBySeason(this.selectedYear, this.selectedQuarter)
+    }
+  }
 
   aboutToAppear(): void {
     this.selectedYear = new Date().getFullYear()
@@ -747,19 +761,27 @@ export struct TimelinePage {
   }
 
   private async loadCalendar(): Promise<void> {
+    const token = ++this.calendarLoadToken
     this.isLoading = true
     this.isError = false
     try {
       const result = await BangumiApi.getCalendar()
+      if (token !== this.calendarLoadToken) {
+        return
+      }
       this.calendar = result
       this.hasLoaded = true
       logger.info('Calendar loaded: %{public}d days', result.filter((arr: AnimeItem[]) => arr.length > 0).length)
       this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
     } catch (_err) {
-      this.isError = true
+      if (token === this.calendarLoadToken) {
+        this.isError = true
+      }
       logger.warn('Calendar load failed')
     } finally {
-      this.isLoading = false
+      if (token === this.calendarLoadToken) {
+        this.isLoading = false
+      }
     }
   }
 
@@ -781,6 +803,7 @@ export struct TimelinePage {
   }
 
   private async loadCalendarBySeason(year: number, quarter: number): Promise<void> {
+    const token = ++this.calendarLoadToken
     this.isLoading = true
     this.isError = false
     try {
@@ -804,16 +827,23 @@ export struct TimelinePage {
           }
         }
       }
+      if (token !== this.calendarLoadToken) {
+        return
+      }
       this.calendar = result
       this.seasonString = AnimeSeason.getSeasonString(new Date(year, quarter * 3, 1))
       this.hasLoaded = true
       logger.info('Season calendar loaded for %{public}d Q%{public}d', year, quarter)
       this.enrichSelectedWeekdayInBackground(this.selectedWeekdayIndex)
     } catch (_err) {
-      this.isError = true
+      if (token === this.calendarLoadToken) {
+        this.isError = true
+      }
       logger.warn('Season calendar load failed')
     } finally {
-      this.isLoading = false
+      if (token === this.calendarLoadToken) {
+        this.isLoading = false
+      }
     }
   }
 
@@ -857,7 +887,7 @@ export struct TimelinePage {
   }
 
   private buildEnrichWeekdayKey(weekdayIndex: number): string {
-    return `${this.selectedYear}-${this.selectedQuarter}-${weekdayIndex}`
+    return `${this.bangumiNetworkVersion}-${this.selectedYear}-${this.selectedQuarter}-${weekdayIndex}`
   }
 
   private hasEnrichKey(keys: string[], key: string): boolean {

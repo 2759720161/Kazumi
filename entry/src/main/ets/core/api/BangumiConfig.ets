@@ -32,8 +32,8 @@ export class BangumiConfig {
     'https://bgmapi.anibt.net',
     'https://next.bgm.tv'
   ];
-  // Keep canonical URLs in the model. Relay mode only requests wsrv.nl;
-  // HTTP proxy mode requests canonical images through the selected server.
+  // Keep canonical URLs in the model. Proxied images use the original URL;
+  // images outside the active proxy scope use the wsrv.nl relay.
   static readonly BANGUMI_IMAGE_BASE: string = 'https://lain.bgm.tv';
   // Legacy mirror URLs are normalized to the canonical host, not requested as a fallback.
   static readonly BANGUMI_IMAGE_MIRROR: string = 'https://bgmimg.anibt.net';
@@ -42,6 +42,58 @@ export class BangumiConfig {
     'https://bgmmi.anibt.net/subject_search/',
     'https://bgm.tv/subject_search/'
   ];
+
+  static getApiBases(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://api.bgm.tv'] : BangumiConfig.BANGUMI_API_BASES;
+  }
+
+  static getSubjectV0Bases(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://api.bgm.tv'] : BangumiConfig.BANGUMI_SUBJECT_V0_BASES;
+  }
+
+  static getSearchBases(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://api.bgm.tv'] : BangumiConfig.BANGUMI_SEARCH_BASES;
+  }
+
+  static getNextBases(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://next.bgm.tv'] : BangumiConfig.BANGUMI_NEXT_BASES;
+  }
+
+  static getSubjectDetailBases(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://next.bgm.tv'] : BangumiConfig.BANGUMI_SUBJECT_DETAIL_BASES;
+  }
+
+  static getWebSearchUrls(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://bgm.tv/subject_search/'] : BangumiConfig.BANGUMI_WEB_SEARCH_URLS;
+  }
+
+  static getCalendarBases(): string[] {
+    return ImageNetworkSettings.isDataProxyEnabled() ? ['https://next.bgm.tv'] :
+      ['https://api.kazumi.fyi', 'https://bgmapi.anibt.net', 'https://next.bgm.tv', 'https://api.bgm.tv'];
+  }
+
+  // Only metadata included in the enabled proxy scope uses official endpoints.
+  static getDataRequestUrl(url: string, dataProxyEnabled: boolean): string {
+    if (!dataProxyEnabled) {
+      return url;
+    }
+    const protocolEnd = url.indexOf('://');
+    const pathStart = url.indexOf('/', protocolEnd + 3);
+    if (protocolEnd < 0 || pathStart < 0) {
+      throw new Error('Invalid Bangumi data URL');
+    }
+    const path = url.substring(pathStart);
+    if (path.startsWith('/p1/')) {
+      return 'https://next.bgm.tv' + path;
+    }
+    if (path.startsWith('/v0/')) {
+      return 'https://api.bgm.tv' + path;
+    }
+    if (path.startsWith('/subject_search/')) {
+      return 'https://bgm.tv' + path;
+    }
+    throw new Error('Mirror-only Bangumi endpoint is unavailable in data proxy mode');
+  }
 
   static normalizeImageUrl(raw: string): string {
     let url = raw.trim();
@@ -95,16 +147,16 @@ export class BangumiConfig {
    * Builds the ordered image candidates used by every cover consumer.
    *
    * Only Bangumi's own image hosts and image API endpoints are rewritten.
-   * A failed request must not silently cross from one network mode to another.
+   * The master proxy switch and image scope must both be enabled to use the original URL.
    */
   static getImageCandidates(raw: string,
-    proxyEnabled: boolean = ImageNetworkSettings.isProxyEnabled()): string[] {
+    imageProxyEnabled: boolean = ImageNetworkSettings.isImageProxyEnabled()): string[] {
     const candidates: string[] = []
     const normalized = BangumiConfig.normalizeImageUrl(raw)
     if (normalized.length === 0) {
       return candidates
     }
-    const proxyUrl = proxyEnabled ? '' : BangumiConfig.getImageProxyUrl(normalized)
+    const proxyUrl = imageProxyEnabled ? '' : BangumiConfig.getImageProxyUrl(normalized)
     candidates.push(proxyUrl.length > 0 ? proxyUrl : normalized)
     return candidates
   }

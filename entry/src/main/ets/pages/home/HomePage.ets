@@ -7,6 +7,7 @@ import { TopicTagButton } from '../../components/recommend/TopicTagButton'
 import { LoadingOverlay } from '../../components/common/LoadingOverlay'
 import { ErrorRetry } from '../../components/common/ErrorRetry'
 import { Logger } from '../../utils/Logger'
+import { IMAGE_NETWORK_VERSION_KEY } from '../../store/ImageNetworkSettings'
 import { RECOMMEND_GENRE_TAGS } from '../../constants/RecommendTags'
 import { router } from '@kit.ArkUI'
 import {
@@ -54,6 +55,7 @@ const HOME_SECTION_DISPLAY_LIMIT: number = 20
 
 @Component
 export struct HomePage {
+  @StorageLink(IMAGE_NETWORK_VERSION_KEY) @Watch('onBangumiNetworkChanged') bangumiNetworkVersion: number = 0
   @StorageLink('currentTab') @Watch('onCurrentTabChanged') currentTab: number = 0
   @StorageLink(HOME_PRELOAD_ENABLED_KEY) @Watch('onHomePreloadGateChanged') homePreloadEnabled: boolean = true
   @StorageLink('topSafeHeight') topSafeHeight: number = 0
@@ -102,6 +104,28 @@ export struct HomePage {
   }
 
   private onCurrentTabChanged(): void {
+    this.syncHomePreloadState()
+  }
+
+  private onBangumiNetworkChanged(): void {
+    this.loadToken++
+    this.tagRequestVersion++
+    this.backgroundPrefetchRunToken++
+    this.vm.setBackgroundPreloadEnabled(false)
+    this.vm = new RecommendViewModel()
+    this.heroList = []
+    this.trendingList = []
+    this.seasonalList = []
+    this.highScoreList = []
+    this.tagTopicList = []
+    this.isLoading = false
+    this.tagLoading = false
+    this.seasonalLoading = false
+    this.highScoreLoading = false
+    this.trendingMoreLoading = false
+    this.seasonalMoreLoading = false
+    this.highScoreMoreLoading = false
+    this.backgroundPrefetchInFlight = false
     this.syncHomePreloadState()
   }
 
@@ -314,6 +338,7 @@ export struct HomePage {
 
   private async loadRecommend(): Promise<void> {
     const token = ++this.loadToken
+    const viewModel = this.vm
     this.isLoading = true
     this.hasLoadError = false
     this.seasonalLoading = true
@@ -337,13 +362,13 @@ export struct HomePage {
       let trending: RecommendCardModel[] = []
 
       try {
-        trending = await this.vm.loadHomeTrending()
+        trending = await viewModel.loadHomeTrending()
       } catch (err) {
         logger.warn('loadHomeTrending failed')
       }
 
       try {
-        hero = await this.vm.buildHomeHeroFromTrending()
+        hero = await viewModel.buildHomeHeroFromTrending()
       } catch (err) {
         logger.warn('buildHomeHeroFromTrending failed')
       }
@@ -364,12 +389,18 @@ export struct HomePage {
       this.hasLoadError = hero.length === 0 && trending.length === 0
       this.isLoading = false
 
+      if (this.selectedTag.length > 0) {
+        this.handleTagSelect(this.selectedTag)
+      }
+
       this.loadSeasonalSection(token)
       this.loadHighScoreSection(token)
       this.enrichHeroSection(token)
     } catch (err) {
       logger.error('loadRecommend failed: %{public}s', err instanceof Error ? err.message : String(err))
-      this.hasLoadError = true
+      if (token === this.loadToken) {
+        this.hasLoadError = true
+      }
     } finally {
       if (token === this.loadToken) {
         this.isLoading = false

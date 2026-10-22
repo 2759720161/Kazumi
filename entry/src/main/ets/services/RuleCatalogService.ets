@@ -9,18 +9,94 @@ import { PreferencesStore } from '../store/PreferencesStore'
 
 const logger = new Logger('RuleCatalogService')
 const PREF_RULE_REPOSITORY_URL = 'rule_repository_url'
+const PREF_RULE_CATALOG_CACHE = 'rule_catalog_cache_v1'
+const CATALOG_FRESH_MS = 60000
+
+class RuleCatalogCacheEntry {
+  items: RuleCatalogItem[] = []
+  updatedAt: number = 0
+}
 
 export class RuleCatalogService {
+  private static catalogCache: Map<string, RuleCatalogCacheEntry> = new Map()
+  private static catalogRequests: Map<string, Promise<RuleCatalogItem[]>> = new Map()
   static async getSavedRepositoryUrl(): Promise<string> {
     const prefs = PreferencesStore.getInstance()
     return (await prefs.getString(PREF_RULE_REPOSITORY_URL, '')).trim()
   }
 
-  static async fetchCatalog(indexUrl: string): Promise<RuleCatalogItem[]> {
+  static async getCachedCatalog(indexUrl: string): Promise<RuleCatalogItem[]> {
+    if (indexUrl.trim().length === 0) return []
+    const key = DefaultRuleSourceInitializer.normalizeGithubRawUrl(indexUrl)
+    const memory = RuleCatalogService.catalogCache.get(key)
+    if (memory !== undefined) return memory.items.slice()
+    try {
+      const text = await PreferencesStore.getInstance().getString(PREF_RULE_CATALOG_CACHE, '')
+      if (text.length === 0) return []
+      const saved = JSON.parse(text) as Record<string, Object>
+      if (saved['url'] !== key || typeof saved['body'] !== 'string' || typeof saved['updatedAt'] !== 'number') {
+        return []
+      }
+      const entry = new RuleCatalogCacheEntry()
+      entry.items = RuleCatalogService.parseCatalog(saved['body'] as string)
+      entry.updatedAt = saved['updatedAt'] as number
+      RuleCatalogService.catalogCache.set(key, entry)
+      logger.info('Loaded cached rule catalog: items=%{public}d', entry.items.length)
+      return entry.items.slice()
+    } catch (err) {
+      logger.warn('Ignoring invalid rule catalog cache: %{public}s', err instanceof Error ? err.message : String(err))
+      return []
+    }
+  }
+
+  static async fetchCatalog(indexUrl: string, forceRefresh: boolean = false): Promise<RuleCatalogItem[]> {
     if (indexUrl.trim().length === 0) {
       return []
     }
-    const indexBody = await DefaultRuleSourceInitializer.fetchTextWithGithubMirror(indexUrl)
+    const key = DefaultRuleSourceInitializer.normalizeGithubRawUrl(indexUrl)
+    await RuleCatalogService.getCachedCatalog(key)
+    const existing = RuleCatalogService.catalogRequests.get(key)
+    if (existing !== undefined) {
+      logger.info('Joining rule catalog refresh: %{public}s', key.substring(0, 100))
+      return (await existing).slice()
+    }
+    const cached = RuleCatalogService.catalogCache.get(key)
+    const age = cached === undefined ? -1 : Date.now() - cached.updatedAt
+    if (!forceRefresh && cached !== undefined && age >= 0 && age < CATALOG_FRESH_MS) {
+      logger.info('Using recent rule catalog: items=%{public}d age=%{public}dms', cached.items.length, age)
+      return cached.items.slice()
+    }
+    const pending = RuleCatalogService.loadCatalog(key)
+    RuleCatalogService.catalogRequests.set(key, pending)
+    try {
+      return (await pending).slice()
+    } finally {
+      RuleCatalogService.catalogRequests.delete(key)
+    }
+  }
+
+  private static async loadCatalog(key: string): Promise<RuleCatalogItem[]> {
+    const indexBody = await DefaultRuleSourceInitializer.fetchTextWithGithubMirror(key)
+    const items = RuleCatalogService.parseCatalog(indexBody)
+    await RuleCatalogService.adoptLegacyRepositoryRules(items)
+    const entry = new RuleCatalogCacheEntry()
+    entry.items = items
+    entry.updatedAt = Date.now()
+    RuleCatalogService.catalogCache.set(key, entry)
+    const saved: Record<string, Object> = {}
+    saved['url'] = key
+    saved['body'] = indexBody
+    saved['updatedAt'] = entry.updatedAt
+    try {
+      await PreferencesStore.getInstance().setString(PREF_RULE_CATALOG_CACHE, JSON.stringify(saved))
+    } catch (err) {
+      logger.warn('Failed to save rule catalog cache: %{public}s', err instanceof Error ? err.message : String(err))
+    }
+    logger.info('Fetched catalog with %{public}d items', items.length)
+    return items
+  }
+
+  private static parseCatalog(indexBody: string): RuleCatalogItem[] {
     const parsed: Object = JSON.parse(indexBody)
     if (!Array.isArray(parsed)) {
       throw new Error('Rule catalog index must be a JSON array')
@@ -45,8 +121,6 @@ export class RuleCatalogService {
     if (list.length > 0 && items.length === 0) {
       throw new Error('Rule catalog index contains no valid Kazumi rules')
     }
-    await RuleCatalogService.adoptLegacyRepositoryRules(items)
-    logger.info('Fetched catalog with %{public}d items', items.length)
     return items
   }
 
@@ -118,6 +192,8 @@ export class RuleCatalogService {
         name, apiNum, AppConstants.SUPPORTED_API_LEVEL)
       return 1
     }
+
+    DefaultRuleSourceInitializer.validateRuleJson(parsed as Record<string, Object>)
 
     const store = new RuleSourceStore()
     const existing = await store.getByName(rule.name)

@@ -3,16 +3,13 @@ import { AnimeItem } from '../../models/AnimeItem';
 import { SeasonRange } from '../../models/SeasonRange';
 import { BangumiConfig } from './BangumiConfig';
 import { BangumiMirrorSignature } from './BangumiMirrorSignature';
+import { BangumiRequest } from './BangumiRequest';
+import { ImageNetworkSettings } from '../../store/ImageNetworkSettings';
 import { Logger, extractErrorMsg } from '../../utils/Logger';
 
 const logger: Logger = new Logger('BangumiApi');
 
-const BANGUMI_API_DOMAINS: string[] = BangumiConfig.BANGUMI_API_BASES;
-const BANGUMI_SUBJECT_V0_DOMAINS: string[] = BangumiConfig.BANGUMI_SUBJECT_V0_BASES;
-const BANGUMI_SEARCH_DOMAINS: string[] = BangumiConfig.BANGUMI_SEARCH_BASES;
-const BANGUMI_NEXT_DOMAINS: string[] = BangumiConfig.BANGUMI_NEXT_BASES;
 const BANGUMI_SEARCH_PATH = '/v0/search/subjects?limit=5&offset=0';
-const BANGUMI_WEB_SEARCH_URLS: string[] = BangumiConfig.BANGUMI_WEB_SEARCH_URLS;
 const BANGUMI_METADATA_SEARCH_LIMIT: number = 20;
 
 const MIRROR_CACHE_READ_TIMEOUT_MS: number = 8000;
@@ -46,16 +43,36 @@ export class BangumiSearchProgressOptions {
 }
 
 export class BangumiApi {
+  private static networkVersion: number = -1;
+
+  private static syncNetworkConfig(): void {
+    const version = ImageNetworkSettings.getVersion();
+    if (BangumiApi.networkVersion === version) {
+      return;
+    }
+    BangumiApi.networkVersion = version;
+    apiDomainIndex = -1;
+    searchDomainIndex = -1;
+    apiProbeCompleted = false;
+    webSearchAvailable = true;
+    webSearchFailedAt = 0;
+    BangumiApi.calendarCache.clear();
+    BangumiApi.subjectDetailCache.clear();
+    BangumiApi.subjectDetailInflight.clear();
+  }
+
   private static calendarCache: Map<string, AnimeItem[][]> = new Map();
   private static subjectDetailCache: Map<number, AnimeItem> = new Map();
   private static subjectDetailInflight: Map<number, Promise<AnimeItem | null>> = new Map();
 
   static async searchAnime(keyword: string, tags: string[] = [], sort: string = 'heat'): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     return BangumiApi.searchAnimeInternal(keyword, tags, sort, new BangumiSearchProgressOptions());
   }
 
   static async searchAnimeProgressive(keyword: string, tags: string[] = [], sort: string = 'heat',
     options: BangumiSearchProgressOptions = new BangumiSearchProgressOptions()): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     return BangumiApi.searchAnimeInternal(keyword, tags, sort, options);
   }
 
@@ -77,7 +94,7 @@ export class BangumiApi {
       logger.info('Bangumi metadata query: keyword=%{public}s tag=%{public}s sort=%{public}s',
         queryLabel, tags.join(','), normalizedSort);
 
-      const primaryDomain = BANGUMI_SEARCH_DOMAINS.length > 0 ? BANGUMI_SEARCH_DOMAINS[0] : '';
+      const primaryDomain = BangumiConfig.getSearchBases().length > 0 ? BangumiConfig.getSearchBases()[0] : '';
       if (primaryDomain.length > 0) {
         logger.info('Bangumi metadata search via %{public}s for: %{public}s', primaryDomain, queryLabel);
         const primaryResults = await BangumiApi.tryAnimeSearchPages(primaryDomain, body, keyword, queryLabel, progressOptions);
@@ -87,8 +104,8 @@ export class BangumiApi {
         }
       }
 
-      if (searchDomainIndex >= 0 && searchDomainIndex < BANGUMI_SEARCH_DOMAINS.length) {
-        const cachedDomain = BANGUMI_SEARCH_DOMAINS[searchDomainIndex];
+      if (searchDomainIndex >= 0 && searchDomainIndex < BangumiConfig.getSearchBases().length) {
+        const cachedDomain = BangumiConfig.getSearchBases()[searchDomainIndex];
         if (cachedDomain !== primaryDomain) {
           logger.info('Bangumi metadata cached domain via %{public}s for: %{public}s', cachedDomain, queryLabel);
         }
@@ -98,11 +115,11 @@ export class BangumiApi {
         }
       }
 
-      for (let i = 0; i < BANGUMI_SEARCH_DOMAINS.length; i++) {
+      for (let i = 0; i < BangumiConfig.getSearchBases().length; i++) {
         if (i === 0 || i === searchDomainIndex) {
           continue;
         }
-        const domain = BANGUMI_SEARCH_DOMAINS[i];
+        const domain = BangumiConfig.getSearchBases()[i];
         logger.info('Bangumi metadata search via %{public}s for: %{public}s', domain, queryLabel);
         const results = await BangumiApi.tryAnimeSearchPages(domain, body, keyword, queryLabel, progressOptions);
         if (results.length > 0) {
@@ -119,6 +136,7 @@ export class BangumiApi {
   }
 
   static async searchCover(keyword: string): Promise<string> {
+    BangumiApi.syncNetworkConfig();
     if (keyword.trim().length === 0) {
       return '';
     }
@@ -135,8 +153,8 @@ export class BangumiApi {
         apiDomainIndex = await BangumiApi.probeApiDomain();
       }
 
-      if (apiDomainIndex >= 0 && apiDomainIndex < BANGUMI_API_DOMAINS.length) {
-        const domain = BANGUMI_API_DOMAINS[apiDomainIndex];
+      if (apiDomainIndex >= 0 && apiDomainIndex < BangumiConfig.getApiBases().length) {
+        const domain = BangumiConfig.getApiBases()[apiDomainIndex];
         const searchUrl = domain + BANGUMI_SEARCH_PATH;
         logger.info('Bangumi API search via %{public}s for: %{public}s', domain, keyword);
         const cover = await BangumiApi.tryApiSearch(searchUrl, body, keyword);
@@ -159,10 +177,10 @@ export class BangumiApi {
   }
 
   private static async probeApiDomain(): Promise<number> {
-    for (let i = 0; i < BANGUMI_API_DOMAINS.length; i++) {
-      const domain = BANGUMI_API_DOMAINS[i];
+    for (let i = 0; i < BangumiConfig.getApiBases().length; i++) {
+      const domain = BangumiConfig.getApiBases()[i];
       const probeUrl = domain + '/v0/subjects/1';
-      const request = http.createHttp();
+      const request = new BangumiRequest();
       try {
         logger.info('Probing %{public}s...', domain);
         const response = await request.request(probeUrl, {
@@ -197,7 +215,7 @@ export class BangumiApi {
     if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
       return '';
     }
-    const request = http.createHttp();
+    const request = new BangumiRequest();
     try {
       const options: http.HttpRequestOptions = {
         method: http.RequestMethod.POST,
@@ -268,7 +286,7 @@ export class BangumiApi {
     if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
       return empty;
     }
-    const request = http.createHttp();
+    const request = new BangumiRequest();
     try {
       const options: http.HttpRequestOptions = {
         method: http.RequestMethod.POST,
@@ -350,8 +368,8 @@ export class BangumiApi {
   }
 
   private static async tryWebSearch(keyword: string): Promise<string> {
-    for (let i = 0; i < BANGUMI_WEB_SEARCH_URLS.length; i++) {
-      const cover = await BangumiApi.tryWebSearchUrl(BANGUMI_WEB_SEARCH_URLS[i], keyword);
+    for (let i = 0; i < BangumiConfig.getWebSearchUrls().length; i++) {
+      const cover = await BangumiApi.tryWebSearchUrl(BangumiConfig.getWebSearchUrls()[i], keyword);
       if (cover.length > 0) {
         return cover;
       }
@@ -361,7 +379,7 @@ export class BangumiApi {
   }
 
   private static async tryWebSearchUrl(baseUrl: string, keyword: string): Promise<string> {
-    const request = http.createHttp();
+    const request = new BangumiRequest();
     try {
       const encoded = encodeURIComponent(keyword);
       const url = baseUrl + encoded + '?cat=2';
@@ -609,21 +627,19 @@ export class BangumiApi {
   }
 
   static async getTrendsList(offset: number, limit: number = 24): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     const mirrorItems = await BangumiApi.fetchMirrorPopular('', offset, limit);
     if (mirrorItems.length > 0) {
       return mirrorItems;
     }
 
     const items: AnimeItem[] = [];
-    const domains: string[] = [
-      'https://bgmapi.anibt.net',
-      'https://next.bgm.tv'
-    ];
+    const domains: string[] = BangumiConfig.getNextBases();
 
     for (let d = 0; d < domains.length; d++) {
       const domain = domains[d];
       const url = `${domain}/p1/trending/subjects?type=2&limit=${limit}&offset=${offset}`;
-      const request = http.createHttp();
+      const request = new BangumiRequest();
       try {
         logger.info('Trends request: %{public}s offset=%{public}d', domain, offset);
         const response = await request.request(url, {
@@ -685,6 +701,7 @@ export class BangumiApi {
   }
 
   static async getBangumiListByTag(tag: string, offset: number): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     const mirrorItems = await BangumiApi.fetchMirrorPopular(tag, offset);
     if (mirrorItems.length > 0) {
       return mirrorItems;
@@ -694,13 +711,16 @@ export class BangumiApi {
   }
 
   private static async fetchMirrorPopular(tag: string, offset: number, limit: number = 24): Promise<AnimeItem[]> {
+    if (ImageNetworkSettings.isDataProxyEnabled()) {
+      return [];
+    }
     const items: AnimeItem[] = [];
     let url = `${BangumiConfig.KAZUMI_POPULAR_URL}?limit=${limit}&offset=${offset}`;
     if (tag.length > 0) {
       url = url + '&tag=' + encodeURIComponent(tag);
     }
 
-    const request = http.createHttp();
+    const request = new BangumiRequest();
     try {
       logger.info('Mirror popular: tag=%{public}s offset=%{public}d', tag, offset);
       const response = await request.request(url, {
@@ -765,10 +785,10 @@ export class BangumiApi {
     const body = JSON.stringify(bodyObj);
     const path = '/v0/search/subjects?limit=24&offset=' + String(offset);
 
-    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
-      const domain = BANGUMI_API_DOMAINS[d];
+    for (let d = 0; d < BangumiConfig.getApiBases().length; d++) {
+      const domain = BangumiConfig.getApiBases()[d];
       const searchUrl = domain + path;
-      const request = http.createHttp();
+      const request = new BangumiRequest();
       try {
         logger.info('Tag search: tag=%{public}s offset=%{public}d via %{public}s', tag, offset, domain);
         const options: http.HttpRequestOptions = {
@@ -826,12 +846,14 @@ export class BangumiApi {
   }
 
   static async getSubject(bangumiId: number): Promise<AnimeItem | null> {
+    BangumiApi.syncNetworkConfig();
     const cached = BangumiApi.getSubjectCache(bangumiId);
     if (cached !== null) {
       logger.info('Subject detail cache hit: %{public}d', bangumiId);
       return cached;
     }
 
+    const version = ImageNetworkSettings.getVersion();
     const inflight = BangumiApi.subjectDetailInflight.get(bangumiId);
     if (inflight !== undefined) {
       logger.info('Subject detail inflight hit: %{public}d', bangumiId);
@@ -842,23 +864,28 @@ export class BangumiApi {
     BangumiApi.subjectDetailInflight.set(bangumiId, task);
     try {
       const item = await task;
+      if (version !== ImageNetworkSettings.getVersion()) {
+        return null;
+      }
       if (item !== null) {
         BangumiApi.setSubjectCache(bangumiId, item);
       }
       return item;
     } finally {
-      BangumiApi.subjectDetailInflight.delete(bangumiId);
+      if (BangumiApi.subjectDetailInflight.get(bangumiId) === task) {
+        BangumiApi.subjectDetailInflight.delete(bangumiId);
+      }
     }
   }
 
   private static async fetchSubjectDetail(bangumiId: number): Promise<AnimeItem | null> {
     const p1Path = `/p1/subjects/${bangumiId}`;
-    const detailDomains: string[] = BangumiConfig.BANGUMI_SUBJECT_DETAIL_BASES;
+    const detailDomains: string[] = BangumiConfig.getSubjectDetailBases();
 
     for (let d = 0; d < detailDomains.length; d++) {
       const domain = detailDomains[d];
       const url = domain + p1Path;
-      const request = http.createHttp();
+      const request = new BangumiRequest();
       try {
         logger.info('Get subject %{public}d /p1 from %{public}s', bangumiId, domain);
         const response = await request.request(url, {
@@ -945,10 +972,10 @@ export class BangumiApi {
 
   private static async fetchSubjectV0(bangumiId: number): Promise<AnimeItem | null> {
     const v0Path = `/v0/subjects/${bangumiId}`;
-    for (let d = 0; d < BANGUMI_SUBJECT_V0_DOMAINS.length; d++) {
-      const domain = BANGUMI_SUBJECT_V0_DOMAINS[d];
+    for (let d = 0; d < BangumiConfig.getSubjectV0Bases().length; d++) {
+      const domain = BangumiConfig.getSubjectV0Bases()[d];
       const url = domain + v0Path;
-      const request = http.createHttp();
+      const request = new BangumiRequest();
       try {
         logger.info('Get subject %{public}d /v0 from %{public}s', bangumiId, domain);
         const response = await request.request(url, {
@@ -1011,6 +1038,7 @@ export class BangumiApi {
 
   static async enrichCalendarItemsForDay(result: AnimeItem[][], weekdayIndex: number, maxItems: number = 12,
     onBatchComplete?: () => void): Promise<void> {
+    BangumiApi.syncNetworkConfig();
     const candidates: AnimeItem[] = [];
     BangumiApi.collectCalendarEnrichCandidates(result, weekdayIndex, candidates);
     await BangumiApi.enrichCalendarCandidates(candidates, maxItems, 'visible day', onBatchComplete);
@@ -1093,11 +1121,21 @@ export class BangumiApi {
   }
 
   static async fetchCalendarBySeason(start: string, end: string): Promise<AnimeItem[][]> {
+    BangumiApi.syncNetworkConfig();
     const cacheKey = BangumiApi.buildCalendarCacheKey(start, end);
     const cached = BangumiApi.getCalendarCache(cacheKey);
     if (cached !== null) {
       logger.info('Calendar season cache hit: %{public}s to %{public}s', start, end);
       return cached;
+    }
+
+    if (ImageNetworkSettings.isDataProxyEnabled()) {
+      const version = ImageNetworkSettings.getVersion();
+      const result = await BangumiApi.searchByAirDateRange(start, end);
+      if (version === ImageNetworkSettings.getVersion()) {
+        BangumiApi.setCalendarCache(cacheKey, result);
+      }
+      return result;
     }
 
     const result: AnimeItem[][] = []
@@ -1106,7 +1144,7 @@ export class BangumiApi {
     }
 
     const url = `${BangumiConfig.KAZUMI_CALENDAR_URL}?start=${start}&end=${end}`
-    const request = http.createHttp()
+    const request = new BangumiRequest()
     try {
       logger.info('Mirror calendar season: %{public}s to %{public}s', start, end)
       const response = await request.request(url, {
@@ -1154,6 +1192,7 @@ export class BangumiApi {
   }
 
   static async searchByAirDateRange(start: string, end: string): Promise<AnimeItem[][]> {
+    BangumiApi.syncNetworkConfig();
     const result: AnimeItem[][] = []
     for (let i = 0; i < 7; i++) {
       result.push([])
@@ -1172,13 +1211,13 @@ export class BangumiApi {
     const body = JSON.stringify(bodyObj)
     const path = '/v0/search/subjects?limit=50&offset=0'
 
-    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
-      const domain = BANGUMI_API_DOMAINS[d]
+    for (let d = 0; d < BangumiConfig.getApiBases().length; d++) {
+      const domain = BangumiConfig.getApiBases()[d]
       const searchUrl = domain + path
       if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
         continue
       }
-      const request = http.createHttp()
+      const request = new BangumiRequest()
       try {
         logger.info('searchByAirDateRange: %{public}s to %{public}s via %{public}s', start, end, domain)
         const options: http.HttpRequestOptions = {
@@ -1233,6 +1272,7 @@ export class BangumiApi {
   }
 
   static async getCalendar(): Promise<AnimeItem[][]> {
+    BangumiApi.syncNetworkConfig();
     const cacheKey = BangumiApi.getCurrentSeasonCalendarCacheKey();
     const cached = BangumiApi.getCalendarCache(cacheKey);
     if (cached !== null) {
@@ -1256,18 +1296,13 @@ export class BangumiApi {
         mirrorItems, mirrorDays);
     }
 
-    const calendarDomains: string[] = [
-      'https://api.kazumi.fyi',
-      'https://bgmapi.anibt.net',
-      'https://next.bgm.tv',
-      'https://api.bgm.tv'
-    ];
+    const calendarDomains: string[] = BangumiConfig.getCalendarBases();
     const calendarPath = '/p1/calendar';
 
     for (let d = 0; d < calendarDomains.length; d++) {
       const domain = calendarDomains[d];
       const url = domain + calendarPath;
-      const request = http.createHttp();
+      const request = new BangumiRequest();
       try {
         logger.info('Fetching calendar from %{public}s', domain);
         const response = await request.request(url, {
@@ -1320,6 +1355,9 @@ export class BangumiApi {
   }
 
   private static async fetchMirrorCalendarSeason(): Promise<AnimeItem[][] | null> {
+    if (ImageNetworkSettings.isDataProxyEnabled()) {
+      return null;
+    }
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth();
@@ -1329,7 +1367,7 @@ export class BangumiApi {
     const endDate = BangumiApi.formatDate(quarterEnd);
 
     const url = `${BangumiConfig.KAZUMI_CALENDAR_URL}?start=${startDate}&end=${endDate}`;
-    const request = http.createHttp();
+    const request = new BangumiRequest();
     try {
       logger.info('Mirror calendar season: %{public}s to %{public}s', startDate, endDate);
       const response = await request.request(url, {
@@ -1435,7 +1473,7 @@ export class BangumiApi {
   }
 
   private static buildCalendarCacheKey(start: string, end: string): string {
-    return `calendar:${start}:${end}`;
+    return `calendar:${ImageNetworkSettings.getVersion()}:${start}:${end}`;
   }
 
   private static getCalendarCache(cacheKey: string): AnimeItem[][] | null {
@@ -1707,6 +1745,7 @@ export class BangumiApi {
   }
 
   static async searchHighScoreSubjects(limit: number, offset: number): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     const items: AnimeItem[] = []
     const bodyObj: Record<string, Object> = {}
     bodyObj['keyword'] = ''
@@ -1721,13 +1760,13 @@ export class BangumiApi {
     const body = JSON.stringify(bodyObj)
     const path = '/v0/search/subjects?limit=' + String(limit) + '&offset=' + String(offset)
 
-    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
-      const domain = BANGUMI_API_DOMAINS[d]
+    for (let d = 0; d < BangumiConfig.getApiBases().length; d++) {
+      const domain = BangumiConfig.getApiBases()[d]
       const searchUrl = domain + path
       if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
         continue
       }
-      const request = http.createHttp()
+      const request = new BangumiRequest()
       try {
         logger.info('searchHighScore: limit=%{public}d offset=%{public}d via %{public}s', limit, offset, domain)
         const options: http.HttpRequestOptions = {
@@ -1813,6 +1852,7 @@ export class BangumiApi {
   }
 
   static async searchSeasonalSubjects(startDate: string, endDate: string, limit: number, offset: number): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     const items: AnimeItem[] = []
     const bodyObj: Record<string, Object> = {}
     bodyObj['keyword'] = ''
@@ -1826,13 +1866,13 @@ export class BangumiApi {
     const body = JSON.stringify(bodyObj)
     const path = '/v0/search/subjects?limit=' + String(limit) + '&offset=' + String(offset)
 
-    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
-      const domain = BANGUMI_API_DOMAINS[d]
+    for (let d = 0; d < BangumiConfig.getApiBases().length; d++) {
+      const domain = BangumiConfig.getApiBases()[d]
       const searchUrl = domain + path
       if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
         continue
       }
-      const request = http.createHttp()
+      const request = new BangumiRequest()
       try {
         logger.info('searchSeasonal: %{public}s to %{public}s via %{public}s', startDate, endDate, domain)
         const options: http.HttpRequestOptions = {
@@ -1886,6 +1926,7 @@ export class BangumiApi {
   }
 
   static async searchByTagWithSort(tag: string, sort: string, limit: number, offset: number): Promise<AnimeItem[]> {
+    BangumiApi.syncNetworkConfig();
     if (sort === 'rank') {
       const mirrorItems = await BangumiApi.fetchMirrorPopular(tag, offset)
       if (mirrorItems.length > 0) {
@@ -1908,10 +1949,10 @@ export class BangumiApi {
     const body = JSON.stringify(bodyObj)
     const path = '/v0/search/subjects?limit=' + String(limit) + '&offset=' + String(offset)
 
-    for (let d = 0; d < BANGUMI_API_DOMAINS.length; d++) {
-      const domain = BANGUMI_API_DOMAINS[d]
+    for (let d = 0; d < BangumiConfig.getApiBases().length; d++) {
+      const domain = BangumiConfig.getApiBases()[d]
       const searchUrl = domain + path
-      const request = http.createHttp()
+      const request = new BangumiRequest()
       try {
         logger.info('searchByTagWithSort: tag=%{public}s sort=%{public}s via %{public}s', tag, sort, domain)
         const options: http.HttpRequestOptions = {

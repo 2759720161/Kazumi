@@ -1,7 +1,7 @@
 import { AnimeItem } from '../../models/AnimeItem'
 import { PlaybackRoad } from '../../models/PlaybackRoad'
 import { RuleSource } from '../../models/RuleSource'
-import { ApiChapterConfig, ApiRequestConfig, ApiSearchConfig, ApiBodyType, ApiChapterFormat } from '../../models/ApiRuleConfig'
+import { ApiChapterConfig, ApiRequestConfig, ApiSearchConfig, ApiBodyType, ApiChapterFormat, RuleMode } from '../../models/ApiRuleConfig'
 import { HttpClient } from '../../network/HttpClient'
 import { RequestConfig, RetryPolicy } from '../../network/RequestConfig'
 import { UrlUtils } from '../../utils/UrlUtils'
@@ -98,7 +98,13 @@ export class ApiRuleStrategy {
       if (name.length === 0 || source.length === 0) continue
       const item = new AnimeItem()
       item.name = name
-      item.url = source
+      // Source templates also allow adjacent text, such as /GV@source/.
+      const renderedSource = config.sourceTemplate.length > 0
+        ? config.sourceTemplate.split('@source').join(encodeURIComponent(source))
+        : source
+      item.url = rule.chapterMode === RuleMode.XPATH
+        ? UrlUtils.resolveUrl(rule.baseUrl, renderedSource)
+        : renderedSource
       item.sourceId = rule.id
       item.sourceName = rule.name
       items.push(item)
@@ -356,6 +362,9 @@ export class ApiRuleStrategy {
     RestrictedJsonPath.validate(config.listPath)
     RestrictedJsonPath.validate(config.namePath)
     RestrictedJsonPath.validate(config.sourcePath)
+    if (config.sourceTemplate.length > 0 && config.sourceTemplate.indexOf('@source') < 0) {
+      throw new Error('详情页地址模板必须引用 @source')
+    }
   }
 
   private validateChapterConfig(config: ApiChapterConfig): void {

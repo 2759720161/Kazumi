@@ -1,11 +1,11 @@
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
-import { connection, http } from '@kit.NetworkKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { http } from '@kit.NetworkKit';
 import { FileStore } from './FileStore';
 import { Logger, extractErrorMsg } from '../utils/Logger';
 import { ImageNetworkSettings } from './ImageNetworkSettings';
-import { ImageNetworkConfig, ImageProxyConfig, ImageProxyType } from '../models/ImageProxyConfig';
+import { ImageNetworkConfig, ImageProxyConfig } from '../models/ImageProxyConfig';
 import { BangumiConfig } from '../core/api/BangumiConfig';
+import { ProxyRequestOptions, UNSUPPORTED_SOCKS5_PROXY } from '../network/ProxyRequestOptions';
 
 const logger = new Logger('ImageCacheStore');
 // Keep image bursts below the socket pressure that can trigger curl 55 on
@@ -16,7 +16,7 @@ const MAX_CONCURRENT_IMAGE_DOWNLOADS = 3;
 // its first cover.
 const MAX_REGULAR_IMAGE_DOWNLOADS = 2;
 const IMAGE_RETRY_DELAY_MS = 350;
-const UNSUPPORTED_SOCKS5: string = 'SOCKS5 requires HarmonyOS API 26.0.0';
+const UNSUPPORTED_SOCKS5: string = UNSUPPORTED_SOCKS5_PROXY;
 
 export class CachedImageResult {
   uri: string = '';
@@ -54,7 +54,7 @@ export class ImageCacheStore {
   async getCachedImageResult(urls: string[], priority: boolean = false): Promise<CachedImageResult> {
     const version = ImageNetworkSettings.getVersion();
     const config = ImageNetworkSettings.getConfig();
-    const candidates = this.buildCandidates(urls, config.proxyEnabled);
+    const candidates = this.buildCandidates(urls, config.proxyEnabled && config.imageProxyEnabled);
     for (let i = 0; i < candidates.length; i++) {
       if (version !== ImageNetworkSettings.getVersion()) {
         return new CachedImageResult();
@@ -121,7 +121,7 @@ export class ImageCacheStore {
 
   /** Returns an existing cached file without starting a network request. */
   getExistingCachedImageUri(urls: string[]): string {
-    const candidates = this.buildCandidates(urls, ImageNetworkSettings.isProxyEnabled());
+    const candidates = this.buildCandidates(urls, ImageNetworkSettings.isImageProxyEnabled());
     for (let i = 0; i < candidates.length; i++) {
       const url = candidates[i].trim();
       if (url.length === 0 || url.startsWith('file://') || this.isFailedRecently(url)) {
@@ -144,10 +144,10 @@ export class ImageCacheStore {
     return '';
   }
 
-  private buildCandidates(urls: string[], proxyEnabled: boolean): string[] {
+  private buildCandidates(urls: string[], imageProxyEnabled: boolean): string[] {
     const result: string[] = [];
     for (let i = 0; i < urls.length; i++) {
-      const candidates = BangumiConfig.getImageCandidates(urls[i], proxyEnabled);
+      const candidates = BangumiConfig.getImageCandidates(urls[i], imageProxyEnabled);
       for (let j = 0; j < candidates.length; j++) {
         if (result.indexOf(candidates[j]) < 0) {
           result.push(candidates[j]);
@@ -178,11 +178,12 @@ export class ImageCacheStore {
 
   private async downloadImageWithRetry(url: string, priority: boolean,
     config: ImageNetworkConfig, version: number): Promise<ArrayBuffer> {
-    const proxies = config.getProxyCandidates();
-    if (config.proxyEnabled && proxies.length === 0) {
+    const useProxy = config.proxyEnabled && config.imageProxyEnabled;
+    const proxies = useProxy ? config.getProxyCandidates() : [];
+    if (useProxy && proxies.length === 0) {
       throw new Error('No image proxy selected');
     }
-    const failover = config.proxyEnabled && config.autoFailover && proxies.length > 1;
+    const failover = useProxy && config.autoFailover && proxies.length > 1;
     const maxAttempts = failover ? proxies.length : 3;
     let lastError: Error | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -194,7 +195,7 @@ export class ImageCacheStore {
         if (version !== ImageNetworkSettings.getVersion()) {
           throw new Error('Image network configuration changed');
         }
-        const proxy = config.proxyEnabled ? proxies[failover ? attempt : 0] : null;
+        const proxy = useProxy ? proxies[failover ? attempt : 0] : null;
         const data = await this.downloadImageOnce(url, proxy);
         if (failover && attempt > 0 && proxy !== null) {
           ImageNetworkSettings.activateAfterFailover(proxy.id, version);
@@ -295,36 +296,7 @@ export class ImageCacheStore {
         expectDataType: http.HttpDataType.ARRAY_BUFFER,
         usingProxy: false
       };
-      if (proxy !== null) {
-        if (proxy.type === ImageProxyType.SOCKS5) {
-          if (deviceInfo.apiAvailable('26.0.0')) {
-            const socksProxy: connection.Socks5Proxy = {
-              host: proxy.host,
-              port: proxy.port,
-              exclusionList: proxy.exclusionList,
-              dnsStrategy: connection.Socks5DnsStrategy.PROXY_MODE
-            };
-            if (proxy.username.length > 0) {
-              socksProxy.username = proxy.username;
-              socksProxy.password = proxy.password;
-            }
-            options.usingSocks5Proxy = socksProxy;
-          } else {
-            throw new Error(UNSUPPORTED_SOCKS5);
-          }
-        } else {
-          const httpProxy: connection.HttpProxy = {
-            host: proxy.host,
-            port: proxy.port,
-            exclusionList: proxy.exclusionList
-          };
-          if (proxy.username.length > 0) {
-            httpProxy.username = proxy.username;
-            httpProxy.password = proxy.password;
-          }
-          options.usingProxy = httpProxy;
-        }
-      }
+      ProxyRequestOptions.apply(options, proxy);
       const response = await request.request(url, options);
       const statusCode = response.responseCode as number;
       if (statusCode < 200 || statusCode >= 300) {

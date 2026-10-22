@@ -62,6 +62,7 @@ struct RuleEditorPage {
   @State searchApiListPath: string = ''
   @State searchApiNamePath: string = ''
   @State searchApiSourcePath: string = ''
+  @State searchApiSourceTemplate: string = ''
   @State chapterApiMethod: string = 'GET'
   @State chapterApiUrl: string = ''
   @State chapterApiHeaders: string = '{}'
@@ -187,6 +188,8 @@ struct RuleEditorPage {
     this.Input('结果列表 JSONPath', this.searchApiListPath, '$.data[*]', (value: string) => this.searchApiListPath = value)
     this.Input('名称 JSONPath', this.searchApiNamePath, '$.name', (value: string) => this.searchApiNamePath = value)
     this.Input('来源 JSONPath', this.searchApiSourcePath, '$.id', (value: string) => this.searchApiSourcePath = value)
+    this.Input('详情页地址模板（可选）', this.searchApiSourceTemplate, 'https://example.com/detail/@source.html',
+      (value: string) => this.searchApiSourceTemplate = value)
   }
 
   @Builder
@@ -694,6 +697,7 @@ struct RuleEditorPage {
     config.listPath = this.searchApiListPath.trim()
     config.namePath = this.searchApiNamePath.trim()
     config.sourcePath = this.searchApiSourcePath.trim()
+    config.sourceTemplate = this.searchApiSourceTemplate.trim()
     return config
   }
 
@@ -760,6 +764,9 @@ struct RuleEditorPage {
       this.validateJsonPath(this.searchApiListPath, '搜索结果列表 JSONPath')
       this.validateJsonPath(this.searchApiNamePath, '名称 JSONPath')
       this.validateJsonPath(this.searchApiSourcePath, '来源 JSONPath')
+      if (this.searchApiSourceTemplate.trim().length > 0 && this.searchApiSourceTemplate.indexOf('@source') < 0) {
+        throw new Error('详情页地址模板必须引用 @source')
+      }
       this.parseRecord(this.searchApiHeaders, '搜索请求头')
       this.parseRecord(this.searchApiQuery, '搜索查询参数')
       if (this.searchApiBodyType !== ApiBodyType.NONE) this.parseJson(this.searchApiBody, '搜索请求体')

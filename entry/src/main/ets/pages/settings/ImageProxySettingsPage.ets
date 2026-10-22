@@ -6,6 +6,9 @@ import { buildTitleBarOptions, getBottomSpacerHeight, getTopSpacerHeight,
   HDS_MATERIAL_LEVEL_DEFAULT, PREFS_KEY_HDS_MATERIAL_LEVEL } from '../../utils/HdsPageStyle'
 import { API26_MATERIAL_STYLE_DEFAULT, PREFS_KEY_API26_MATERIAL_STYLE } from '../../utils/ImmersiveMaterial'
 import { ImmersiveSelectModifier } from '../../utils/ImmersiveSelectModifier'
+import { Logger, extractErrorMsg } from '../../utils/Logger'
+
+const logger = new Logger('ImageProxySettingsPage')
 
 @Entry
 @Component
@@ -28,6 +31,8 @@ export struct ImageProxySettingsPageContent {
   @StorageLink(IMAGE_ACTIVE_PROXY_KEY) @Watch('refreshConfig') activeProxyId: string = ''
   @State proxyEnabled: boolean = false
   @State autoFailover: boolean = true
+  @State imageProxyEnabled: boolean = true
+  @State dataProxyEnabled: boolean = true
   @State proxies: ImageProxyConfig[] = []
   @State selectedId: string = ''
   @State editing: boolean = false
@@ -50,6 +55,8 @@ export struct ImageProxySettingsPageContent {
     const config = ImageNetworkSettings.getConfig()
     this.proxyEnabled = config.proxyEnabled
     this.autoFailover = config.autoFailover
+    this.imageProxyEnabled = config.imageProxyEnabled
+    this.dataProxyEnabled = config.dataProxyEnabled
     this.proxies = config.proxies
     this.selectedId = config.selectedProxyId
   }
@@ -60,6 +67,7 @@ export struct ImageProxySettingsPageContent {
         Column({ space: 16 }) {
           Blank().height(getTopSpacerHeight(this.topSafeHeight)).width('100%')
           this.ModeCard()
+          this.ProxyScopeCard()
           if (this.editing) {
             this.EditorCard()
           }
@@ -101,17 +109,31 @@ export struct ImageProxySettingsPageContent {
   @Builder
   private ModeCard(): void {
     Column({ space: 18 }) {
-      this.ToggleRow($r('app.string.image_proxy_enable'),
-        this.proxyEnabled ? $r('app.string.image_proxy_proxy_desc') : $r('app.string.image_proxy_direct_desc'),
-        this.proxyEnabled, (enabled: boolean) => { this.changeMode(enabled) })
+      Row({ space: 16 }) {
+        Column({ space: 6 }) {
+          Text($r('app.string.image_proxy_enable'))
+            .fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%')
+          Text(this.proxyEnabled ? $r('app.string.image_proxy_proxy_desc') : $r('app.string.image_proxy_direct_desc'))
+            .fontSize(13).fontColor($r('app.color.text_secondary')).width('100%').lineHeight(20)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        // Read live state here: value parameters in @Builder retain their initial values.
+        Toggle({ type: ToggleType.Switch, isOn: this.proxyEnabled }).enabled(!this.busy)
+          .onChange((enabled: boolean) => { this.changeMode(enabled) })
+      }.width('100%')
       if (this.proxyEnabled) {
         Text(this.selectedProxyName())
           .fontSize(14).fontColor($r('app.color.accent_blue')).width('100%')
       }
-      this.ToggleRow($r('app.string.image_proxy_failover'), $r('app.string.image_proxy_failover_desc'),
-        this.autoFailover, (enabled: boolean) => {
-          ImageNetworkSettings.setAutoFailover(enabled).catch(() => { this.showMessage($r('app.string.image_proxy_save_failed')) })
-        })
+      Row({ space: 16 }) {
+        Column({ space: 6 }) {
+          Text($r('app.string.image_proxy_failover'))
+            .fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%')
+          Text($r('app.string.image_proxy_failover_desc'))
+            .fontSize(13).fontColor($r('app.color.text_secondary')).width('100%').lineHeight(20)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Toggle({ type: ToggleType.Switch, isOn: this.autoFailover }).enabled(!this.busy)
+          .onChange((enabled: boolean) => { this.changeAutoFailover(enabled) })
+      }.width('100%')
       Text($r('app.string.image_proxy_scope'))
         .fontSize(13).fontColor($r('app.color.text_secondary')).width('100%').lineHeight(20)
     }
@@ -120,16 +142,25 @@ export struct ImageProxySettingsPageContent {
   }
 
   @Builder
-  private ToggleRow(title: Resource, desc: Resource, enabled: boolean,
-    onChange: (value: boolean) => void): void {
-    Row({ space: 16 }) {
-      Column({ space: 6 }) {
-        Text(title).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-          .width('100%')
-        Text(desc).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%').lineHeight(20)
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Toggle({ type: ToggleType.Switch, isOn: enabled }).enabled(!this.busy).onChange(onChange)
-    }.width('100%')
+  private ProxyScopeCard(): void {
+    Column({ space: 18 }) {
+      Text($r('app.string.image_proxy_scope_title'))
+        .fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%')
+      Row({ space: 16 }) {
+        Text($r('app.string.image_proxy_images'))
+          .fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.imageProxyEnabled })
+          .onChange((enabled: boolean) => { this.changeProxyScope(true, enabled) })
+      }.width('100%')
+      Row({ space: 16 }) {
+        Text($r('app.string.image_proxy_data'))
+          .fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.dataProxyEnabled })
+          .onChange((enabled: boolean) => { this.changeProxyScope(false, enabled) })
+      }.width('100%')
+    }
+    .width('100%').padding(20).borderRadius(20).backgroundColor($r('app.color.card_background'))
+    .border({ width: 0.5, color: $r('app.color.card_specular_border') })
   }
 
   @Builder
@@ -251,6 +282,9 @@ export struct ImageProxySettingsPageContent {
   }
 
   private async changeMode(enabled: boolean): Promise<void> {
+    if (this.busy || enabled === ImageNetworkSettings.isProxyEnabled()) {
+      return
+    }
     this.proxyEnabled = enabled
     this.busy = true
     try {
@@ -259,10 +293,54 @@ export struct ImageProxySettingsPageContent {
         this.showMessage($r('app.string.image_proxy_required'))
       }
       this.refreshConfig()
-    } catch (_) {
+    } catch (err) {
+      logger.error('Changing image proxy mode failed: %{public}s', extractErrorMsg(err as Object))
       this.showMessage($r('app.string.image_proxy_save_failed'))
     } finally {
+      this.refreshConfig()
       this.busy = false
+    }
+  }
+
+  private async changeAutoFailover(enabled: boolean): Promise<void> {
+    if (this.busy || enabled === ImageNetworkSettings.getConfig().autoFailover) {
+      return
+    }
+    this.autoFailover = enabled
+    this.busy = true
+    try {
+      await ImageNetworkSettings.setAutoFailover(enabled)
+    } catch (err) {
+      logger.error('Changing image proxy failover failed: %{public}s', extractErrorMsg(err as Object))
+      this.showMessage($r('app.string.image_proxy_save_failed'))
+    } finally {
+      this.refreshConfig()
+      this.busy = false
+    }
+  }
+
+  private async changeProxyScope(imageScope: boolean, enabled: boolean): Promise<void> {
+    const config = ImageNetworkSettings.getConfig()
+    const current = imageScope ? config.imageProxyEnabled : config.dataProxyEnabled
+    if (enabled === current) {
+      return
+    }
+    if (imageScope) {
+      this.imageProxyEnabled = enabled
+    } else {
+      this.dataProxyEnabled = enabled
+    }
+    try {
+      if (imageScope) {
+        await ImageNetworkSettings.setImageProxyEnabled(enabled)
+      } else {
+        await ImageNetworkSettings.setDataProxyEnabled(enabled)
+      }
+    } catch (err) {
+      logger.error('Changing proxy scope failed: %{public}s', extractErrorMsg(err as Object))
+      this.showMessage($r('app.string.image_proxy_save_failed'))
+    } finally {
+      this.refreshConfig()
     }
   }
 

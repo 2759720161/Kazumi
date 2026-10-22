@@ -260,12 +260,14 @@ export struct RuleShopPageContent {
   private clipboardImportDialogController: CustomDialogController | null = null
   private scroller: Scroller = new Scroller()
   private ruleSourceStore: RuleSourceStore = new RuleSourceStore()
+  private catalogLoadToken: number = 0
 
   aboutToAppear(): void {
     this.initializePage()
   }
 
   aboutToDisappear(): void {
+    this.catalogLoadToken++
     this.shareDialogController?.close()
     this.shareDialogController = null
     this.clipboardImportDialogController?.close()
@@ -632,7 +634,7 @@ export struct RuleShopPageContent {
         .fontColor($r('app.color.text_on_primary'))
         .enabled(!this.loading)
         .onClick(() => {
-          this.loadCatalog()
+          this.loadCatalog(true)
         })
     }
     .width('100%')
@@ -744,12 +746,16 @@ export struct RuleShopPageContent {
     return `${year}-${month < 10 ? '0' + String(month) : String(month)}-${day < 10 ? '0' + String(day) : String(day)}`
   }
 
-  private async loadCatalog(): Promise<void> {
+  private async loadCatalog(forceRefresh: boolean = false): Promise<void> {
+    const token = ++this.catalogLoadToken
     this.errorMessage = ''
     this.loading = true
     try {
       this.localRules = await this.ruleSourceStore.getAll()
+      if (token !== this.catalogLoadToken) return
+      this.catalogItems = this.mergeCatalogItems([], this.localRules)
       const repositoryUrl = await this.getSavedRepositoryUrl()
+      if (token !== this.catalogLoadToken) return
       this.repositoryUrl = repositoryUrl
       this.canRefreshRepository = repositoryUrl.length > 0
       if (repositoryUrl.length === 0) {
@@ -757,8 +763,13 @@ export struct RuleShopPageContent {
         this.loading = false
         return
       }
-      await this.refreshCatalogInBackground(repositoryUrl)
+      const cachedItems = await RuleCatalogService.getCachedCatalog(repositoryUrl)
+      if (token !== this.catalogLoadToken) return
+      // Cached absence is not evidence that a repository rule was removed.
+      this.catalogItems = this.mergeCatalogItems(cachedItems, this.localRules)
+      await this.refreshCatalogInBackground(repositoryUrl, token, forceRefresh)
     } catch (err) {
+      if (token !== this.catalogLoadToken) return
       const msg = err instanceof Error ? err.message : String(err)
       this.errorMessage = `加载失败: ${msg}`
       logger.error('Load catalog failed: %{public}s', msg)
@@ -766,14 +777,18 @@ export struct RuleShopPageContent {
     }
   }
 
-  private async refreshCatalogInBackground(repositoryUrl: string): Promise<void> {
+  private async refreshCatalogInBackground(repositoryUrl: string, token: number,
+    forceRefresh: boolean): Promise<void> {
     this.loading = true
     try {
-      const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
-      this.localRules = await this.ruleSourceStore.getAll()
-      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
+      const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl, forceRefresh)
+      const localRules = await this.ruleSourceStore.getAll()
+      if (token !== this.catalogLoadToken) return
+      this.localRules = localRules
+      this.catalogItems = this.mergeCatalogItems(remoteItems, localRules, true)
       this.errorMessage = ''
     } catch (err) {
+      if (token !== this.catalogLoadToken) return
       const msg = err instanceof Error ? err.message : String(err)
       if (this.catalogItems.length === 0) {
         this.catalogItems = this.mergeCatalogItems([], this.localRules)
@@ -783,7 +798,7 @@ export struct RuleShopPageContent {
       }
       logger.error('Refresh catalog failed: %{public}s', msg)
     } finally {
-      this.loading = false
+      if (token === this.catalogLoadToken) this.loading = false
     }
   }
 
@@ -951,8 +966,8 @@ export struct RuleShopPageContent {
     }
 
     try {
-      const remoteItems = await RuleCatalogService.fetchCatalog(repositoryUrl)
-      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)
+      const remoteItems = await RuleCatalogService.getCachedCatalog(repositoryUrl)
+      this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules)
       this.errorMessage = ''
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -988,7 +1003,7 @@ export struct RuleShopPageContent {
       if (this.canRefreshRepository) {
         this.ActionMenuItem('刷新仓库', () => {
           this.showActionMenu = false
-          this.loadCatalog()
+          this.loadCatalog(true)
         })
       }
     }
@@ -1274,7 +1289,9 @@ export struct RuleShopPageContent {
   }
 
   private async connectRepository(url: string): Promise<RuleCatalogItem[]> {
-    const remoteItems = await RuleCatalogService.fetchCatalog(url)
+    this.catalogLoadToken++
+    this.loading = false
+    const remoteItems = await RuleCatalogService.fetchCatalog(url, true)
     await this.saveRepositoryStateIfNeeded(url)
     this.localRules = await this.ruleSourceStore.getAll()
     this.catalogItems = this.mergeCatalogItems(remoteItems, this.localRules, true)

@@ -21,19 +21,28 @@ export class BangumiRequest {
     if (useProxy && proxies.length === 0) {
       throw new Error('No Bangumi proxy selected')
     }
-    const attempts = useProxy ? proxies.length : 1
+    const urls = useProxy ? [requestUrl] : BangumiConfig.getDirectDataCandidates(requestUrl)
+    const attempts = useProxy ? proxies.length : urls.length
     for (let attempt = 0; attempt < attempts; attempt++) {
       this.assertCurrent()
       const proxy = useProxy ? proxies[attempt] : null
+      const currentUrl = useProxy ? requestUrl : urls[attempt]
       const request = http.createHttp()
       this.activeRequest = request
       try {
-        ProxyRequestOptions.apply(options, proxy)
-        logger.info('Bangumi data %{public}s: %{public}s', proxy === null ? 'direct' : proxy.type, requestUrl)
-        const response = await request.request(requestUrl, options)
+        const useSystemProxy = !useProxy && BangumiConfig.isOfficialDataUrl(currentUrl)
+        if (!useProxy && attempt > 0) {
+          BangumiRequest.removeMirrorSignature(options)
+        }
+        ProxyRequestOptions.apply(options, proxy, useSystemProxy)
+        logger.info('Bangumi data %{public}s: %{public}s',
+          proxy !== null ? proxy.type : useSystemProxy ? 'system' : 'direct', currentUrl)
+        const response = await request.request(currentUrl, options)
         this.assertCurrent()
         const status = response.responseCode as number
-        if ((status === 407 || status >= 500) && attempt + 1 < attempts) {
+        const emptyBody = response.result === '' || response.result === null || response.result === undefined
+        if (attempt + 1 < attempts && (useProxy ? status === 407 || status >= 500 :
+          status < 200 || status >= 300 || emptyBody)) {
           continue
         }
         if (status >= 200 && status < 300 && attempt > 0 && proxy !== null) {
@@ -46,7 +55,7 @@ export class BangumiRequest {
         if (attempt + 1 >= attempts) {
           throw new Error(message)
         }
-        logger.warn('Bangumi proxy attempt failed: %{public}s', message)
+        logger.warn('Bangumi request failed, trying next address or proxy: %{public}s', message)
       } finally {
         if (this.activeRequest === request) {
           this.activeRequest = null
@@ -69,5 +78,21 @@ export class BangumiRequest {
     if (this.destroyed || this.version !== ImageNetworkSettings.getVersion()) {
       throw new Error('Bangumi network configuration changed')
     }
+  }
+
+  private static removeMirrorSignature(options: http.HttpRequestOptions): void {
+    if (options.header === undefined || options.header === null) {
+      return
+    }
+    const source = options.header as Record<string, Object>
+    const headers: Record<string, Object> = {}
+    const keys = Object.keys(source)
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i].toLowerCase()
+      if (key !== 'x-appid' && key !== 'x-timestamp' && key !== 'x-signature') {
+        headers[keys[i]] = source[keys[i]]
+      }
+    }
+    options.header = headers
   }
 }

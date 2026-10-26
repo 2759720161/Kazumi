@@ -267,6 +267,7 @@ export struct PlayerPage {
   @State nonVideoOpacity: number = 1
 
   aboutToAppear(): void {
+    this.collectController.setUIContext(this.getUIContext())
     this.isPageAlive = true
     this.registerDownloadListener()
     AppStorage.setOrCreate('playerPageActive', true)
@@ -4965,10 +4966,12 @@ export struct PlayerPage {
       const animeItem = this.buildAnimeItemFromPlayer()
       const normalizedType = CollectType.normalize(collectType)
       await this.collectController.addCollect(animeItem, normalizedType)
-      this.currentCollectType = normalizedType
+      this.currentCollectType = await this.collectController.getCollectType(animeItem.getUniqueId(), animeItem.bangumiId)
       this.showCollectStatusSheet = false
-      this.showHudText(normalizedType === CollectType.none ? '已取消追番' :
-        `已设为${CollectType.getLabel(normalizedType)}`)
+      if (normalizedType !== CollectType.none || this.currentCollectType === CollectType.none) {
+        this.showHudText(this.currentCollectType === CollectType.none ? '已取消追番' :
+          `已设为${CollectType.getLabel(this.currentCollectType)}`)
+      }
     } catch (err) {
       logger.error('Update collect status failed: %{public}s', err instanceof Error ? err.message : String(err))
     }

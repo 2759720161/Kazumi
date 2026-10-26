@@ -5,8 +5,9 @@ import { ImageProxyConfig, ImageProxyType } from '../models/ImageProxyConfig'
 export const UNSUPPORTED_SOCKS5_PROXY: string = 'SOCKS5 requires HarmonyOS API 26.0.0'
 
 export class ProxyRequestOptions {
-  static apply(options: http.HttpRequestOptions, proxy: ImageProxyConfig | null): void {
-    options.usingProxy = false
+  static apply(options: http.HttpRequestOptions, proxy: ImageProxyConfig | null,
+    useSystemProxy: boolean = false): void {
+    options.usingProxy = useSystemProxy
     options.usingSocks5Proxy = undefined
     if (proxy === null) {
       return

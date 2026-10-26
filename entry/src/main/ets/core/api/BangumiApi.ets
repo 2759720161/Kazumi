@@ -683,6 +683,10 @@ export class BangumiApi {
           }
         }
 
+        if (items.length === 0) {
+          request.destroy();
+          continue;
+        }
         logger.info('Trends loaded %{public}d items from %{public}s', items.length, domain);
         request.destroy();
         return items;
@@ -1121,6 +1125,21 @@ export class BangumiApi {
   }
 
   static async fetchCalendarBySeason(start: string, end: string): Promise<AnimeItem[][]> {
+    const version = ImageNetworkSettings.getVersion();
+    const result = await BangumiApi.fetchCalendarBySeasonPrimary(start, end);
+    if (version !== ImageNetworkSettings.getVersion() || ImageNetworkSettings.isDataProxyEnabled() ||
+      BangumiApi.hasCalendarItems(result)) {
+      return result;
+    }
+    logger.info('Season mirror unavailable, trying official date search through system network');
+    const fallback = await BangumiApi.searchByAirDateRange(start, end, true);
+    if (version === ImageNetworkSettings.getVersion()) {
+      BangumiApi.setCalendarCache(BangumiApi.buildCalendarCacheKey(start, end), fallback);
+    }
+    return fallback;
+  }
+
+  private static async fetchCalendarBySeasonPrimary(start: string, end: string): Promise<AnimeItem[][]> {
     BangumiApi.syncNetworkConfig();
     const cacheKey = BangumiApi.buildCalendarCacheKey(start, end);
     const cached = BangumiApi.getCalendarCache(cacheKey);
@@ -1191,7 +1210,8 @@ export class BangumiApi {
     }
   }
 
-  static async searchByAirDateRange(start: string, end: string): Promise<AnimeItem[][]> {
+  static async searchByAirDateRange(start: string, end: string,
+    preferOfficial: boolean = false): Promise<AnimeItem[][]> {
     BangumiApi.syncNetworkConfig();
     const result: AnimeItem[][] = []
     for (let i = 0; i < 7; i++) {
@@ -1211,8 +1231,9 @@ export class BangumiApi {
     const body = JSON.stringify(bodyObj)
     const path = '/v0/search/subjects?limit=50&offset=0'
 
-    for (let d = 0; d < BangumiConfig.getApiBases().length; d++) {
-      const domain = BangumiConfig.getApiBases()[d]
+    const domains = preferOfficial ? ['https://api.bgm.tv'] : BangumiConfig.getApiBases()
+    for (let d = 0; d < domains.length; d++) {
+      const domain = domains[d]
       const searchUrl = domain + path
       if (BangumiApi.shouldSkipProtectedMirrorSearch(searchUrl)) {
         continue

@@ -529,8 +529,8 @@ export struct SettingsPage {
           this.ItemDivider()
           this.SettingsRouteItem(
             $r('sys.symbol.arrow_2_circlepath'),
-            'WebDAV 同步',
-            '跨设备同步历史、进度与收藏',
+            '同步设置',
+            'WebDAV 与 Bangumi 同步',
             SETTINGS_DESTINATION_WEBDAV,
             () => {
               this.openSettingsRouteDestination(SETTINGS_DESTINATION_WEBDAV, 'pages/settings/WebDavSyncPage')
@@ -878,8 +878,8 @@ export struct SettingsPage {
 
           this.NavigationItem(
             $r('sys.symbol.arrow_2_circlepath'),
-            'WebDAV 同步',
-            '跨设备同步历史、进度与收藏',
+            '同步设置',
+            'WebDAV 与 Bangumi 同步',
             '',
             () => {
               router.pushUrl({ url: 'pages/settings/WebDavSyncPage' })
@@ -2054,7 +2054,7 @@ export struct SettingsPage {
       return '历史记录'
     }
     if (destination === SETTINGS_DESTINATION_WEBDAV) {
-      return 'WebDAV 同步'
+      return '同步设置'
     }
     if (destination === SETTINGS_DESTINATION_PLAYER) {
       return '播放器'

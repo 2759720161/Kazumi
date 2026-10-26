@@ -110,6 +110,7 @@ export struct DetailPageContent {
 
 
   aboutToAppear(): void {
+    this.collectController.setUIContext(this.getUIContext())
     const params: Record<string, Object> = router.getParams() as Record<string, Object>
     if (params !== null) {
       if (params['animeName'] !== undefined) this.animeName = params['animeName'] as string
@@ -842,10 +843,12 @@ export struct DetailPageContent {
       const animeItem = this.buildAnimeItem()
       const normalizedType = CollectType.normalize(collectType)
       await this.collectController.addCollect(animeItem, normalizedType)
-      this.currentCollectType = normalizedType
+      this.currentCollectType = await this.collectController.getCollectType(animeItem.getUniqueId(), animeItem.bangumiId)
       this.showCollectStatusSheet = false
-      promptAction.showToast({ message: normalizedType === CollectType.none ? '已取消追番' :
-        `已设为${CollectType.getLabel(normalizedType)}` })
+      if (normalizedType !== CollectType.none || this.currentCollectType === CollectType.none) {
+        promptAction.showToast({ message: this.currentCollectType === CollectType.none ? '已取消追番' :
+          `已设为${CollectType.getLabel(this.currentCollectType)}` })
+      }
     } catch (err) {
       logger.error('updateCollectStatus failed: %{public}s', err instanceof Error ? err.message : String(err))
     }

@@ -33,6 +33,7 @@ import {
   resolveBottomTabSnapTarget
 } from '../../utils/BottomTabAutoHide'
 import { HistorySyncService } from '../../services/HistorySyncService'
+import { BangumiSyncService } from '../../services/BangumiSyncService'
 
 const logger = new Logger('FavoritePage')
 const COLLECT_CARD_GAP: number = 8
@@ -77,6 +78,7 @@ export struct FavoritePage {
   private isAutoSyncing: boolean = false
 
   aboutToAppear(): void {
+    this.collectController.setUIContext(this.getUIContext())
     this.loadCollectibles().then(() => {
       this.syncCollectIfAutoEnabled()
     }).catch((err: Error) => {
@@ -520,10 +522,20 @@ export struct FavoritePage {
     this.isAutoSyncing = true
     try {
       const config = await this.historySyncService.getConfig()
-      if (!config.enabled || !config.autoSync) {
-        return
+      let webDavSynced = false
+      if (config.enabled && config.autoSync) {
+        try {
+          await this.historySyncService.syncNow()
+          webDavSynced = true
+        } catch (err) {
+          logger.warn('Auto sync WebDAV collections failed: %{public}s', err instanceof Error ? err.message : String(err))
+        }
       }
-      await this.historySyncService.syncNow()
+      const bangumi = BangumiSyncService.getInstance()
+      if ((await bangumi.getConfig()).enabled && !bangumi.isBusy()) {
+        await bangumi.syncNow()
+        if (webDavSynced) await this.historySyncService.syncNow()
+      }
       await this.loadCollectibles()
     } catch (err) {
       logger.warn('Auto sync collections failed: %{public}s', err instanceof Error ? err.message : String(err))
@@ -579,7 +591,7 @@ export struct FavoritePage {
     }
     try {
       await this.collectController.updateCollectType(this.statusTargetAnimeId, normalizedType)
-      this.statusTargetType = normalizedType
+      this.statusTargetType = await this.collectController.getCollectType(this.statusTargetAnimeId)
       await this.loadCollectibles()
     } catch (err) {
       logger.error('Update favorite status failed: %{public}s', err instanceof Error ? err.message : String(err))

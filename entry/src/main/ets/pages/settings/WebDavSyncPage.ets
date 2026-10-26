@@ -1,4 +1,5 @@
-import { promptAction } from '@kit.ArkUI'
+import { promptAction, router } from '@kit.ArkUI'
+import { BangumiSyncService } from '../../services/BangumiSyncService'
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -56,6 +57,8 @@ export struct WebDavSyncPageContent {
   @State lastSyncTime: number = 0
   @State isBusy: boolean = false
   @State configLoaded: boolean = false
+  @StorageLink('bangumiSyncEnabled') bangumiEnabled: boolean = false
+  @State bangumiBusy: boolean = false
   private scroller: Scroller = new Scroller()
   private syncService: HistorySyncService = HistorySyncService.getInstance()
 
@@ -67,6 +70,63 @@ export struct WebDavSyncPageContent {
     this.saveConfigSilently()
   }
 
+  @Builder
+  BangumiSection(): void {
+    Column() {
+      this.SectionHeader('Bangumi')
+      Column() {
+        Row() {
+          Column({ space: 4 }) {
+            Text($r('app.string.bangumi_sync_title')).fontSize(16).fontColor($r('app.color.text_primary'))
+            Text($r('app.string.bangumi_sync_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Toggle({ type: ToggleType.Switch, isOn: this.bangumiEnabled })
+            .enabled(!this.bangumiBusy)
+            .onChange((enabled: boolean) => { this.setBangumiEnabled(enabled) })
+        }.width('100%').padding(16)
+        this.ItemDivider()
+        Row() {
+          Text($r('app.string.bangumi_config_title'))
+            .fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([$r('app.color.text_secondary')])
+        }
+        .width('100%').height(56).padding({ left: 16, right: 16 })
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/settings/BangumiSyncPage' }).catch(() => {
+            promptAction.showToast({ message: '无法打开 Bangumi 配置' })
+          })
+        })
+      }
+      .width('100%').borderRadius(12).clip(true)
+      .backgroundColor($r('app.color.card_background'))
+      .border({ width: 0.5, color: $r('app.color.card_specular_border') })
+    }.width('100%').margin({ bottom: 8 })
+  }
+
+  private async refreshBangumiConfig(): Promise<void> {
+    try {
+      this.bangumiEnabled = (await BangumiSyncService.getInstance().getConfig()).enabled
+    } catch (err) {
+      logger.warn('Load Bangumi config failed')
+    }
+  }
+
+  private async setBangumiEnabled(enabled: boolean): Promise<void> {
+    if (this.bangumiBusy) return
+    this.bangumiEnabled = enabled
+    this.bangumiBusy = true
+    try {
+      await BangumiSyncService.getInstance().setEnabled(enabled)
+      this.bangumiEnabled = enabled
+    } catch (err) {
+      this.bangumiEnabled = false
+      promptAction.showToast({ message: err instanceof Error ? err.message : 'Bangumi 配置失败' })
+    } finally {
+      await this.refreshBangumiConfig()
+      this.bangumiBusy = false
+    }
+  }
+
   build() {
     HdsNavigation() {
       Scroll(this.scroller) {
@@ -76,6 +136,7 @@ export struct WebDavSyncPageContent {
             .width('100%')
 
           if (this.configLoaded) {
+            this.BangumiSection()
             this.StatusSection()
             this.AccountSection()
           } else {
@@ -292,6 +353,7 @@ export struct WebDavSyncPageContent {
 
   private async loadConfig(): Promise<void> {
     this.configLoaded = false
+    await this.refreshBangumiConfig()
     try {
       const config = await this.syncService.getConfig()
       this.syncEnabled = config.enabled
@@ -425,8 +487,8 @@ export struct WebDavSyncPageContent {
 
   private buildWebDavTitle(): HdsNavigationTitle {
     return {
-      mainTitle: 'WebDAV 同步',
-      subTitle: '同步历史、进度与收藏'
+      mainTitle: '同步设置',
+      subTitle: 'WebDAV 与 Bangumi 同步'
     }
   }
 
@@ -438,7 +500,7 @@ export struct WebDavSyncPageContent {
   }
 
   private buildWebDavTitleBarOptions(): HdsNavigationTitleBarOptions {
-    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('WebDAV 同步', this.hdsMaterialLevel)
+    const base: HdsNavigationTitleBarOptions = buildTitleBarOptions('同步设置', this.hdsMaterialLevel)
     base.content = this.buildWebDavTitleBarContent()
     return base
   }

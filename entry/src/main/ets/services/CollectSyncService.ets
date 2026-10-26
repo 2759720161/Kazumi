@@ -7,6 +7,7 @@ import { CollectChangeRecord } from '../models/CollectChangeRecord'
 import { CollectType } from '../models/CollectType'
 import { KazumiHiveCollectCodec } from './KazumiHiveCollectCodec'
 import { Logger } from '../utils/Logger'
+import { BangumiSyncService } from './BangumiSyncService'
 
 const logger = new Logger('CollectSyncService')
 const COLLECT_ROOT_PATH: string = '/kazumiSync'
@@ -27,6 +28,14 @@ export class CollectSyncService {
   private syncing: boolean = false
 
   async sync(client: WebDavClient): Promise<CollectSyncResult> {
+    let result = new CollectSyncResult()
+    await BangumiSyncService.getInstance().runCollectOperation(async () => {
+      result = await this.syncInternal(client)
+    })
+    return result
+  }
+
+  private async syncInternal(client: WebDavClient): Promise<CollectSyncResult> {
     if (this.syncing) {
       throw new Error('收藏同步正在进行')
     }

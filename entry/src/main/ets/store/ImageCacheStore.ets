@@ -184,7 +184,9 @@ export class ImageCacheStore {
       throw new Error('No image proxy selected');
     }
     const failover = useProxy && config.autoFailover && proxies.length > 1;
-    const maxAttempts = failover ? proxies.length : 3;
+    // Reach the original promptly instead of repeating a broken relay three times.
+    const isDirectRelay = !useProxy && url.startsWith('https://wsrv.nl/?url=');
+    const maxAttempts = failover ? proxies.length : isDirectRelay ? 1 : 3;
     let lastError: Error | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (version !== ImageNetworkSettings.getVersion()) {
@@ -196,7 +198,8 @@ export class ImageCacheStore {
           throw new Error('Image network configuration changed');
         }
         const proxy = useProxy ? proxies[failover ? attempt : 0] : null;
-        const data = await this.downloadImageOnce(url, proxy);
+        const useSystemProxy = !useProxy && BangumiConfig.getImageProxyUrl(url).length > 0;
+        const data = await this.downloadImageOnce(url, proxy, useSystemProxy);
         if (failover && attempt > 0 && proxy !== null) {
           ImageNetworkSettings.activateAfterFailover(proxy.id, version);
         }
@@ -271,7 +274,8 @@ export class ImageCacheStore {
     this.activeDownloadCount = Math.max(0, this.activeDownloadCount - 1);
   }
 
-  private async downloadImageOnce(url: string, proxy: ImageProxyConfig | null): Promise<ArrayBuffer> {
+  private async downloadImageOnce(url: string, proxy: ImageProxyConfig | null,
+    useSystemProxy: boolean = false): Promise<ArrayBuffer> {
     const request = http.createHttp();
     try {
       const isProxyUrl = url.includes('/img.php') || url.includes('/image.php') ||
@@ -296,7 +300,7 @@ export class ImageCacheStore {
         expectDataType: http.HttpDataType.ARRAY_BUFFER,
         usingProxy: false
       };
-      ProxyRequestOptions.apply(options, proxy);
+      ProxyRequestOptions.apply(options, proxy, useSystemProxy);
       const response = await request.request(url, options);
       const statusCode = response.responseCode as number;
       if (statusCode < 200 || statusCode >= 300) {
